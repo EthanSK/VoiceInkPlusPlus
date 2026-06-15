@@ -144,6 +144,11 @@ struct VoiceInkApp: App {
 
         let activeWindowService = ActiveWindowService.shared
         _activeWindowService = StateObject(wrappedValue: activeWindowService)
+        // Start observing frontmost-app changes so the active Mode FOLLOWS the app the
+        // user switches into (issue #785). Without this, the Mode was only resolved at
+        // record-start; Ethan starts recording first then clicks into the target app,
+        // so the wrong app's auto-send behavior was applied. start() is idempotent.
+        activeWindowService.start()
 
         let prewarmService = ModelPrewarmService(
             transcriptionModelManager: transcriptionModelManager,
