@@ -180,12 +180,19 @@ final class TranscriptionDelivery {
         let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
+        // Feature B: capture transcript length now so the auto-send can scale its
+        // redundant-Enter delay with how much text was pasted (longer paste => the
+        // field settles slower under load, so the second Enter gets more headroom).
+        let pastedLength = pastedText.count
         Task { @MainActor in
             _ = await pasteTask.value
 
             if autoSendKey.isEnabled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                CursorPaster.performAutoSend(autoSendKey)
+                // Feature B: robust auto-send. For plain Enter this posts Return
+                // TWICE (with a length-scaled gap) to survive a lag-dropped first
+                // keystroke; Shift/Cmd+Enter still post once. See performAutoSend.
+                CursorPaster.performAutoSend(autoSendKey, transcriptLength: pastedLength)
             }
 
             // Feature A: delivery is done — always release the focus lock so the
