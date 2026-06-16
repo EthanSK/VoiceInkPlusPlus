@@ -4,6 +4,10 @@
 <dict>
 	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>
+	<!-- iCloud container intentionally LEFT as the upstream id: a new container would need to be
+	     provisioned in the Apple Developer account, and Ethan's path is `make local` (LOCAL_BUILD)
+	     where CloudKit is forced to .none and the local entitlements omit iCloud entirely, so this
+	     value is inert for his builds. Don't change without provisioning a new iCloud container. -->
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
 		<string>iCloud.com.prakashjoshipax.VoiceInk</string>
@@ -31,9 +35,11 @@
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
 	</array>
+	<!-- Standalone-fork identity: keychain group keyed to the new bundle id so VoiceInk++
+	     does not share keychain items with the official VoiceInk. -->
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.prakashjoshipax.VoiceInk</string>
+		<string>$(AppIdentifierPrefix)com.ethansk.VoiceInkPlusPlus</string>
 	</array>
 </dict>
 </plist>

@@ -30,13 +30,56 @@ installed `.app`).
 # on the Mac Mini:
 cd ~/Projects/VoiceInk-build        # the Mini's clone of this fork
 make local                          # builds whisper.cpp (cached after first time) + ad-hoc-signed xcodebuild
-# output: ~/Downloads/VoiceInk.app  (quarantine already stripped by the Makefile)
+# output: ~/Downloads/VoiceInkPlusPlus.app  (quarantine already stripped by the Makefile)
 ```
 
 `make local` injects the `LOCAL_BUILD` compile flag → `LicenseViewModel` is hard-coded to `.licensed`,
 so a local build is permanently Pro with **no** trial/keychain/Polar gate. No Apple Developer cert
 needed (ad-hoc `CODE_SIGN_IDENTITY = -`). Mic / Accessibility / Screen-Recording are normal TCC grants
 on first launch.
+
+The built bundle is **`VoiceInkPlusPlus.app`** (output: `~/Downloads/VoiceInkPlusPlus.app`) — the
+`PRODUCT_NAME` is the build-path-safe `VoiceInkPlusPlus`; the user-visible name is **VoiceInk++** via
+`CFBundleDisplayName`.
+
+## Standalone-fork identity — VoiceInk++ (separate app from the official VoiceInk)
+
+This fork is rebranded to **VoiceInk++** with its **own** bundle id so it installs and permissions
+**alongside** the official VoiceInk without colliding on TCC permissions, UserDefaults/prefs, keychain,
+or Application Support storage.
+
+- **Bundle id:** `com.ethansk.VoiceInkPlusPlus` (main app). Tests use
+  `com.ethansk.VoiceInkPlusPlus.Tests` / `.UITests`. (Was `com.prakashjoshipax.VoiceInk` upstream.)
+- **Product name / file:** `VoiceInkPlusPlus` → builds `VoiceInkPlusPlus.app`.
+- **Display name (CFBundleDisplayName):** `VoiceInk++` (what the user sees in the menu bar, Dock,
+  About panel, window title).
+- **Self-storage moved to the new id:** Application Support folder
+  (`~/Library/Application Support/com.ethansk.VoiceInkPlusPlus/`), the `Recordings` subfolder, and the
+  keychain service name (`com.ethansk.VoiceInkPlusPlus`) all use the new id, so VoiceInk++ keeps its
+  own data/models/recordings/secrets separate from the official app.
+- **Prefs plist:** macOS auto-derives it from the bundle id, so VoiceInk++'s prefs live at
+  `~/Library/Preferences/com.ethansk.VoiceInkPlusPlus.plist` — no longer shared with the official app.
+- **Deliberately LEFT as the upstream id (don't change without provisioning):** the iCloud CloudKit
+  container `iCloud.com.prakashjoshipax.VoiceInk` (entitlements + `VoiceInk.swift`). It must match a
+  provisioned container in the Apple Developer account; Ethan's `make local` path forces CloudKit to
+  `.none` (and the local entitlements omit iCloud), so the old container id is inert for his builds.
+  The lowercase OSLog subsystem / dispatch-queue labels (`com.prakashjoshipax.voiceink`) are also left
+  as-is — they're cosmetic logging namespaces, not TCC/storage identity.
+
+### Mini resign-local.sh / Designated Requirement (DR) impact
+
+Because the bundle id changed, the Mini's resign / install pipeline (`resign-local.sh` and any DR
+pinning) must now expect the **new** identity. The Designated Requirement becomes:
+
+```
+identifier "com.ethansk.VoiceInkPlusPlus" and certificate leaf = H"..."
+```
+
+(was `identifier "com.prakashjoshipax.VoiceInk" and ...`). Update any DR/codesign verification on the
+Mini to match `com.ethansk.VoiceInkPlusPlus`, and point any app-path references at
+`VoiceInkPlusPlus.app` (display name `VoiceInk++`). The first launch of the rebranded app will prompt
+fresh TCC grants (Mic / Accessibility / Screen Recording) because it's a brand-new identity to macOS —
+this is expected and is the whole point of the split.
 
 ## Pull in upstream changes (rebase workflow)
 
@@ -47,7 +90,7 @@ git rebase upstream/main          # replay our 2 commits onto the latest upstrea
 # changes and our observer/start() additions, then `git rebase --continue`.
 git push --force-with-lease origin main
 ```
-Then rebuild on the Mini (`make local`) and install the fresh `~/Downloads/VoiceInk.app` on the MBP.
+Then rebuild on the Mini (`make local`) and install the fresh `~/Downloads/VoiceInkPlusPlus.app` on the MBP.
 
 Upstream auto-update (Sparkle) is disabled in local builds, so updating is this manual rebase + Mini
 rebuild — or the automated job below.
@@ -61,6 +104,18 @@ producing a broken build. See that script for details.
 
 ## Settings / data
 
-Same bundle id as the official app (`com.prakashjoshipax.voiceink`), so this build reads the same
-Modes/prefs (`~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist`) and app-support — your setup
-carries over automatically. A pre-migration backup lives at `~/voiceink-settings-backup-*`.
+**As of the VoiceInk++ rebrand, this is now a SEPARATE app with its own bundle id**
+(`com.ethansk.VoiceInkPlusPlus`), so it does **not** share prefs / Modes / app-support with the
+official VoiceInk anymore. VoiceInk++'s data lives at:
+
+- Prefs: `~/Library/Preferences/com.ethansk.VoiceInkPlusPlus.plist`
+- App support / models / recordings: `~/Library/Application Support/com.ethansk.VoiceInkPlusPlus/`
+- Keychain service: `com.ethansk.VoiceInkPlusPlus`
+
+This is intentional — the split lets VoiceInk++ run alongside the official VoiceInk without TCC /
+prefs collisions. To carry over your existing setup from the official app's
+`com.prakashjoshipax.VoiceInk` store, copy/import the data manually (Settings → Import Settings, or
+copy the Application Support folder). A pre-migration backup lives at `~/voiceink-settings-backup-*`.
+
+> Historical note: before the rebrand this fork shared `com.prakashjoshipax.VoiceInk` with the
+> official app, which is exactly the TCC/prefs collision the rebrand fixes.

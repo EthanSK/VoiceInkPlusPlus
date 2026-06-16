@@ -14,8 +14,9 @@ class TranscriptionAutoCleanupService {
     private let defaultRetentionMinutes: Int = 24 * 60
 
     private var recordingsDirectory: URL {
+        // Standalone-fork identity: same new-bundle-id Recordings path as VoiceInkEngine.
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+            .appendingPathComponent("com.ethansk.VoiceInkPlusPlus")
             .appendingPathComponent("Recordings")
     }
 

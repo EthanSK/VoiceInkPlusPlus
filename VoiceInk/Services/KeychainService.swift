@@ -9,7 +9,9 @@ final class KeychainService {
     static let shared = KeychainService()
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "KeychainService")
-    private let service = "com.prakashjoshipax.VoiceInk"
+    // Standalone-fork identity: keychain service name keyed to the new bundle id so VoiceInk++
+    // stores its secrets (API keys, license token) separately from the official VoiceInk.
+    private let service = "com.ethansk.VoiceInkPlusPlus"
 
     #if LOCAL_BUILD
     private let defaults = UserDefaults.standard

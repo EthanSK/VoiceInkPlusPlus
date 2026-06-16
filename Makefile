@@ -58,37 +58,40 @@ local: check setup
 		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
 		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
 		build
-	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Debug/VoiceInk.app" && \
+	@# Standalone-fork: PRODUCT_NAME is VoiceInkPlusPlus, so the built bundle is VoiceInkPlusPlus.app
+	@# (build-path-safe name; user-visible name is "VoiceInk++" via CFBundleDisplayName).
+	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Debug/VoiceInkPlusPlus.app" && \
 	if [ -d "$$APP_PATH" ]; then \
-		echo "Copying VoiceInk.app to ~/Downloads..."; \
-		rm -rf "$$HOME/Downloads/VoiceInk.app"; \
-		ditto "$$APP_PATH" "$$HOME/Downloads/VoiceInk.app"; \
-		xattr -cr "$$HOME/Downloads/VoiceInk.app"; \
+		echo "Copying VoiceInkPlusPlus.app to ~/Downloads..."; \
+		rm -rf "$$HOME/Downloads/VoiceInkPlusPlus.app"; \
+		ditto "$$APP_PATH" "$$HOME/Downloads/VoiceInkPlusPlus.app"; \
+		xattr -cr "$$HOME/Downloads/VoiceInkPlusPlus.app"; \
 		echo ""; \
-		echo "Build complete! App saved to: ~/Downloads/VoiceInk.app"; \
-		echo "Run with: open ~/Downloads/VoiceInk.app"; \
+		echo "Build complete! App saved to: ~/Downloads/VoiceInkPlusPlus.app"; \
+		echo "Run with: open ~/Downloads/VoiceInkPlusPlus.app"; \
 		echo ""; \
 		echo "Limitations of local builds:"; \
 		echo "  - No iCloud dictionary sync"; \
 		echo "  - No automatic updates (pull new code and rebuild to update)"; \
 	else \
-		echo "Error: Could not find built VoiceInk.app at $$APP_PATH"; \
+		echo "Error: Could not find built VoiceInkPlusPlus.app at $$APP_PATH"; \
 		exit 1; \
 	fi
 
 # Run application
 run:
-	@if [ -d "$$HOME/Downloads/VoiceInk.app" ]; then \
-		echo "Opening ~/Downloads/VoiceInk.app..."; \
-		open "$$HOME/Downloads/VoiceInk.app"; \
+	@# Standalone-fork: built bundle is VoiceInkPlusPlus.app (PRODUCT_NAME), display name "VoiceInk++".
+	@if [ -d "$$HOME/Downloads/VoiceInkPlusPlus.app" ]; then \
+		echo "Opening ~/Downloads/VoiceInkPlusPlus.app..."; \
+		open "$$HOME/Downloads/VoiceInkPlusPlus.app"; \
 	else \
-		echo "Looking for VoiceInk.app in DerivedData..."; \
-		APP_PATH=$$(find "$$HOME/Library/Developer/Xcode/DerivedData" -name "VoiceInk.app" -type d | head -1) && \
+		echo "Looking for VoiceInkPlusPlus.app in DerivedData..."; \
+		APP_PATH=$$(find "$$HOME/Library/Developer/Xcode/DerivedData" -name "VoiceInkPlusPlus.app" -type d | head -1) && \
 		if [ -n "$$APP_PATH" ]; then \
 			echo "Found app at: $$APP_PATH"; \
 			open "$$APP_PATH"; \
 		else \
-			echo "VoiceInk.app not found. Please run 'make build' or 'make local' first."; \
+			echo "VoiceInkPlusPlus.app not found. Please run 'make build' or 'make local' first."; \
 			exit 1; \
 		fi; \
 	fi

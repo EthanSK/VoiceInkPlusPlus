@@ -66,8 +66,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             self.assistantChat = nil
         }
 
+        // Standalone-fork identity: Recordings live under the new bundle id's App Support folder.
+        // Must stay in sync with the same path string in VoiceInk.swift + the other Recordings sites.
         let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+            .appendingPathComponent("com.ethansk.VoiceInkPlusPlus")
         self.recordingsDirectory = appSupportDirectory.appendingPathComponent("Recordings")
 
         self.serviceRegistry = TranscriptionServiceRegistry(

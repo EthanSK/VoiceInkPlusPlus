@@ -62,7 +62,7 @@ If you don't have an Apple Developer certificate, use `make local`:
 git clone https://github.com/Beingpax/VoiceInk.git
 cd VoiceInk
 make local
-open ~/Downloads/VoiceInk.app
+open ~/Downloads/VoiceInkPlusPlus.app   # standalone-fork bundle (user-visible name: VoiceInk++)
 ```
 
 This builds VoiceInk with ad-hoc signing using a separate build configuration (`LocalBuild.xcconfig`) that requires no Apple Developer account.

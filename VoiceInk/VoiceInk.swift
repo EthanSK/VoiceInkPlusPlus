@@ -93,8 +93,10 @@ struct VoiceInkApp: App {
         _enhancementService = StateObject(wrappedValue: enhancementService)
 
         // 1. Create modelsDirectory URL
+        // Standalone-fork identity: Application Support folder keyed to the new bundle id so
+        // VoiceInk++ stores its models/data separately from the official VoiceInk install.
         let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+            .appendingPathComponent("com.ethansk.VoiceInkPlusPlus")
         let modelsDirectory = appSupportDirectory.appendingPathComponent("WhisperModels")
 
         // 2. Create model managers
@@ -201,8 +203,10 @@ struct VoiceInkApp: App {
     }
 
     private static func createPersistentContainer(schema: Schema, logger: Logger) throws -> ModelContainer {
+        // Standalone-fork identity: SwiftData store lives under the new bundle id's Application
+        // Support folder so VoiceInk++ never shares its DB with the official VoiceInk.
         let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk", isDirectory: true)
+            .appendingPathComponent("com.ethansk.VoiceInkPlusPlus", isDirectory: true)
 
         try? FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
 
@@ -222,6 +226,10 @@ struct VoiceInkApp: App {
         #if LOCAL_BUILD
         let dictionaryCloudKit: ModelConfiguration.CloudKitDatabase = .none
         #else
+        // iCloud container intentionally left as the upstream id — it must match a PROVISIONED
+        // CloudKit container in the Apple Developer account, and we haven't created a new one.
+        // This branch only runs in signed (non-LOCAL_BUILD) builds; Ethan's `make local` path uses
+        // the .none branch above, so the old id is inert for his standalone VoiceInk++ build.
         let dictionaryCloudKit: ModelConfiguration.CloudKitDatabase = .private("iCloud.com.prakashjoshipax.VoiceInk")
         #endif
         let dictionaryConfig = ModelConfiguration(
