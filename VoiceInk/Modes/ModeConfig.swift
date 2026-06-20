@@ -70,14 +70,13 @@ struct ModeConfig: Codable, Identifiable, Equatable {
     var appConfigs: [AppConfig]?
     var urlConfigs: [URLConfig]?
     var triggerGroups: [ModeTriggerGroup]?
+    var triggerWords: [String] = []
     var isAIEnhancementEnabled: Bool
     var selectedPrompt: String?
     var selectedTranscriptionModelName: String?
     var isRealtimeTranscriptionEnabled: Bool = true
     var selectedLanguage: String?
     var isTextFormattingEnabled: Bool = false
-    var punctuationCleanupMode: PunctuationCleanupMode = .keep
-    var lowercaseTranscription: Bool = false
     var useClipboardContext: Bool
     var useSelectedTextContext: Bool
     var useScreenCapture: Bool
@@ -88,25 +87,26 @@ struct ModeConfig: Codable, Identifiable, Equatable {
     var customCommand: ModeCustomCommand?
     var isEnabled: Bool = true
     var isDefault: Bool = false
-        
+
     enum CodingKeys: String, CodingKey {
-        case id, name, icon, appConfigs, urlConfigs, triggerGroups, isAIEnhancementEnabled, selectedPrompt, isRealtimeTranscriptionEnabled, selectedLanguage, isTextFormattingEnabled, punctuationCleanupMode, removePunctuation, lowercaseTranscription, useClipboardContext, useSelectedTextContext, useScreenCapture, selectedAIProvider, selectedAIModel, outputMode, isAutoSendEnabled, autoSendKey, customCommand, isEnabled, isDefault
+        case id, name, icon, appConfigs, urlConfigs, triggerGroups, triggerWords, isAIEnhancementEnabled, selectedPrompt, isRealtimeTranscriptionEnabled, selectedLanguage, isTextFormattingEnabled, useClipboardContext, useSelectedTextContext, useScreenCapture, selectedAIProvider, selectedAIModel, outputMode, isAutoSendEnabled, autoSendKey, customCommand, isEnabled, isDefault
         case legacyEmoji = "emoji"
         case selectedWhisperModel
         case selectedTranscriptionModelName
     }
-    
+
     init(id: UUID = UUID(), name: String, icon: ModeIcon = .defaultIcon, appConfigs: [AppConfig]? = nil,
-         urlConfigs: [URLConfig]? = nil, triggerGroups: [ModeTriggerGroup]? = nil, isAIEnhancementEnabled: Bool, selectedPrompt: String? = nil,
+         urlConfigs: [URLConfig]? = nil, triggerGroups: [ModeTriggerGroup]? = nil, triggerWords: [String] = [],
+         isAIEnhancementEnabled: Bool, selectedPrompt: String? = nil,
          selectedTranscriptionModelName: String? = nil, isRealtimeTranscriptionEnabled: Bool = true, selectedLanguage: String? = nil, useClipboardContext: Bool = false, useSelectedTextContext: Bool = true, useScreenCapture: Bool = false,
-         isTextFormattingEnabled: Bool = false, punctuationCleanupMode: PunctuationCleanupMode = .keep, lowercaseTranscription: Bool = false,
-         selectedAIProvider: String? = nil, selectedAIModel: String? = nil, outputMode: ModeOutputMode = .paste, autoSendKey: AutoSendKey = .none, customCommand: ModeCustomCommand? = nil, isEnabled: Bool = true, isDefault: Bool = false) {
+         isTextFormattingEnabled: Bool = false, selectedAIProvider: String? = nil, selectedAIModel: String? = nil, outputMode: ModeOutputMode = .paste, autoSendKey: AutoSendKey = .none, customCommand: ModeCustomCommand? = nil, isEnabled: Bool = true, isDefault: Bool = false) {
         self.id = id
         self.name = name
         self.icon = icon
         self.appConfigs = appConfigs
         self.urlConfigs = urlConfigs
         self.triggerGroups = triggerGroups
+        self.triggerWords = Self.normalizedTriggerWords(triggerWords)
         self.isAIEnhancementEnabled = isAIEnhancementEnabled
         self.selectedPrompt = selectedPrompt
         self.useClipboardContext = useClipboardContext
@@ -121,10 +121,19 @@ struct ModeConfig: Codable, Identifiable, Equatable {
         self.isRealtimeTranscriptionEnabled = isRealtimeTranscriptionEnabled
         self.selectedLanguage = selectedLanguage ?? "en"
         self.isTextFormattingEnabled = isTextFormattingEnabled
-        self.punctuationCleanupMode = punctuationCleanupMode
-        self.lowercaseTranscription = lowercaseTranscription
         self.isEnabled = isEnabled
         self.isDefault = isDefault
+    }
+
+    static func normalizedTriggerWords(_ words: [String]) -> [String] {
+        var seen = Set<String>()
+        return words.compactMap { word in
+            let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let key = trimmed.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            return trimmed
+        }
     }
 
     init(from decoder: Decoder) throws {
@@ -142,18 +151,12 @@ struct ModeConfig: Codable, Identifiable, Equatable {
         appConfigs = try container.decodeIfPresent([AppConfig].self, forKey: .appConfigs)
         urlConfigs = try container.decodeIfPresent([URLConfig].self, forKey: .urlConfigs)
         triggerGroups = try container.decodeIfPresent([ModeTriggerGroup].self, forKey: .triggerGroups)
+        triggerWords = Self.normalizedTriggerWords(try container.decodeIfPresent([String].self, forKey: .triggerWords) ?? [])
         isAIEnhancementEnabled = try container.decode(Bool.self, forKey: .isAIEnhancementEnabled)
         selectedPrompt = try container.decodeIfPresent(String.self, forKey: .selectedPrompt)
         isRealtimeTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isRealtimeTranscriptionEnabled) ?? true
         selectedLanguage = try container.decodeIfPresent(String.self, forKey: .selectedLanguage)
         isTextFormattingEnabled = try container.decodeIfPresent(Bool.self, forKey: .isTextFormattingEnabled) ?? false
-        if let mode = try container.decodeIfPresent(PunctuationCleanupMode.self, forKey: .punctuationCleanupMode) {
-            punctuationCleanupMode = mode
-        } else {
-            let removePunctuation = try container.decodeIfPresent(Bool.self, forKey: .removePunctuation) ?? false
-            punctuationCleanupMode = removePunctuation ? .removeAll : .keep
-        }
-        lowercaseTranscription = try container.decodeIfPresent(Bool.self, forKey: .lowercaseTranscription) ?? false
         useClipboardContext = try container.decodeIfPresent(Bool.self, forKey: .useClipboardContext) ?? UserDefaults.standard.bool(forKey: "useClipboardContext")
         if let decodedSelectedTextContext = try container.decodeIfPresent(Bool.self, forKey: .useSelectedTextContext) {
             useSelectedTextContext = decodedSelectedTextContext
@@ -196,14 +199,12 @@ struct ModeConfig: Codable, Identifiable, Equatable {
         try container.encodeIfPresent(appConfigs, forKey: .appConfigs)
         try container.encodeIfPresent(urlConfigs, forKey: .urlConfigs)
         try container.encodeIfPresent(triggerGroups, forKey: .triggerGroups)
+        if !triggerWords.isEmpty { try container.encode(triggerWords, forKey: .triggerWords) }
         try container.encode(isAIEnhancementEnabled, forKey: .isAIEnhancementEnabled)
         try container.encodeIfPresent(selectedPrompt, forKey: .selectedPrompt)
         try container.encode(isRealtimeTranscriptionEnabled, forKey: .isRealtimeTranscriptionEnabled)
         try container.encodeIfPresent(selectedLanguage, forKey: .selectedLanguage)
         try container.encode(isTextFormattingEnabled, forKey: .isTextFormattingEnabled)
-        try container.encode(punctuationCleanupMode, forKey: .punctuationCleanupMode)
-        try container.encode(punctuationCleanupMode == .removeAll, forKey: .removePunctuation)
-        try container.encode(lowercaseTranscription, forKey: .lowercaseTranscription)
         try container.encode(useClipboardContext, forKey: .useClipboardContext)
         try container.encode(useSelectedTextContext, forKey: .useSelectedTextContext)
         try container.encode(useScreenCapture, forKey: .useScreenCapture)
@@ -463,6 +464,14 @@ class ModeManager: ObservableObject {
             updatedConfig.urlConfigs?.removeAll(where: { $0.id == urlConfig.id })
             updateConfiguration(updatedConfig)
         }
+    }
+
+    func getConfigurationForTriggerWord(_ text: String) -> (mode: ModeConfig, processedText: String)? {
+        guard let detection = ModeTriggerWordDetectionService.detect(
+            in: text,
+            configurations: configurations.filter { $0.isEnabled }
+        ) else { return nil }
+        return (detection.mode, detection.processedText)
     }
 
     func cleanURL(_ url: String) -> String {

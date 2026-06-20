@@ -7,14 +7,13 @@ struct ModeConfigDraft {
     var appConfigs: [AppConfig]
     var websiteConfigs: [URLConfig]
     var triggerGroups: [ModeTriggerGroup]
+    var triggerWords: [String]
     var isAIEnhancementEnabled: Bool
     var selectedPromptId: UUID?
     var selectedTranscriptionModelName: String?
     var isRealtimeTranscriptionEnabled: Bool
     var selectedLanguage: String?
     var isTextFormattingEnabled: Bool
-    var punctuationCleanupMode: PunctuationCleanupMode
-    var lowercaseTranscription: Bool
     var useClipboardContext: Bool
     var useSelectedTextContext: Bool
     var useScreenCapture: Bool
@@ -39,14 +38,13 @@ struct ModeConfigDraft {
             appConfigs = []
             websiteConfigs = []
             triggerGroups = []
+            triggerWords = []
             isAIEnhancementEnabled = false
             selectedPromptId = inheritedConfig?.selectedPrompt.flatMap { UUID(uuidString: $0) }
             selectedTranscriptionModelName = inheritedConfig?.selectedTranscriptionModelName
             isRealtimeTranscriptionEnabled = true
             selectedLanguage = inheritedConfig?.selectedLanguage
             isTextFormattingEnabled = true
-            punctuationCleanupMode = .keep
-            lowercaseTranscription = false
             useClipboardContext = false
             useSelectedTextContext = false
             useScreenCapture = true
@@ -67,14 +65,13 @@ struct ModeConfigDraft {
             appConfigs = latestConfig.appConfigs ?? []
             websiteConfigs = latestConfig.urlConfigs ?? []
             triggerGroups = latestConfig.triggerGroups ?? []
+            triggerWords = latestConfig.triggerWords
             isAIEnhancementEnabled = latestConfig.isAIEnhancementEnabled
             selectedPromptId = latestConfig.selectedPrompt.flatMap { UUID(uuidString: $0) }
             selectedTranscriptionModelName = latestConfig.selectedTranscriptionModelName
             isRealtimeTranscriptionEnabled = latestConfig.isRealtimeTranscriptionEnabled
             selectedLanguage = latestConfig.selectedLanguage
             isTextFormattingEnabled = latestConfig.isTextFormattingEnabled
-            punctuationCleanupMode = latestConfig.punctuationCleanupMode
-            lowercaseTranscription = latestConfig.lowercaseTranscription
             useClipboardContext = latestConfig.useClipboardContext
             useSelectedTextContext = latestConfig.useSelectedTextContext
             useScreenCapture = latestConfig.useScreenCapture
@@ -170,6 +167,7 @@ struct ModeConfigDraft {
                 appConfigs: appConfigs.isEmpty ? nil : appConfigs,
                 urlConfigs: websiteConfigs.isEmpty ? nil : websiteConfigs,
                 triggerGroups: triggerGroups.isEmpty ? nil : triggerGroups,
+                triggerWords: triggerWords,
                 isAIEnhancementEnabled: isAIEnhancementEnabled,
                 selectedPrompt: selectedPromptId?.uuidString,
                 selectedTranscriptionModelName: selectedTranscriptionModelName,
@@ -179,8 +177,6 @@ struct ModeConfigDraft {
                 useSelectedTextContext: useSelectedTextContext,
                 useScreenCapture: useScreenCapture,
                 isTextFormattingEnabled: isTextFormattingEnabled,
-                punctuationCleanupMode: punctuationCleanupMode,
-                lowercaseTranscription: lowercaseTranscription,
                 selectedAIProvider: selectedAIProvider,
                 selectedAIModel: selectedAIModel,
                 outputMode: outputMode,
@@ -196,14 +192,13 @@ struct ModeConfigDraft {
             updatedConfig.appConfigs = appConfigs.isEmpty ? nil : appConfigs
             updatedConfig.urlConfigs = websiteConfigs.isEmpty ? nil : websiteConfigs
             updatedConfig.triggerGroups = triggerGroups.isEmpty ? nil : triggerGroups
+            updatedConfig.triggerWords = ModeConfig.normalizedTriggerWords(triggerWords)
             updatedConfig.isAIEnhancementEnabled = isAIEnhancementEnabled
             updatedConfig.selectedPrompt = selectedPromptId?.uuidString
             updatedConfig.selectedTranscriptionModelName = selectedTranscriptionModelName
             updatedConfig.isRealtimeTranscriptionEnabled = isRealtimeTranscriptionEnabled
             updatedConfig.selectedLanguage = selectedLanguage
             updatedConfig.isTextFormattingEnabled = isTextFormattingEnabled
-            updatedConfig.punctuationCleanupMode = punctuationCleanupMode
-            updatedConfig.lowercaseTranscription = lowercaseTranscription
             updatedConfig.useClipboardContext = useClipboardContext
             updatedConfig.useSelectedTextContext = useSelectedTextContext
             updatedConfig.useScreenCapture = useScreenCapture
