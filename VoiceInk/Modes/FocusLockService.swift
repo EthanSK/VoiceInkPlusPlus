@@ -26,6 +26,21 @@ import os
 //   focus to the stored element, THEN the normal paste + auto-send runs into it.
 // • A normal/short press leaves no lock → fully default behavior (unchanged).
 //
+// ⚠️ PRIMARY MECHANISM IS NOW AUTOMATIC (2026-06-22) — the gesture is dead for Ethan.
+// -------------------------------------------------------------------------------
+// The manual long-press / stop-hold GESTURE above never works for Ethan: his record
+// trigger is a MOUSE BUTTON that pulses ⇧⌃⌥ as a ~0.1s TAP — he can't hold it, so the
+// stop-hold threshold never fires (see LEARNINGS commits 71e6dc9 / 6add5a0). So the
+// decision is now made AUTOMATICALLY at paste time, with NO gesture required:
+//   • We ALWAYS captureCandidate() at record-START (persisted for the session).
+//   • At paste time we call isEditableElementFocused(): if an editable text element is
+//     focused NOW → paste at the cursor (he moved to a real field). If NOTHING editable
+//     is focused → autoPromoteAndRestoreToCandidate() restores focus to the START field
+//     and pastes there.
+// The old gesture plumbing (promoteToLock / stop-hold timer) is HARMLESS and left in
+// place, but isEditableElementFocused() + autoPromoteAndRestoreToCandidate() are the new
+// primary path. See those two methods below for the full classification + restore logic.
+//
 // LIFECYCLE (also see the inline comments at each method)
 //   key-down            -> captureCandidate()  (remember focused element + app)
 //   held past threshold -> promoteToLock()      (candidate becomes the active lock)
@@ -133,6 +148,286 @@ final class FocusLockService: ObservableObject {
     }
 
     private init() {}
+
+    // MARK: - AUTOMATIC focus decision (2026-06-22): is an EDITABLE element focused NOW?
+    //
+    // WHY THIS EXISTS — the gesture is unusable for Ethan:
+    // The original Feature-A design required a deliberate GESTURE (long-press / stop-hold
+    // the record hotkey) to "engage" the focus lock so the transcript lands in the field
+    // he started dictating in. That gesture NEVER works for Ethan because his record
+    // trigger is a MOUSE BUTTON that pulses the ⇧⌃⌥ modifier combo as a ~0.1s TAP — he
+    // physically cannot HOLD it. (See the modifier-only key-up notes above + LEARNINGS.md
+    // commits 71e6dc9 / 6add5a0: every stop logged as a ~0.10–0.14s short-tap, so the
+    // stop-hold threshold never fired and the lock never armed.)
+    //
+    // THE NEW PRIMARY MECHANISM — automatic, no gesture:
+    // We still capture the focused field at record-START (captureCandidate, persisted for
+    // the session). But instead of asking Ethan to perform a hold to "lock" it, at PASTE
+    // time we look at whether an EDITABLE text element is currently focused:
+    //   • Editable element focused now  → paste at the cursor (he moved to a real field —
+    //                                       honor it, exactly like upstream).
+    //   • Nothing editable focused now  → restore focus to the START candidate and paste
+    //                                       THERE (focus dropped onto a button / non-text
+    //                                       view / the desktop / a no-text app).
+    // This function answers "is an editable element focused right now?" and is the heart
+    // of that decision (called from TranscriptionDelivery.paste()).
+    //
+    // CLASSIFICATION + BIAS:
+    // We read the frontmost app's AX focused element and inspect its role/subrole.
+    //   • Clearly editable roles, or an element with a SETTABLE string kAXValue → true.
+    //   • Ambiguous roles (web areas, groups, scroll areas, unknown, Electron/terminal
+    //     generic contexts) → true. We BIAS HARD toward "true" because the ONLY thing the
+    //     false branch does is hijack focus back to the start-field; we only want to do
+    //     that when we are CONFIDENT nothing editable is focused. A false positive (saying
+    //     "editable" when it wasn't) just pastes at the cursor — annoying but recoverable.
+    //     A false negative (hijacking when an editable field WAS focused) would steal his
+    //     paste out of the field he actually wants — much worse. So: when in doubt, true.
+    //   • Clearly non-text roles (buttons, menu items, images, static text, checkboxes,
+    //     radios, links, lists/rows/cells with no editable value, windows, the app itself)
+    //     → false (these mean "no real text field has focus right now").
+    //   • No focused element at all → false (focus dropped — exactly the restore case).
+    //   • ANY AX call failing / returning nil → true (ambiguous, safe: don't hijack).
+    //
+    // VoiceInk++ SELF-EXCLUSION:
+    // The recorder is a NON-ACTIVATING NSPanel, so it normally won't become frontmost.
+    // But guard anyway: if our OWN app (com.ethansk.VoiceInkPlusPlus) is somehow frontmost
+    // we must NOT treat our own panel's focus as "an editable field is focused" — that
+    // would suppress the legitimate restore. In that case we fall back to the
+    // previously-frontmost target via NSWorkspace and inspect THAT app's focused element
+    // instead, so the decision reflects where the transcript will actually land.
+    private static let ownBundleId = "com.ethansk.VoiceInkPlusPlus"
+
+    func isEditableElementFocused() -> Bool {
+        // No Accessibility => we can't read focus at all. Ambiguous → true (don't hijack;
+        // paste would land at the live cursor anyway since we also can't restore).
+        guard AXIsProcessTrusted() else {
+            vippLog.info("focuslock: isEditableElementFocused → AX not trusted → ambiguous=true")
+            return true
+        }
+
+        // Pick the app whose focused element we should inspect. Normally that's the
+        // frontmost app. If WE are frontmost (recorder panel edge case), step past
+        // ourselves to the next-most-frontmost real app so the verdict reflects the true
+        // paste destination, not VoiceInk's own UI.
+        let workspace = NSWorkspace.shared
+        var targetApp = workspace.frontmostApplication
+        if targetApp?.bundleIdentifier == Self.ownBundleId {
+            // Find the most-recently-frontmost app that ISN'T us (runningApplications is
+            // not strictly ordered by recency on every macOS, but .regular activation +
+            // skipping ourselves is the best available heuristic without private API).
+            let fallback = workspace.runningApplications.first { app in
+                app.bundleIdentifier != Self.ownBundleId
+                    && app.activationPolicy == .regular
+                    && !app.isTerminated
+            }
+            targetApp = fallback ?? targetApp
+            vippLog.info("focuslock: isEditableElementFocused → self was frontmost, fell back to \(targetApp?.bundleIdentifier ?? "nil", privacy: .public)")
+        }
+
+        guard let app = targetApp else {
+            // No frontmost app at all (rare — e.g. desktop with nothing active). Treat as
+            // "nothing editable focused" so we restore to the start field.
+            vippLog.info("focuslock: isEditableElementFocused → no frontmost app → false")
+            return false
+        }
+
+        // Read the focused UI element of that specific app (more reliable than the
+        // system-wide element when an app was just activated/deactivated).
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var focusedRef: CFTypeRef?
+        let focusResult = AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRef
+        )
+
+        guard focusResult == .success, let focusedRef else {
+            // The app exposes NO focused UI element. That's the classic "focus dropped /
+            // nothing has the caret" situation (clicked on a button that lost focus, the
+            // desktop, a non-text app) → not editable → restore to start.
+            vippLog.info("focuslock: isEditableElementFocused → no focused element (err=\(focusResult.rawValue)) in \(app.bundleIdentifier ?? "nil", privacy: .public) → false")
+            return false
+        }
+
+        let element = focusedRef as! AXUIElement
+
+        // Read the AX role (e.g. "AXTextField"). Comes back as a CFString → bridge to a
+        // Swift String. If we can't even read the role, that's ambiguous → true.
+        var roleRef: CFTypeRef?
+        let roleResult = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role: String? = (roleResult == .success) ? (roleRef as? String) : nil
+
+        guard let role else {
+            vippLog.info("focuslock: isEditableElementFocused → focused element but role unreadable (err=\(roleResult.rawValue)) → ambiguous=true")
+            return true
+        }
+
+        // CLEARLY EDITABLE roles → true (real text input has focus).
+        let editableRoles: Set<String> = [
+            "AXTextField",
+            "AXTextArea",
+            "AXComboBox",
+            "AXSearchField",
+        ]
+        if editableRoles.contains(role) {
+            vippLog.info("focuslock: isEditableElementFocused → editable role=\(role, privacy: .public) → true")
+            return true
+        }
+
+        // CLEARLY NON-TEXT roles → false (a button/menu/image/etc. has focus; no caret).
+        let nonEditableRoles: Set<String> = [
+            "AXButton",
+            "AXMenuItem",
+            "AXMenuBarItem",
+            "AXMenuButton",
+            "AXImage",
+            "AXStaticText",
+            "AXCheckBox",
+            "AXRadioButton",
+            "AXLink",
+            "AXList",
+            "AXRow",
+            "AXCell",
+            "AXWindow",
+            "AXApplication",
+            "AXToolbar",
+            "AXTabGroup",
+            "AXSlider",
+            "AXDisclosureTriangle",
+            "AXPopUpButton",
+        ]
+        if nonEditableRoles.contains(role) {
+            // BUT: a focused element with a SETTABLE string kAXValue is editable even if
+            // its role is generic (some custom/rich editors report odd roles). Check that
+            // before concluding "not editable" so we don't wrongly hijack a real editor.
+            if elementHasSettableStringValue(element) {
+                vippLog.info("focuslock: isEditableElementFocused → role=\(role, privacy: .public) but kAXValue settable string → true")
+                return true
+            }
+            vippLog.info("focuslock: isEditableElementFocused → non-editable role=\(role, privacy: .public) → false")
+            return false
+        }
+
+        // AMBIGUOUS roles (web/Electron/terminal/generic containers) → bias to TRUE.
+        // AXWebArea (Safari/Chrome content), AXGroup, AXScrollArea, AXUnknown, and any
+        // role we didn't explicitly list fall here. In these contexts a real text field
+        // (contenteditable, a terminal, a CodeMirror/Monaco editor, etc.) is very often
+        // what's focused, and the role is too generic to be sure. We do NOT want to hijack
+        // focus away from a web/Electron text field, so we return true (paste at cursor).
+        // As a last refinement, if the element DOES expose a settable string value we're
+        // even more confident it's editable — but either way the ambiguous verdict is true.
+        let settable = elementHasSettableStringValue(element)
+        vippLog.info("focuslock: isEditableElementFocused → ambiguous role=\(role, privacy: .public) settableValue=\(settable, privacy: .public) → true (bias)")
+        return true
+    }
+
+    // Helper: does this AX element expose a SETTABLE string kAXValue? That's the most
+    // reliable cross-app signal that an element is a real text input regardless of how it
+    // reports its role (custom editors, rich-text views, some Electron fields). We require
+    // BOTH that kAXValue is settable AND that its current value reads as a String, so we
+    // don't mistake a settable numeric/bool value (e.g. a slider) for a text field.
+    // Any AX failure → false here (caller treats role alone). This never MOVES focus; it
+    // only READS attributes.
+    private func elementHasSettableStringValue(_ element: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        let settableResult = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        guard settableResult == .success, settable.boolValue else { return false }
+
+        // Settable — confirm the value is actually a string (text), not a number/bool.
+        var valueRef: CFTypeRef?
+        let valueResult = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef)
+        // A settable kAXValue whose current value is a String (incl. empty "") is a text
+        // input. If the value is currently nil/unreadable but the attribute is settable,
+        // we still lean editable (empty field) — but require the settable flag to have
+        // passed above. Treat a successfully-read non-String value as NOT a text field.
+        if valueResult == .success {
+            return (valueRef as? String) != nil
+        }
+        // Settable but value unreadable → treat as editable (likely an empty text field).
+        return true
+    }
+
+    // AUTO path step A — ARM the lock to the persisted START candidate (2026-06-22).
+    // Called by TranscriptionDelivery.paste() BEFORE the recorder is dismissed, on the
+    // auto-decision branch where nothing editable is focused and we intend to deliver into
+    // the original field. This ONLY flips state (no focus move): it promotes the session
+    // candidate to lockedTarget, which flips the @Published isLockActive → the amber
+    // FocusLockIndicator ("Using input from voice start") lights up in the still-visible
+    // recorder so Ethan SEES the auto path chose his original field. The actual focus MOVE
+    // is done later by performAutoRestoreToCandidate() right before the paste keystroke.
+    // Returns true if there was a viable candidate to arm (so the caller knows to do the
+    // restore + can rely on the indicator showing); false otherwise (no candidate / AX gone
+    // / candidate app quit) → caller pastes at the live cursor.
+    @discardableResult
+    func armAutoLockToCandidate() -> Bool {
+        guard let candidate else {
+            vippLog.info("focuslock: armAutoLockToCandidate → no candidate → false")
+            return false
+        }
+        guard AXIsProcessTrusted() else {
+            vippLog.info("focuslock: armAutoLockToCandidate → AX not trusted → false")
+            return false
+        }
+        if candidate.app.isTerminated {
+            vippLog.info("focuslock: armAutoLockToCandidate → candidate app terminated → false")
+            return false
+        }
+        // Flip the lock on (UI indicator only — no focus touched here). Cleared after
+        // delivery via clearLock() in TranscriptionDelivery's trailing Task.
+        setLockedTarget(candidate)
+        vippLog.info("focuslock: armAutoLockToCandidate → ARMED (indicator on) pid=\(candidate.pid, privacy: .public) bundle=\(candidate.bundleId ?? "nil", privacy: .public)")
+        return true
+    }
+
+    // AUTO path step B — perform the actual focus MOVE to the armed candidate (2026-06-22).
+    // Called by TranscriptionDelivery.paste() immediately BEFORE the paste keystroke, after
+    // armAutoLockToCandidate() flipped the indicator. Re-activates the candidate's app and
+    // sets AX focus to the captured element so the paste lands in the ORIGINAL field.
+    //
+    // IMPORTANT same-pid divergence from the gesture path: restoreFocusToLock() early-returns
+    // a NO-OP when the locked app is still frontmost (that guard exists to avoid a
+    // stale-element paste-swallow — see its big comment + LEARNINGS commit ff011b3). For the
+    // AUTO path that no-op would be WRONG: we only reach here because isEditableElementFocused()
+    // already determined NOTHING editable is focused, so even if the start app is still
+    // frontmost, focus has dropped onto a non-editable element (a button, the desktop view,
+    // etc.) and we MUST actively move focus back onto the captured text field. Hence this
+    // method does the AX focus-set UNCONDITIONALLY (no same-pid early return). Reads lockedTarget
+    // (set by armAutoLockToCandidate); returns true if a restore was attempted.
+    @discardableResult
+    func performAutoRestoreToCandidate() -> Bool {
+        guard let target = lockedTarget else {
+            vippLog.info("focuslock: performAutoRestoreToCandidate → no armed target → false")
+            return false
+        }
+        guard AXIsProcessTrusted() else {
+            vippLog.info("focuslock: performAutoRestoreToCandidate → AX not trusted → false")
+            return false
+        }
+        if target.app.isTerminated {
+            vippLog.info("focuslock: performAutoRestoreToCandidate → target app terminated → false")
+            return false
+        }
+
+        // (a) Bring the candidate's app forward so the paste keystroke targets it.
+        target.app.activate()
+
+        // (b) Restore AX focus to the EXACT element — UNCONDITIONALLY, even if the candidate
+        // app is already frontmost (the deliberate same-pid divergence explained above).
+        let appElement = AXUIElementCreateApplication(target.pid)
+        let setResult = AXUIElementSetAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            target.element
+        )
+        if setResult == .success {
+            vippLog.info("focuslock: performAutoRestoreToCandidate → AX restore OK pid=\(target.pid, privacy: .public) bundle=\(target.bundleId ?? "nil", privacy: .public)")
+        } else {
+            // Stale/invalid element (field re-rendered, sheet closed). App is at least
+            // frontmost now; paste falls back to wherever focus lands.
+            vippLog.info("focuslock: performAutoRestoreToCandidate → AX restore FAIL err=\(setResult.rawValue) pid=\(target.pid, privacy: .public) bundle=\(target.bundleId ?? "nil", privacy: .public)")
+        }
+        return true
+    }
 
     // True while a long-press lock is committed. ActiveWindowService reads this to
     // SUPPRESS the #785 frontmost-app-follow for the locked session — otherwise an

@@ -171,7 +171,82 @@ final class TranscriptionDelivery {
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
         let pastedText = textToPaste + (appendSpace ? " " : "")
         vippLog.info("paste: BEGIN len=\(pastedText.count, privacy: .public) lockActive=\(FocusLockService.shared.isLockActive, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+
+        // ════════════════════════════════════════════════════════════════════════
+        // Feature A — AUTOMATIC focus decision (2026-06-22). THIS is now the primary
+        // mechanism; the manual long-press/stop-hold gesture is dead for Ethan because
+        // his record trigger is a MOUSE BUTTON pulsing ⇧⌃⌥ as a ~0.1s tap he can't hold
+        // (see FocusLockService header + LEARNINGS commits 71e6dc9 / 6add5a0).
+        //
+        // The field he was in when he STARTED dictating was captured at record-start
+        // (FocusLockService.captureCandidate, persisted for the session). Now we decide
+        // where the transcript goes by looking at what's focused NOW:
+        //
+        //   • An EDITABLE text element is focused right now → paste at the CURRENT cursor.
+        //     (He moved to a real text field — honor it, exactly like upstream #785.)
+        //   • NOTHING editable is focused right now (focus dropped, or it's on a button /
+        //     non-text view / the desktop / an app with no text input) → restore focus to
+        //     the START candidate and paste THERE.
+        //
+        // isEditableElementFocused() biases HARD toward "true" (paste at cursor) whenever
+        // it's uncertain — we only hijack back to the start-field when CONFIDENT nothing
+        // editable has focus. See its big comment for the role classification.
+        //
+        // WHY WE DECIDE + ARM HERE, BEFORE actions.dismiss():
+        // The amber FocusLockIndicator ("Using input from voice start") lives INSIDE the
+        // recorder panel, which actions.dismiss() orders out. To let Ethan SEE that the
+        // auto path chose his original field, we must flip isLockActive (which drives the
+        // indicator) WHILE the recorder is still on screen — i.e. before dismiss. The
+        // recorder panel is a NON-ACTIVATING NSPanel, so reading focus here reflects the
+        // real target app, not VoiceInk; isEditableElementFocused() also self-excludes
+        // VoiceInk++ as a belt-and-braces guard. The actual AX focus-set + app-activate
+        // (the focus MOVE) is deferred to just before the paste keystroke below so nothing
+        // can steal focus in the gap.
+        //
+        // Legacy gesture override: if an explicit manual lock somehow IS already active
+        // (isLockActive true from the old stop-hold path), honor it as before — that's now
+        // the exception, not the rule.
+        let useStartFieldRestore: Bool   // true ⇒ restore to START candidate before paste
+        let honorExistingManualLock: Bool // true ⇒ old gesture lock is live, use its restore
+        if FocusLockService.shared.isLockActive {
+            // Old gesture path actually fired (rare for Ethan). The lock is already armed
+            // so the indicator is already showing; we'll use the established same-pid-aware
+            // restoreFocusToLock() below.
+            let editableNow = FocusLockService.shared.isEditableElementFocused()
+            vippLog.info("focuslock: AUTO-decide editableFocused=\(editableNow, privacy: .public) frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil", privacy: .public) → manual-lock already active, honoring existing lock (restore-to-locked-field)")
+            honorExistingManualLock = true
+            useStartFieldRestore = false
+        } else {
+            // PRIMARY AUTO PATH. Inspect what's focused right now and branch.
+            let editableNow = FocusLockService.shared.isEditableElementFocused()
+            if editableNow {
+                // A real editable field has focus → leave focus alone, paste at cursor.
+                vippLog.info("focuslock: AUTO-decide editableFocused=true frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil", privacy: .public) → paste-at-cursor")
+                honorExistingManualLock = false
+                useStartFieldRestore = false
+            } else {
+                // Nothing editable focused → we will restore to the START field. ARM the
+                // lock NOW (flips isLockActive → the amber FocusLockIndicator shows in the
+                // still-visible recorder so Ethan SEES the original field was chosen). The
+                // actual focus MOVE happens right before the keystroke below; the lock is
+                // cleared after delivery in the Task at the end.
+                let armed = FocusLockService.shared.armAutoLockToCandidate()
+                vippLog.info("focuslock: AUTO-decide editableFocused=false frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil", privacy: .public) → restore-to-start-field armed=\(armed, privacy: .public)")
+                honorExistingManualLock = false
+                useStartFieldRestore = armed
+            }
+        }
+
         SoundManager.shared.playStopSound()
+
+        // If the AUTO path armed a restore-to-start-field lock, hold the recorder on
+        // screen a brief beat so the amber FocusLockIndicator we just flipped on is
+        // actually VISIBLE to Ethan before dismiss orders the panel out. ~280ms is enough
+        // to read the "Using input from voice start" caption without feeling sluggish; we
+        // only pay it on the (less common) restore branch, never on a normal paste-at-cursor.
+        if useStartFieldRestore {
+            try? await Task.sleep(nanoseconds: 280_000_000)
+        }
         await actions.dismiss()
 
         // Feature A — NEW START→STOP model defensive grace-wait (2026-06-21).
@@ -206,16 +281,27 @@ final class TranscriptionDelivery {
             }
         }
 
-        // Feature A (focus lock): if the STOP press long-hold locked a target field
-        // (captured back at record-start), re-activate its app and restore AX focus to
-        // that element BEFORE we paste, so the transcript lands back in the ORIGINAL
-        // field even though the user may have clicked elsewhere. No-op (returns false)
-        // when no lock is active -> normal frontmost paste. We restore here, on the
-        // main actor, immediately before issuing the paste keystroke so nothing can
-        // steal focus in between. The lock is cleared at the end of this delivery
-        // (in the Task below) so it can never leak into the next recording.
-        let didRestore = FocusLockService.shared.restoreFocusToLock()
-        vippLog.info("paste: restoreFocusToLock returned \(didRestore, privacy: .public); issuing paste keystroke now (frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public))")
+        // Feature A — perform the actual focus MOVE now, immediately before the paste
+        // keystroke (decided + armed above, pre-dismiss). Doing the move here (not above)
+        // means nothing can steal focus between the restore and the Cmd+V.
+        //   • honorExistingManualLock → the old gesture lock is live: use the established
+        //     same-pid-aware restoreFocusToLock() (no-op if the locked app is still
+        //     frontmost — see that method's regression-guard comment).
+        //   • useStartFieldRestore → the AUTO path armed a lock to the START candidate: do
+        //     the focus-set via performAutoRestoreToCandidate(), which moves focus to the
+        //     captured element UNCONDITIONALLY (even if its app is already frontmost — the
+        //     deliberate same-pid divergence, because focus may be on a non-editable
+        //     element in the same app that we must move off of).
+        //   • neither → editable field already focused: touch nothing, paste at cursor.
+        let didRestore: Bool
+        if honorExistingManualLock {
+            didRestore = FocusLockService.shared.restoreFocusToLock()
+        } else if useStartFieldRestore {
+            didRestore = FocusLockService.shared.performAutoRestoreToCandidate()
+        } else {
+            didRestore = false
+        }
+        vippLog.info("paste: focus decision done didRestore=\(didRestore, privacy: .public); issuing paste keystroke now (frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public))")
 
         let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
 
