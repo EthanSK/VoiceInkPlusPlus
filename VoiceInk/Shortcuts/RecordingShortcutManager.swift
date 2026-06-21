@@ -698,7 +698,7 @@ final class RecordingShortcutModeHandler {
             // decide by LIVE NSEvent.modifierFlags whether the required modifiers (⇧⌃⌥)
             // are still physically held — that is the only reliable signal for this
             // shortcut kind. Leaving the timer alive here is the whole fix.
-            vippLog.info("shortcut: STOP key-up (modifier-only) dur=\(shortcutPressStartTime.map { eventTime - $0 } ?? 0) → IGNORED for lock decision (live-modifier timer will decide)")
+            vippLog.info("shortcut: STOP key-up (modifier-only) dur=\(self.shortcutPressStartTime.map { eventTime - $0 } ?? 0) → IGNORED for lock decision (live-modifier timer will decide)")
         } else {
             // STOP key-up (KEY shortcut, reliable key-up) — cancel the stop-hold timer,
             // then resolve the gesture by press duration.
