@@ -80,6 +80,20 @@ final class FocusLockService: ObservableObject {
     // ActiveWindowService suppresses its frontmost-follow (see `isLockActive`).
     private var lockedTarget: Candidate?
 
+    // NEW START→STOP model (2026-06-21): true between the STOP key-down (when the
+    // stop-hold timer is armed) and the moment that gesture resolves (timer fires →
+    // promoteToLock, or short-tap → clearCandidate). Delivery reads this so that if
+    // transcription somehow finishes BEFORE the stop-hold decision is known, paste()
+    // can do a tiny defensive grace-wait for the decision instead of pasting with a
+    // stale lock flag. Set by the shortcut handler via setStopHoldDecisionPending(_:).
+    // Normally the timer fires well before transcription completes (~1–2s), so this is
+    // almost always already false by delivery — the grace-wait is just belt-and-braces.
+    private(set) var stopHoldDecisionPending: Bool = false
+
+    func setStopHoldDecisionPending(_ pending: Bool) {
+        stopHoldDecisionPending = pending
+    }
+
     private init() {}
 
     // True while a long-press lock is committed. ActiveWindowService reads this to
@@ -160,10 +174,13 @@ final class FocusLockService: ObservableObject {
             bundleId: app.bundleIdentifier
         )
         logger.debug("captureCandidate: stored focus in \(app.bundleIdentifier ?? "unknown", privacy: .public)")
-        // VIPPDebug: proves a candidate was successfully built at key-down (AX trusted,
-        // a focused element existed, owning app resolved). bundleId wrapped with
-        // ?? "nil" because it's a String? — os_log needs a non-optional interpolation.
-        vippLog.info("focuslock: candidate captured pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
+        // VIPPDebug (new START→STOP model): a candidate was successfully built at the
+        // RECORD START press (AX trusted, a focused element existed, owning app
+        // resolved). This candidate now PERSISTS for the whole recording session — it
+        // is NOT cleared on the start key-up — so the later STOP press can decide
+        // whether to promote it to a lock. bundleId is String? → ?? "nil" (os_log needs
+        // a non-optional interpolation).
+        vippLog.info("focuslock: RECORD START → captured candidate (persisting for session) pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
     }
 
     // STEP 2 (held past threshold): promote the candidate to the committed lock.
@@ -341,5 +358,8 @@ final class FocusLockService: ObservableObject {
         // later short-press recording NOT still show "Using input from voice start".
         setLockedTarget(nil)
         candidate = nil
+        // Belt-and-braces: a lifecycle end also resolves any lingering stop-hold
+        // decision so the next recording's delivery never waits on a stale pending flag.
+        stopHoldDecisionPending = false
     }
 }

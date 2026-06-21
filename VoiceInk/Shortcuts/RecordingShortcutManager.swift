@@ -359,14 +359,45 @@ final class RecordingShortcutModeHandler {
     private var isHandsFreeRecording = false
     private var isShortcutPressed = false
     private var activeRecordingShortcutAction: ShortcutAction?
+
+    // Feature A (new START→STOP model): remembers whether the CURRENTLY-held press
+    // was the one that STARTED the recording (true) or the one STOPPING it (false).
+    // Computed once on key-down (from startsFreshRecording) and read on key-up so the
+    // key-up handler knows which side it is:
+    //   • START key-up  → leave the captured candidate ALONE (it must persist).
+    //   • STOP  key-up  → resolve short-tap (clearCandidate) vs long-hold (keep; the
+    //                     stop-hold timer already promoted it).
+    private var currentPressStartedRecording = false
     private var interruptedRecordingActions = Set<ShortcutAction>()
     private var activeShortcutCanCancelAccidentalStart = false
     private var lastShortcutPressTime: Date?
 
-    // Feature A (focus lock): pending timer that, if the record hotkey is still
-    // held when it fires, promotes the focus captured at key-down into an active
-    // lock. Cancelled on key-up so a short press never arms the lock. See
-    // FocusLockService for the full rationale.
+    // Feature A (focus lock) — NEW START→STOP DECISION MODEL (2026-06-21).
+    //
+    // WHY THIS CHANGED: Ethan's actual gesture is a modifier-only TOGGLE (⇧⌃⌥ in
+    // toggle mode): he TAPS to start recording and TAPS again to stop. He does NOT
+    // push-to-talk hold. Under the OLD model the long-press "lock the start field"
+    // decision was made on the START press — but in toggle+tap usage the start press
+    // is a quick tap, so the lock NEVER armed and his "paste into the field I started
+    // in" workflow was impossible to trigger.
+    //
+    // NEW MODEL: the lock decision moves to the STOP press.
+    //   • START press: ALWAYS captureCandidate() (snapshot the focused field) and
+    //     KEEP that candidate alive for the whole recording. No lock armed yet, no
+    //     timer on start. The candidate persists — it is NOT cleared on start key-up.
+    //   • STOP press: decide long-hold vs short-tap.
+    //       - long-hold (combo held ≥ longPressThreshold) → promoteToLock() so
+    //         delivery restores focus to the captured candidate (paste into original).
+    //       - short-tap → clearCandidate(), no lock, normal paste at cursor.
+    //
+    // TIMING SUBTLETY (toggle mode): the STOP fires on key-DOWN — recording stops and
+    // transcription begins IMMEDIATELY on the stop key-down, before we know whether
+    // it's a hold or a tap (the hold is only known later, at the stop key-up, or when
+    // the threshold timer fires). So on the STOP key-down we ARM this timer; if the
+    // combo is still held at longPressThreshold it fires and calls promoteToLock().
+    // Transcription takes ~1–2s and the paste waits for it, so this timer normally
+    // fires BEFORE delivery → the lock flag is set in time for restoreFocusToLock().
+    // This same Task field is reused for that stop-side timer (only one is ever live).
     private var longPressLockTask: Task<Void, Never>?
 
     private let shortcutPressCooldown: TimeInterval = 0.5
@@ -393,12 +424,14 @@ final class RecordingShortcutModeHandler {
         activeRecordingShortcutAction = nil
         interruptedRecordingActions.removeAll()
         activeShortcutCanCancelAccidentalStart = false
+        currentPressStartedRecording = false
 
         // Feature A (focus lock): a full reset (monitor restart, accidental-start
-        // cancel) must tear down any pending arm-timer AND any captured/locked
+        // cancel) must tear down any pending stop-hold timer AND any captured/locked
         // focus so a stale lock can't leak into the next recording.
         longPressLockTask?.cancel()
         longPressLockTask = nil
+        FocusLockService.shared.setStopHoldDecisionPending(false)
         FocusLockService.shared.clearLock()
     }
 
@@ -428,44 +461,86 @@ final class RecordingShortcutModeHandler {
 
         // Feature A (focus lock): does THIS key-down START a fresh recording?
         // Only a key-down that begins recording (recorder not currently visible,
-        // and we're not toggling-off a hands-free session) is a candidate for the
-        // long-press focus lock. We must snapshot the focused field NOW, at the
-        // very start of the press, because that's the only instant the original
-        // field is reliably still focused (Ethan may click away immediately after).
+        // and we're not toggling-off a hands-free session) is the START press.
+        // The STOP press has startsFreshRecording == false (recorder is visible /
+        // we're toggling off a hands-free session) and is handled further down.
         let startsFreshRecording = !isRecorderVisible() && !isHandsFreeRecording
+        // Remember which side this press is, for the matching key-up resolution.
+        currentPressStartedRecording = startsFreshRecording
         if startsFreshRecording {
-            // Capture the currently-focused element unconditionally — we don't yet
-            // know if this is a long press. If the key is released before the
-            // threshold, handleKeyUp cancels the timer and clears the candidate
-            // (short-press => default behavior, nothing locked).
+            // START PRESS (new model): ALWAYS snapshot the currently-focused field and
+            // KEEP it alive for the whole recording. This is the only instant the
+            // original field is reliably still focused — Ethan may click away
+            // immediately after starting. We do NOT arm any lock or timer here; the
+            // long-hold-vs-tap decision is deferred to the STOP press (see below).
+            // We also do NOT clear this candidate on the start key-up — it must
+            // persist through the entire recording so the STOP press can promote it.
             FocusLockService.shared.captureCandidate()
 
-            // VIPPDebug: proves a fresh-recording key-down fired and we attempted a
-            // candidate capture. startsFresh==true here by construction; action tells
-            // us primary vs secondary. If this line is missing for a press, the
-            // key-down never reached the capture point (e.g. toggling-off hands-free).
-            vippLog.info("shortcut: key-down captured startsFresh=true action=\(String(describing: action), privacy: .public)")
+            // VIPPDebug: START press routed here and triggered captureCandidate(). The
+            // detailed "RECORD START → captured candidate …" line (with pid+bundle) is
+            // emitted inside FocusLockService.captureCandidate(); this line just marks
+            // that the shortcut handler took the start path. No lock/timer armed here.
+            vippLog.info("shortcut: START press → captureCandidate() (candidate will persist for session) action=\(String(describing: action), privacy: .public)")
 
-            // Arm the long-press timer: if the hotkey is STILL held when this fires,
-            // promote the candidate to an active lock (and suppress #785 follow).
+            // Defensive: if a stale stop-timer somehow survived from a prior session,
+            // tear it down so it can't fire against this new recording.
             longPressLockTask?.cancel()
-            // VIPPDebug: the long-press timer ARMED. Pair this with either the FIRED
-            // line below (held past threshold) or its ABSENCE (key-up cancelled it) to
-            // see whether a given press was a genuine long-hold or a short tap.
-            vippLog.info("shortcut: long-press timer ARMED threshold=\(FocusLockService.longPressThreshold) action=\(String(describing: action), privacy: .public)")
+            longPressLockTask = nil
+        } else {
+            // STOP PRESS (new model): this key-down ENDS the recording. In toggle mode
+            // recording stops + transcription begins right now, on this key-down —
+            // before we know whether Ethan is doing a quick TAP-to-stop or a deliberate
+            // long-HOLD-to-stop. The hold is only known later (at this press's key-up,
+            // or when the threshold timer below fires).
+            //
+            // So we ARM a threshold timer here on the STOP key-down: if the combo is
+            // STILL held when longPressThreshold elapses, we promoteToLock() — pinning
+            // delivery to the field captured back at the START press. Because
+            // transcription takes ~1–2s and the paste waits for it, this timer normally
+            // fires BEFORE delivery, so the lock flag is set in time for
+            // restoreFocusToLock(). A quick tap-to-stop releases before the threshold →
+            // handleKeyUp cancels this timer and calls clearCandidate() (no lock).
+            //
+            // Mirrors the OLD start-side promote-timer pattern: [weak self] + the
+            // isShortcutPressed / activeRecordingShortcutAction race guards so a key-up
+            // that lands exactly as the timer fires can't promote a released press.
+            //
+            // NOTE: we only arm if a candidate actually exists (i.e. the START press
+            // successfully captured a focused field). If there's nothing to lock,
+            // promoteToLock() is a documented no-op anyway, so arming is harmless, but
+            // we still arm unconditionally for simplicity — the no-op covers it.
+            longPressLockTask?.cancel()
+            // Mark the stop-hold decision as PENDING so delivery's paste() can do a
+            // tiny grace-wait if transcription somehow finishes before this resolves.
+            FocusLockService.shared.setStopHoldDecisionPending(true)
+            // VIPPDebug: STOP press key-down — recording is stopping NOW; arm the
+            // stop-hold timer. If it FIRES we long-hold-locked; if it's cancelled at
+            // key-up first, it was a short tap.
+            vippLog.info("shortcut: STOP press key-down → arming stop-hold timer (threshold=\(FocusLockService.longPressThreshold) action=\(String(describing: action), privacy: .public))")
             longPressLockTask = Task { @MainActor [weak self] in
                 let thresholdNanos = UInt64(FocusLockService.longPressThreshold * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: thresholdNanos)
-                guard let self, !Task.isCancelled else { return }
-                // Re-check the key is genuinely still down for THIS action — guards
-                // against a race where key-up landed just as the timer fired.
+                guard let self, !Task.isCancelled else {
+                    // Cancelled before firing (short tap key-up). The key-up path
+                    // resolves the decision + clears the pending flag; nothing to do.
+                    return
+                }
+                // Re-check the combo is genuinely STILL down for THIS action — guards
+                // against a race where the stop key-up landed just as the timer fired.
                 guard self.isShortcutPressed,
-                      self.activeRecordingShortcutAction == action else { return }
-                // VIPPDebug: the timer SURVIVED to fire — the hotkey was still held at
-                // threshold, so we promote to a lock. Seeing this confirms the long-hold
-                // path ran (vs being cancelled at key-up). Compare with the ARMED line.
-                self.vippLog.info("shortcut: long-press timer FIRED → promoteToLock() action=\(String(describing: action), privacy: .public)")
+                      self.activeRecordingShortcutAction == action else {
+                    // Released right at the boundary — let the key-up path resolve it.
+                    return
+                }
+                // VIPPDebug: stop-hold timer SURVIVED to fire — combo held past
+                // threshold at STOP, so promote the persisted start-candidate to a lock.
+                // Delivery's restoreFocusToLock() will then paste into the original field.
+                self.vippLog.info("focuslock: STOP long-hold ≥threshold → promoteToLock (paste into original field) action=\(String(describing: action), privacy: .public)")
                 FocusLockService.shared.promoteToLock()
+                // Decision resolved (locked): clear the pending flag so delivery's
+                // grace-wait (if any) proceeds immediately.
+                FocusLockService.shared.setStopHoldDecisionPending(false)
             }
         }
 
@@ -502,26 +577,53 @@ final class RecordingShortcutModeHandler {
         activeRecordingShortcutAction = nil
         activeShortcutCanCancelAccidentalStart = false
 
-        // Feature A (focus lock): the press has ended — resolve long vs short.
-        // Cancel the pending arm-timer first so it can't fire after release.
-        longPressLockTask?.cancel()
-        longPressLockTask = nil
-        if let pressStart = shortcutPressStartTime {
-            let pressDuration = eventTime - pressStart
-            if pressDuration < FocusLockService.longPressThreshold {
-                // SHORT press: discard the field we captured at key-down. The lock
-                // never arms, so delivery uses the default frontmost path (#785).
-                // (If the lock already armed — i.e. a long hold — promoteToLock has
-                // run; we deliberately do NOT clear it here.)
-                // VIPPDebug: SHORT-press branch — duration under threshold, candidate
-                // discarded, no lock. Confirms this press should NOT engage Feature A.
-                vippLog.info("shortcut: key-up duration=\(pressDuration) < threshold=\(FocusLockService.longPressThreshold) → SHORT press, clearCandidate (discard, default paste)")
-                FocusLockService.shared.clearCandidate()
-            } else {
-                // VIPPDebug: LONG-hold branch — duration met/exceeded threshold, so the
-                // candidate captured at key-down is KEPT (the arm-timer should already
-                // have promoted it). Confirms this press is eligible for focus-lock.
-                vippLog.info("shortcut: key-up duration=\(pressDuration) >= threshold=\(FocusLockService.longPressThreshold) → LONG hold, candidate kept")
+        // Feature A (new START→STOP model): the press has ended — but which press?
+        //
+        //   • START key-up: the start tap finished. Do NOTHING to the focus state —
+        //     the captured candidate MUST persist for the whole recording so the later
+        //     STOP press can decide whether to lock to it. (This is the key behaviour
+        //     change: the old model cleared a short start-press here.) No timer to
+        //     cancel either — the start press never arms one in the new model.
+        //
+        //   • STOP key-up: the stop press finished. Cancel the stop-hold timer (so it
+        //     can't fire after release) and resolve long-hold vs short-tap:
+        //       - short-tap (released before threshold) → clearCandidate(), no lock,
+        //         normal paste at the live cursor.
+        //       - long-hold (held ≥ threshold) → KEEP the candidate; the stop-hold
+        //         timer already ran promoteToLock(), so delivery restores focus to the
+        //         original field. We do NOT clear here.
+        if currentPressStartedRecording {
+            // START key-up — leave focus state untouched; candidate persists.
+            // (No VIPPDebug noise here; the RECORD START line already logged capture.)
+        } else {
+            // STOP key-up — cancel the stop-hold timer, then resolve the gesture.
+            longPressLockTask?.cancel()
+            longPressLockTask = nil
+            if let pressStart = shortcutPressStartTime {
+                let pressDuration = eventTime - pressStart
+                if pressDuration < FocusLockService.longPressThreshold {
+                    // SHORT TAP to stop → no lock; discard the persisted candidate so
+                    // delivery uses the default frontmost/live-cursor paste (#785).
+                    // VIPPDebug: stop short-tap — under threshold, candidate discarded.
+                    vippLog.info("shortcut: STOP short-tap (dur=\(pressDuration)) → no lock, paste at cursor; clearCandidate")
+                    FocusLockService.shared.clearCandidate()
+                    // Decision resolved (no lock): clear the pending flag.
+                    FocusLockService.shared.setStopHoldDecisionPending(false)
+                } else {
+                    // LONG HOLD to stop → the stop-hold timer should already have
+                    // promoted the candidate to a lock; keep it (do NOT clear). This
+                    // branch is mostly a fallback in case key-up fires slightly after
+                    // the threshold without the timer having run yet — promote here too
+                    // so a borderline-timed hold still locks.
+                    if !FocusLockService.shared.isLockActive {
+                        // Timer hasn't fired yet but we crossed the threshold by key-up:
+                        // promote now so the hold still locks. Idempotent if it already did.
+                        FocusLockService.shared.promoteToLock()
+                    }
+                    // Decision resolved (locked): clear the pending flag.
+                    FocusLockService.shared.setStopHoldDecisionPending(false)
+                    vippLog.info("shortcut: STOP long-hold key-up (dur=\(pressDuration)) ≥ threshold → lock kept (paste into original field)")
+                }
             }
         }
 

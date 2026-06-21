@@ -174,12 +174,44 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
-        // Feature A (focus lock): if a long-press locked a target field at
-        // record-start, re-activate its app and restore AX focus to that element
-        // BEFORE we paste, so the transcript lands back in the ORIGINAL field even
-        // though the user may have clicked elsewhere. No-op (returns false) when no
-        // lock is active -> normal frontmost paste. We restore here, on the main
-        // actor, immediately before issuing the paste keystroke so nothing can
+        // Feature A — NEW START→STOP model defensive grace-wait (2026-06-21).
+        // In the new model the lock decision is made on the STOP press: a stop-hold
+        // timer (threshold 450ms) promotes the persisted start-candidate to a lock if
+        // the combo is still held. That timer normally fires BEFORE transcription
+        // completes (~1–2s), so by the time we reach this paste the lock flag is
+        // already settled. BUT if transcription is unusually fast, delivery could
+        // arrive while the stop-hold decision is still PENDING — in which case we'd
+        // read a not-yet-set lock flag and paste at the cursor instead of the original
+        // field. To guard that race, if a stop-hold decision is still pending we wait a
+        // tiny, bounded grace window (poll every 20ms, cap at ~longPressThreshold+a
+        // little) for it to resolve. Cheap, only runs on the rare fast-transcription
+        // path, and never blocks longer than the hold threshold could take to fire.
+        if FocusLockService.shared.stopHoldDecisionPending {
+            vippLog.info("paste: stop-hold decision still PENDING at delivery → grace-waiting for resolution")
+            // Cap a little above the threshold so a borderline hold's timer can fire.
+            let graceDeadlineNanos = UInt64((FocusLockService.longPressThreshold + 0.15) * 1_000_000_000)
+            let pollStepNanos: UInt64 = 20_000_000 // 20ms
+            var waitedNanos: UInt64 = 0
+            while FocusLockService.shared.stopHoldDecisionPending && waitedNanos < graceDeadlineNanos {
+                try? await Task.sleep(nanoseconds: pollStepNanos)
+                waitedNanos += pollStepNanos
+            }
+            if FocusLockService.shared.stopHoldDecisionPending {
+                // Still unresolved after the grace window (e.g. user is genuinely
+                // holding past it). Proceed anyway and LOG — we'll paste with whatever
+                // lock state exists now; the held combo will resolve to a lock shortly.
+                vippLog.info("paste: stop-hold decision STILL pending after grace window → proceeding with current lock state (lockActive=\(FocusLockService.shared.isLockActive, privacy: .public))")
+            } else {
+                vippLog.info("paste: stop-hold decision resolved during grace-wait (lockActive=\(FocusLockService.shared.isLockActive, privacy: .public))")
+            }
+        }
+
+        // Feature A (focus lock): if the STOP press long-hold locked a target field
+        // (captured back at record-start), re-activate its app and restore AX focus to
+        // that element BEFORE we paste, so the transcript lands back in the ORIGINAL
+        // field even though the user may have clicked elsewhere. No-op (returns false)
+        // when no lock is active -> normal frontmost paste. We restore here, on the
+        // main actor, immediately before issuing the paste keystroke so nothing can
         // steal focus in between. The lock is cleared at the end of this delivery
         // (in the Task below) so it can never leak into the next recording.
         let didRestore = FocusLockService.shared.restoreFocusToLock()

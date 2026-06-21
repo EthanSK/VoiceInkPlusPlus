@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-21T00:02:09Z
+**Trigger:** Ethan task 2026-06-21: move focus-lock decision from start to stop press for toggle+tap gesture
+**Symptom:** Focus-lock 'paste into the field I started in' never triggered for Ethan because the long-press lock decision was on the START press, but his gesture is a modifier-only TOGGLE (⇧⌃⌥, toggle mode): TAP to start, TAP to stop. The start tap never crossed longPressThreshold so the lock never armed.
+**Root cause:** OLD model armed the promote-timer on the START key-down. In toggle+tap usage the start press is a quick tap → timer cancelled at start key-up → lock never armed → restoreFocusToLock() always a no-op.
+**Fix:** Moved the lock decision from START to STOP. START press: ALWAYS captureCandidate() and PERSIST it for the whole session (do NOT clearCandidate on start key-up). STOP press (key-down, where startsFreshRecording==false): arm a stop-hold threshold timer; if combo still held at longPressThreshold → promoteToLock() (paste into original field); short tap → clearCandidate (normal cursor paste). Added currentPressStartedRecording flag so handleKeyUp knows start-vs-stop side. Added FocusLockService.stopHoldDecisionPending + a bounded grace-wait in TranscriptionDelivery.paste() for the rare fast-transcription race. Mirrored the old promote-timer pattern (weak self + isShortcutPressed/activeRecordingShortcutAction guards). Did NOT touch the same-pid no-op regression guard in restoreFocusToLock().
+**Commit:** pending-mini-build
+**Guard:** Big START→STOP model comment blocks at every changed site (handler longPressLockTask doc, handleKeyDown start+stop branches, handleKeyUp start-vs-stop resolve, FocusLockService captureCandidate persist note, TranscriptionDelivery grace-wait). New VIPPDebug lines: RECORD START captured candidate (persisting), STOP press arming stop-hold timer, STOP long-hold→promoteToLock, STOP short-tap→clearCandidate. Filter: subsystem==com.ethansk.VoiceInkPlusPlus category==VIPPDebug. MBP cannot build (codesign) — Mini builds.
+---
+
+---
 **Date:** 2026-06-20T23:11:34Z
 **Trigger:** nope it just failed exactly same again check (2026-06-21)
 **Symptom:** VoiceInk++ records, bar shows 'transcribing' briefly then hides without pasting; nothing inserted
