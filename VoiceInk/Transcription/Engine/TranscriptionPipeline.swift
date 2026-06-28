@@ -213,10 +213,12 @@ class TranscriptionPipeline {
             if !assistant.isFollowUp {
                 // ── VIPP (skip-mode-processing feature) — BYPASS POINT #2 (script/respond) ──
                 // When the one-shot flag is on, OVERRIDE whatever the mode resolved to with a
-                // plain raw `.paste` (customCommand stripped, autoSendKey preserved). This is
-                // the deterministic guarantee: TranscriptionDelivery routes on
+                // plain raw `.paste` — customCommand stripped AND autoSendKey forced to `.none`.
+                // This is the deterministic guarantee: TranscriptionDelivery routes on
                 // request.output.outputMode, so forcing `.paste` here means deliverCustomCommand
-                // (the Mode's shell script) and deliverResponse (`.respond`) are NEVER reached.
+                // (the Mode's shell script) and deliverResponse (`.respond`) are NEVER reached;
+                // and dropping autoSendKey means the mode's auto-send Enter does NOT fire either.
+                // The skip toggle == "raw transcript, send nothing, do nothing else."
                 // We do it HERE — at the single place that feeds `outputForDelivery` — rather
                 // than depending only on the outputConfiguration closure's rewrite, so the
                 // bypass cannot be silently lost on the way to delivery.
@@ -225,7 +227,7 @@ class TranscriptionPipeline {
                     outputForThisDelivery = OutputRuntimeConfiguration(
                         mode: resolvedOutputConfiguration.mode,
                         outputMode: .paste,
-                        autoSendKey: resolvedOutputConfiguration.autoSendKey,
+                        autoSendKey: .none,
                         customCommand: nil
                     )
                     vippLog.info("pipeline: skip ON → output FORCED to raw .paste (was \(String(describing: resolvedOutputConfiguration.outputMode), privacy: .public))")
