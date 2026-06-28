@@ -154,6 +154,11 @@ class Recorder: NSObject, ObservableObject {
 
             startAudioMeterTimer()
             pauseMedia()
+            // Complementary to pauseMedia(): broadcast "recording started" so the external YouTube
+            // helper app can pause a playing YouTube tab in Chrome (which MediaRemote can't reach).
+            // Posted in the success branch only, so a failed start (which falls into catch →
+            // stopRecording) won't emit a started without a matching real recording.
+            RecordingActivityNotifier.postRecordingStarted()
         } catch {
             logger.error("Failed to start recording deviceID=\(deviceID, privacy: .public) file=\(url.lastPathComponent, privacy: .public) error=\(error, privacy: .public)")
             await stopRecording()
@@ -192,6 +197,14 @@ class Recorder: NSObject, ObservableObject {
             await mediaController.unmuteSystemAudio()
             await playbackController.resumeMedia()
         }
+
+        // Complementary to resumeMedia(): broadcast "recording stopped" so the external YouTube
+        // helper app can resume the tab it paused. Posted synchronously here (not inside the
+        // delayed audioRestorationTask) so the resume isn't subject to the audio-resumption delay.
+        // The helper only resumes a tab it actually paused, so a spurious stop (e.g. reset on
+        // launch) or a cancel is a safe no-op on the YouTube side. Cancel == stop at this layer.
+        RecordingActivityNotifier.postRecordingStopped()
+
         deviceManager.isRecordingActive = false
     }
 
