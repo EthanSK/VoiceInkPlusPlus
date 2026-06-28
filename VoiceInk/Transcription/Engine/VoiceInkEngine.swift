@@ -42,8 +42,12 @@ import os
 // the user spoke. Because transcription itself is serial FIFO, completion order already
 // EQUALS recording order — so the serial transcription queue gives FIFO delivery for
 // free with NO separate delivery reorder buffer required.
+// NOTE: RecorderStateProvider conformance is declared in VoiceInkEngine+Protocols.swift
+// (extension VoiceInkEngine: RecorderStateProvider {}). We intentionally do NOT repeat it
+// here — the engine already exposes `recordingState` + `partialTranscript` (the protocol
+// requirements) as @Published members below, so the extension's conformance is satisfied.
 @MainActor
-class VoiceInkEngine: NSObject, ObservableObject, RecorderStateProvider {
+class VoiceInkEngine: NSObject, ObservableObject {
 
     // ── Session collection (drives the UI stack) ──
     // Ordered oldest→newest (creation order). The base/active recording card renders from
