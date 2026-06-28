@@ -75,6 +75,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // Live partial of the ACTIVE recording session (only the recording session streams partials).
     @Published var partialTranscript: String = ""
 
+    // VIPP (skip-mode-processing feature): RecorderStateProvider now requires a settable
+    // `skipPostProcessing`. The REAL per-session flag lives on each RecordingSession (that's
+    // what the live recorder card binds to). The engine only conforms to RecorderStateProvider
+    // for the "assistant-only fallback card" (rendered after the producing session is gone),
+    // where a per-recording bypass is meaningless. So this is an inert stub: it satisfies the
+    // protocol but is never consumed by the pipeline (the pipeline reads session.skipPostProcessing
+    // directly). Kept settable + harmless so the generic view's toggle compiles on the fallback
+    // card without affecting any real recording.
+    var skipPostProcessing: Bool = false
+
     // ── Pipeline cancel-poisoning ──
     // Set of Transcription ids whose pipeline result must be DISCARDED (per-session cancel).
     // Keyed by RecordingSession.pipelineTranscriptionID so cancelling one session can never
@@ -531,9 +541,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
             triggerWordModeSelection: { [weak self] text in
                 self?.selectTriggerWordModeIfNeeded(for: text)
             },
-            enhancementConfiguration: { [weak self] in
-                guard let self,
-                      let enhancementService = self.enhancementService,
+            enhancementConfiguration: { [weak self, weak session] in
+                guard let self else { return nil }
+                // ── VIPP (skip-mode-processing feature) — BYPASS POINT #1: AI enhancement ──
+                // If THIS session is flagged one-shot raw, return nil so the pipeline's
+                // enhancement branch (which is gated on a non-nil config) is skipped
+                // entirely — no LLM round-trip, no rewrite. The raw transcript flows
+                // straight to delivery. The flag is read HERE, at pipeline-run time (after
+                // STOP), so toggling the button any time before this is honored.
+                if session?.skipPostProcessing == true {
+                    self.vippLog.info("pipeline: skipPostProcessing ON → AI enhancement BYPASSED (raw transcript)")
+                    return nil
+                }
+                guard let enhancementService = self.enhancementService,
                       let aiService = enhancementService.getAIService() else {
                     return nil
                 }
@@ -547,8 +567,26 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     session?.contextStore?.snapshot
                 }
             },
-            outputConfiguration: {
-                ModeRuntimeResolver.outputConfiguration()
+            outputConfiguration: { [weak session] in
+                let resolved = ModeRuntimeResolver.outputConfiguration()
+                // ── VIPP (skip-mode-processing feature) — BYPASS POINT #2: mode script ──
+                // If THIS session is flagged one-shot raw, rewrite the output config to a
+                // plain `.paste` with the customCommand stripped. That forces
+                // TranscriptionDelivery down its raw-paste branch instead of
+                // deliverCustomCommand (the Mode's script) or deliverResponse (`.respond`).
+                // We keep the same `mode` (for metadata/name) and `autoSendKey` (so the
+                // user's Enter-after-paste behaviour still works on the raw text), but drop
+                // the post-processing action. Result: the raw verbatim transcript is pasted
+                // with NO mode custom-command/script running.
+                if session?.skipPostProcessing == true {
+                    return OutputRuntimeConfiguration(
+                        mode: resolved.mode,
+                        outputMode: .paste,
+                        autoSendKey: resolved.autoSendKey,
+                        customCommand: nil
+                    )
+                }
+                return resolved
             },
             // Per-session UI state: drive this session's card spinner (.enhancing etc.).
             onStateChange: { [weak self, weak session] state in

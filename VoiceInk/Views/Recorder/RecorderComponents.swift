@@ -234,6 +234,83 @@ struct RecorderCancelButton: View {
     }
 }
 
+// MARK: - Skip Mode Processing (Raw Transcript) Toggle Button
+//
+// VIPP (skip-mode-processing feature): a one-shot TOGGLE that sits immediately to the
+// RIGHT of the red Cancel ("X") button on the recorder, available WHILE a recording is
+// live. When ENGAGED for the current recording, that single dictation skips the active
+// Mode's post-transcription processing — both the AI enhancement AND any custom-command/
+// script the Mode would run afterward — and pastes the RAW verbatim transcript instead.
+//
+// ── ONE-SHOT, PER-SESSION SEMANTICS ─────────────────────────────────────────────
+// The toggle reads/writes the OBSERVED RecordingSession's `skipPostProcessing` flag
+// (via the RecorderStateProvider protocol). It does NOT change the user's default
+// Mode/settings: it's scoped to THIS recording only, and the next recording starts a
+// fresh RecordingSession with the flag back at false. The user decides DURING the
+// recording that this one should be raw; the engine's pipeline reads the flag at
+// transcribe/deliver time, so toggling any time before that step is honored.
+//
+// ── STATE MODEL (clear ON/OFF) ──────────────────────────────────────────────────
+// The button has a deliberate at-a-glance on/off look so the user can see whether THIS
+// session will skip processing:
+//   • OFF (default) → subdued: faint white fill + dimmed "bolt.slash" glyph. Reads as
+//     "available but not engaged".
+//   • ON (engaged)  → active: amber-tinted fill + bordered + solid amber filled glyph
+//     ("bolt.slash.fill"). Reads unambiguously as "this recording WILL skip processing".
+// Amber (warningStrong / systemOrange) is intentionally distinct from the red Cancel
+// button beside it (they must not be confused) and from the neutral record control.
+//
+// ── SF SYMBOL CHOICE ────────────────────────────────────────────────────────────
+// VoiceInk Modes are branded "Power Mode" / ⚡, so `bolt.slash` = "disable the mode's
+// power for this one recording". We swap to the `.fill` variant when engaged to amplify
+// the on-state.
+//
+// ── BINDING ─────────────────────────────────────────────────────────────────────
+// Driven by a SwiftUI Binding<Bool> the parent view derives from its observed
+// stateProvider's skipPostProcessing (see Mini/NotchRecorderView). Because the card
+// observes its own RecordingSession (@ObservedObject), flipping the flag re-renders this
+// button immediately — same per-session-observation pattern the rest of the recorder uses.
+struct RecorderSkipProcessingButton: View {
+    @Binding var isEngaged: Bool
+
+    // Amber accent for the engaged state — matches the "power mode disabled" intent and is
+    // visually separate from the adjacent red Cancel button.
+    private let engagedAccent = AppTheme.Status.warningStrong
+
+    var body: some View {
+        Button(action: { isEngaged.toggle() }) {
+            ZStack {
+                Circle()
+                    // ON → amber-tinted fill; OFF → the same faint neutral fill the
+                    // close/processing controls use, so an un-engaged button is quiet.
+                    .fill(isEngaged ? engagedAccent.opacity(0.22) : Color.white.opacity(0.13))
+                    .overlay(
+                        Circle()
+                            .strokeBorder(
+                                isEngaged ? engagedAccent.opacity(0.85) : Color.white.opacity(0.18),
+                                lineWidth: 0.6
+                            )
+                    )
+
+                // Filled bolt.slash when engaged (loud), outline when not (subdued).
+                Image(systemName: isEngaged ? "bolt.slash.fill" : "bolt.slash")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(isEngaged ? engagedAccent : .white.opacity(0.55))
+            }
+            // Match the 21pt hit-target sizing of the record/cancel/close buttons so it
+            // lines up cleanly to the right of Cancel in both the mini bar and the notch.
+            .frame(width: 21, height: 21)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(isEngaged
+            ? "Skip mode processing for this recording is ON — raw transcript (tap to turn off)"
+            : "Skip mode processing for this recording (raw transcript)")
+        .accessibilityLabel(Text("Skip mode processing for this recording (raw transcript)"))
+        .accessibilityValue(Text(isEngaged ? "On" : "Off"))
+    }
+}
+
 // MARK: - Processing Indicator
 
 struct ProcessingIndicator: View {

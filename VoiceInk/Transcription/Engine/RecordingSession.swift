@@ -95,6 +95,32 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // streams partial transcripts from its realtime session).
     @Published var partialTranscript: String = ""
 
+    // ── VIPP (skip-mode-processing feature) — per-session ONE-SHOT bypass flag ──
+    //
+    // WHAT: when true, THIS recording's pipeline skips ALL of the active Mode's
+    // post-transcription processing and pastes the RAW verbatim transcript instead. Two
+    // things get bypassed (both at the engine's runPipeline closure resolution site):
+    //   1. AI ENHANCEMENT — the `enhancementConfiguration` closure returns nil, so the
+    //      pipeline's "enhance" branch is skipped entirely (no LLM round-trip, no rewrite).
+    //   2. The mode's CUSTOM COMMAND / SCRIPT (and `.respond` mode) — the
+    //      `outputConfiguration` closure is rewritten to a plain `.paste` config with
+    //      customCommand stripped, so TranscriptionDelivery takes the raw-paste branch
+    //      instead of deliverCustomCommand / deliverResponse.
+    //
+    // WHY ON RecordingSession (not a global setting): the bypass must be PER-SESSION and
+    // ONE-SHOT. The user decides DURING a given recording that this one should be raw; it
+    // must NOT alter their default Mode/settings, and the very next recording (a fresh
+    // RecordingSession, which initializes this back to false) behaves normally again.
+    // Putting it here means it travels with the exact capture it applies to — even with
+    // record-while-transcribing, where session A (raw) and session B (normal) can be in
+    // flight simultaneously, each carries its own flag and the pipeline reads the right one.
+    //
+    // WHEN IT'S READ: the engine's runPipeline resolves the enhancement/output closures at
+    // pipeline-run time (after STOP), so toggling the button any time BEFORE the pipeline's
+    // enhancement/delivery step is honored. @Published so the recorder card's toggle button
+    // re-renders its on/off (subdued vs amber) state the instant it flips.
+    @Published var skipPostProcessing: Bool = false
+
     // The recorded audio file for this session. Set at record-start, consumed by the pipeline.
     var audioURL: URL?
 

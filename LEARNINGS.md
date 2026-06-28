@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-28T15:55:13Z
+**Trigger:** Feature: skip-mode-processing one-shot toggle button next to Cancel
+**Symptom:** Needed a one-shot way to skip the active Mode's post-processing (AI enhancement + custom-command/script) for a SINGLE dictation and paste the raw transcript, without changing default settings
+**Root cause:** Feature, not a bug: post-processing is decided per-pipeline-run via the enhancementConfiguration + outputConfiguration closures resolved in VoiceInkEngine.runPipeline; there was no per-recording escape hatch
+**Fix:** Added @Published skipPostProcessing to RecordingSession (per-session, one-shot) + to RecorderStateProvider protocol (settable) + inert stub on VoiceInkEngine. New RecorderSkipProcessingButton (bolt.slash toggle, amber when engaged) placed right of RecorderCancelButton in Mini/NotchRecorderView, bound directly to observed session's flag. BYPASS at VoiceInkEngine.runPipeline closures: enhancementConfiguration returns nil + outputConfiguration rewritten to plain .paste (customCommand stripped, autoSendKey kept) when session.skipPostProcessing==true. Pipeline reads flag at run time so toggling during recording is honored.
+**Commit:** pending
+**Guard:** Single bypass point at the two closure-resolution sites in runPipeline (covers BOTH enhancement and script); raw text still flows through normal paste() + state transitions; thorough VIPP comments on per-session/one-shot semantics + the two numbered bypass points
+---
+
+---
 **Date:** 2026-06-28T01:18:00Z
 **Trigger:** Feature: pause YouTube on dictation start, resume on stop
 **Symptom:** YouTube video playing in Chrome did not pause when starting a VoiceInk++ dictation (PlaybackController/MediaRemote can't reliably reach a Chrome YouTube tab)
