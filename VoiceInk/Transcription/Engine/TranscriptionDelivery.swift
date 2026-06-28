@@ -53,12 +53,16 @@ final class TranscriptionDelivery {
             vippLog.info("deliver: skipPostProcessing ON → FORCING raw paste (bypassing custom-command/respond) outputModeWas=\(String(describing: request.output.outputMode), privacy: .public)")
             // The paste path consumes/clears the focus lock itself; nothing else to release.
             if let text = request.text {
-                // Force a plain `.paste` config (strip any customCommand, keep autoSendKey)
-                // so paste()'s autoSendKey handling still works on the raw text.
+                // Force a plain `.paste` config: strip the customCommand AND disable
+                // auto-send. The skip toggle means "raw transcript, do nothing else" —
+                // and "nothing else" includes the mode's auto-send Enter. If we kept
+                // request.output.autoSendKey here, a paste-mode (or custom-command-mode)
+                // configured to hit Return would STILL send after the raw paste, which is
+                // exactly what the user did NOT want. `.none` = paste the text, no Enter.
                 let rawOutput = OutputRuntimeConfiguration(
                     mode: request.output.mode,
                     outputMode: .paste,
-                    autoSendKey: request.output.autoSendKey,
+                    autoSendKey: .none,
                     customCommand: nil
                 )
                 await paste(text, output: rawOutput, actions: actions)

@@ -574,15 +574,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // plain `.paste` with the customCommand stripped. That forces
                 // TranscriptionDelivery down its raw-paste branch instead of
                 // deliverCustomCommand (the Mode's script) or deliverResponse (`.respond`).
-                // We keep the same `mode` (for metadata/name) and `autoSendKey` (so the
-                // user's Enter-after-paste behaviour still works on the raw text), but drop
-                // the post-processing action. Result: the raw verbatim transcript is pasted
-                // with NO mode custom-command/script running.
+                // We keep the same `mode` (for metadata/name) but drop BOTH the post-processing
+                // action AND the auto-send: autoSendKey is forced to `.none` so the mode's
+                // Enter-after-paste does NOT fire under skip. Result: the raw verbatim transcript
+                // is pasted with NO mode custom-command/script AND NO auto-send Enter.
                 if session?.skipPostProcessing == true {
                     return OutputRuntimeConfiguration(
                         mode: resolved.mode,
                         outputMode: .paste,
-                        autoSendKey: resolved.autoSendKey,
+                        autoSendKey: .none,
                         customCommand: nil
                     )
                 }
