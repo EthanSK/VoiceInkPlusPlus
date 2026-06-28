@@ -141,6 +141,17 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         return stateProvider.partialTranscript
     }
 
+    // VIPP (skip-mode-processing feature): Binding to the OBSERVED session's one-shot
+    // `skipPostProcessing` flag, used by the skip-processing toggle next to Cancel. See the
+    // mirror in MiniRecorderView for the full rationale (per-session, one-shot, re-renders
+    // live because stateProvider is the @ObservedObject RecordingSession).
+    private var skipPostProcessingBinding: Binding<Bool> {
+        Binding(
+            get: { stateProvider.skipPostProcessing },
+            set: { stateProvider.skipPostProcessing = $0 }
+        )
+    }
+
     // MARK: - Animation
 
     private let expandAnimation = Animation.spring(response: 0.42, dampingFraction: 0.80)
@@ -219,6 +230,13 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 // the notch pill's normal layout is unchanged.
                 if shouldShowCancelButton {
                     RecorderCancelButton(action: onCancelTapped)
+                        .transition(.opacity)
+
+                    // VIPP (skip-mode-processing feature): one-shot raw-transcript toggle to
+                    // the RIGHT of Cancel. Same visibility window as Cancel (engage DURING
+                    // recording / in-flight), bound to the observed session's flag. Mirrors
+                    // the mini panel exactly so behaviour is identical across recorder styles.
+                    RecorderSkipProcessingButton(isEngaged: skipPostProcessingBinding)
                         .transition(.opacity)
                 }
 
