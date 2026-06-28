@@ -114,6 +114,12 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                         Task { @MainActor in
                             await engine?.sendAssistantFollowUp(text)
                         }
+                    },
+                    // Per-card cancel for a specific background transcribing session.
+                    onCancelSession: { [weak engine] id in
+                        Task { @MainActor in
+                            await engine?.cancelSession(id: id)
+                        }
                     }
                 )
             }
@@ -145,6 +151,12 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                     onAssistantFollowUp: { [weak engine] text in
                         Task { @MainActor in
                             await engine?.sendAssistantFollowUp(text)
+                        }
+                    },
+                    // Per-card cancel for a specific background transcribing session.
+                    onCancelSession: { [weak engine] id in
+                        Task { @MainActor in
+                            await engine?.cancelSession(id: id)
                         }
                     }
                 )
@@ -197,38 +209,58 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                 vippLog.info("toggleRecorderPanel: .starting → cancelRecording")
                 await cancelRecording()
             case .transcribing, .enhancing:
-                // ───────────────────────────────────────────────────────────────
-                // FIX (2026-06-20, fork regression): "records → 'transcribing' for
-                // a blink → bar hides instantly → NOTHING pasted (proxy logs mixed
-                // 200s + 500 BrokenPipe)".
+                // ═══════════════════════════════════════════════════════════════
+                // MULTI-SESSION TRANSITION (2026-06-28, record-while-transcribing).
                 //
-                // ROOT CAUSE: the stop happens via toggleRecorderPanel (HYBRID key-up)
-                // which then AWAITS the whole batch pipeline INLINE (VoiceInkEngine
-                // .toggleRecord → runPipeline → urlSession.upload). That await frees the
-                // MainActor, so a stray record-shortcut event — key-repeat, a quick
-                // re-press to start the NEXT dictation, the hybrid key-up re-dispatch,
-                // or a modifier-combo interruption — re-enters toggleRecorderPanel while
-                // state == .transcribing and USED to fall straight into cancelRecording().
-                // That poisons the active pipeline id (requestRecordingCancellation),
-                // so the pipeline's post-transcribe shouldCancel() gate THROWS AWAY the
-                // already-returned 200 text and dismisses the bar; the in-flight upload
-                // (a child of the cancelled Task) is torn down → proxy sees BrokenPipe.
+                // OLD BEHAVIOUR (the 2026-06-20 guard, preserved below for history):
+                //   A toggle press while state == .transcribing/.enhancing was IGNORED.
+                //   That guard existed because the stop AWAITED the whole pipeline INLINE
+                //   on the MainActor; a stray re-entrant toggle during that await would
+                //   fall into cancelRecording(), poison the active pipeline id, and throw
+                //   away an already-returned 200 (the "transcribing blinks then nothing
+                //   pasted / BrokenPipe" regression). So we ignored re-entrant toggles to
+                //   protect the in-flight pipeline.
                 //
-                // FIX: a plain toggle press must NOT abort an in-flight transcription.
-                // Transcription is already committed — let it finish and paste. Explicit
-                // cancellation still works via the Esc / close-button path
-                // (handleDismissRecorderPanelNotification + onCloseTapped → cancelRecording),
-                // which is the ONLY intended canceller once transcription has begun.
-                // ───────────────────────────────────────────────────────────────
-                vippLog.info("toggleRecorderPanel: IGNORING re-entrant toggle during \(String(describing: engine.recordingState), privacy: .public) (guard — do NOT cancel in-flight transcription)")
-                return
+                // WHY THE GUARD IS NOW OBSOLETE:
+                //   Transcription no longer runs inline-awaited on the MainActor. STOP now
+                //   ENQUEUES the pipeline on the engine's SERIAL transcription queue (a
+                //   detached Task chain) and returns immediately. The MainActor is NOT held
+                //   during transcription, so the re-entrancy hazard that motivated the guard
+                //   is GONE. A toggle press during a background transcription is SAFE.
+                //
+                // NEW BEHAVIOUR:
+                //   Crucially, this branch is only reached if engine.recordingState is
+                //   .transcribing/.enhancing — and in the new engine the DERIVED
+                //   recordingState reflects the ACTIVE recording session only, falling back
+                //   to .idle when nothing is recording. So once a session stops and goes to
+                //   the background, recordingState reads .idle and a toggle takes the .idle
+                //   branch below to START A NEW SESSION (the whole point of the feature).
+                //   This .transcribing/.enhancing branch therefore now only fires in the
+                //   narrow window where a session's OWN live state is transcribing AND it's
+                //   still the active recording session (effectively never, post-stop). We
+                //   handle it by STARTING A NEW SESSION rather than ignoring — record-while-
+                //   transcribing is explicitly desired and now race-free.
+                // ═══════════════════════════════════════════════════════════════
+                vippLog.info("toggleRecorderPanel: toggle during \(String(describing: engine.recordingState), privacy: .public) → START NEW SESSION (record-while-transcribing; serial-queue makes this safe)")
+                SoundManager.shared.playStartSound()
+                await engine.toggleRecord(modeId: modeId)
             case .idle:
+                // .idle now also covers "a previous session is transcribing in the
+                // background but none is actively recording" (derived state falls back to
+                // .idle so the record shortcut stays usable). If there are in-flight
+                // sessions OR the user is starting fresh, a toggle here STARTS a new
+                // recording — UNLESS the assistant is awaiting a follow-up, which takes
+                // precedence as before.
                 if engine.assistantSession.canSendFollowUp {
                     SoundManager.shared.playStartSound()
                     await engine.toggleRecord(
                         modeId: modeId,
                         isAssistantFollowUp: true
                     )
+                } else if !engine.sessions.isEmpty {
+                    // Background transcription(s) in flight → start ANOTHER recording.
+                    SoundManager.shared.playStartSound()
+                    await engine.toggleRecord(modeId: modeId)
                 } else {
                     await dismissRecorderPanel()
                 }
@@ -245,12 +277,34 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
     func dismissRecorderPanel() async {
         guard let engine = engine else { return }
 
+        // ── MULTI-SESSION VISIBILITY GUARD (2026-06-28) ──
+        // The pipeline + delivery paths call dismiss when an individual job finishes. In the
+        // multi-session world the panel must STAY VISIBLE while ANY session is still in flight
+        // (recording or transcribing) OR the assistant is showing a response — otherwise a
+        // finishing background job would yank the bar out from under a still-active recording.
+        // We only actually hide when there's genuinely nothing left to show.
+        let hasSessions = !engine.sessions.isEmpty
+        let assistantVisible = engine.assistantSession.isVisible
+        if hasSessions || assistantVisible {
+            vippLog.info("dismissRecorderPanel: SUPPRESSED — sessions=\(engine.sessions.count, privacy: .public) assistantVisible=\(assistantVisible, privacy: .public) (keep bar visible)")
+            return
+        }
+
         // VIPPDebug: this is the recorder-bar HIDE site. Logging state here tells us
-        // WHY the bar vanished — if state is .transcribing/.enhancing at hide time,
-        // a transcription was killed mid-flight (the bug); if .idle, it's a normal
-        // post-delivery dismiss.
+        // WHY the bar vanished. With the guard above, by here there are no sessions and
+        // no assistant, so this is a clean post-delivery dismiss.
         vippLog.info("dismissRecorderPanel: HIDE bar (state=\(String(describing: engine.recordingState), privacy: .public))")
 
+        hideRecorderPanel()
+        isRecorderPanelVisible = false
+        engine.assistantSession.reset()
+    }
+
+    // Force-hide the panel regardless of in-flight sessions. Used by the explicit
+    // cancel/reset paths which have already torn the sessions down (or want to).
+    private func forceDismissRecorderPanel() async {
+        guard let engine = engine else { return }
+        vippLog.info("forceDismissRecorderPanel: HIDE bar unconditionally (state=\(String(describing: engine.recordingState), privacy: .public))")
         hideRecorderPanel()
         isRecorderPanelVisible = false
         engine.assistantSession.reset()
@@ -260,9 +314,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         guard let engine = engine else { return }
         logger.notice("Resetting recording state on launch")
         await engine.resetRecordingSession()
-        hideRecorderPanel()
-        isRecorderPanelVisible = false
-        engine.assistantSession.reset()
+        // resetRecordingSession() empties `sessions`, so the guarded dismiss would hide
+        // anyway, but force-hide to be unambiguous on launch.
+        await forceDismissRecorderPanel()
     }
 
     func cancelRecording() async {

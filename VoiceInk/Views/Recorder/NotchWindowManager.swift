@@ -17,18 +17,24 @@ class NotchWindowManager {
         // onCancelTapped: fired by the red "X" → discard the recording/transcription
         // (no paste) and resume paused media. Routed to RecorderUIManager.cancelRecording().
         onCancelTapped: @escaping () -> Void,
-        onAssistantFollowUp: @escaping (String) -> Void
+        onAssistantFollowUp: @escaping (String) -> Void,
+        // onCancelSession: per-card cancel for a SPECIFIC background transcribing session
+        // (record-while-transcribing stack). Routed to engine.cancelSession(id:).
+        onCancelSession: @escaping (UUID) -> Void
     ) {
         self.makeView = {
             AnyView(
-                NotchRecorderView(
-                    stateProvider: engine,
+                // Host the STACK container: the active session is the notch pill, background
+                // transcribing sessions render as chips stacked beneath it.
+                NotchRecorderStackView(
+                    engine: engine,
                     recorder: recorder,
                     assistantSession: assistantSession,
                     onRecordButtonTapped: onRecordButtonTapped,
                     onCloseTapped: onCloseTapped,
                     onCancelTapped: onCancelTapped,
-                    onAssistantFollowUp: onAssistantFollowUp
+                    onAssistantFollowUp: onAssistantFollowUp,
+                    onCancelSession: onCancelSession
                 )
             )
         }
