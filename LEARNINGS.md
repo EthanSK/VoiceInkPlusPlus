@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-28T01:18:00Z
+**Trigger:** Feature: pause YouTube on dictation start, resume on stop
+**Symptom:** YouTube video playing in Chrome did not pause when starting a VoiceInk++ dictation (PlaybackController/MediaRemote can't reliably reach a Chrome YouTube tab)
+**Root cause:** PlaybackController only covers Spotify/Apple Music/MediaRemote now-playing apps; Chrome YouTube tabs are not reachable that way
+**Fix:** Added VoiceInk/Notifications/RecordingActivityNotifier.swift posting DistributedNotificationCenter names com.ethansk.voiceink.recordingStarted/Stopped; posted from Recorder.swift at the same sites as pauseMedia() (success branch of startRecording) and resumeMedia() (in stopRecording). The youtube-spotify-media-key menu bar app observes these and pause/resumes the playing YouTube tab via its Chrome extension. Complementary to PlaybackController, not a replacement.
+**Commit:** pending
+**Guard:** Hooks at the single Recorder start/stop chokepoint so multi-session (record-while-transcribing) and cancel all funnel correctly; thorough comments on the cross-app DistributedNotificationCenter contract + 'cancel==stop at recorder layer'. Helper app guards resume with 'only resume what we paused'.
+---
+
+---
 **Date:** 2026-06-28T00:00:00Z
 **Trigger:** Feature: record-while-transcribing (decoupled capture from transcription)
 **Symptom:** Could not start a NEW dictation while the previous one was still transcribing; pressing record during .transcribing was ignored.
