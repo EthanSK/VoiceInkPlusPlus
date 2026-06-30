@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-30T21:17:30Z
+**Trigger:** Telegram/voice task 2026-06-30
+**Symptom:** ChatGPT floating companion/quick-access window does not activate VoiceInk++ per-app mode (no auto-Enter) and menu-bar Mode indicator stays wrong; works fine from ChatGPT main window
+**Root cause:** ChatGPT floating window is a .nonactivatingPanel — takes keyboard focus WITHOUT changing NSWorkspace.frontmostApplication or firing didActivateApplicationNotification. ActiveWindowService resolved the current app for per-app mode ONLY from frontmostApplication (beginApplyingConfiguration, ActiveWindowService.swift:155) + that notification (observer line 45), so it never saw ChatGPT (com.openai.chat) while the panel was focused.
+**Fix:** Added accessibilityFocusedApplication() to ActiveWindowService: system-wide AX focused element (AXUIElementCreateSystemWide -> kAXFocusedUIElementAttribute) -> AXUIElementGetPid -> NSRunningApplication. beginApplyingConfiguration now prefers AX-focused app, falls back to frontmostApplication when AX untrusted / no element / focus is VoiceInk's own non-activating recorder panel. AX focus DOES follow into non-activating panels; safe/additive since for ordinary windows AX-focused app == frontmost app. Reuses pattern from FocusLockService.captureCandidate.
+**Commit:** 0b81de1
+**Guard:** Documented as a preserved fork patch in UPDATING.md so it survives upstream merges; thorough inline comments at the fix site explaining the non-activating-panel problem
+---
+
+---
 **Date:** 2026-06-30T19:43:04Z
 **Trigger:** Ethan task 2026-06-30: idle-miss record hotkey bug
 **Symptom:** After Mac idle ~30-60 min, first few presses of the global record hotkey do nothing (must press ~4x) and the start of speech is clipped (no pre-roll buffer).
