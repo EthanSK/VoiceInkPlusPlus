@@ -8,12 +8,13 @@ final class RecorderPanelShortcutManager: ObservableObject {
     private var visibilityTask: Task<Void, Never>?
     private var shortcutChangeObserver: NSObjectProtocol?
     private let visibleRecorderMonitor = ShortcutMonitor()
-    
-    // Double-tap Escape handling
-    private var firstEscapePressTime: Date? = nil
-    private let escapeDoublePressThreshold: TimeInterval = 1.5
-    private var escapeTimeoutTask: Task<Void, Never>?
-    
+
+    // NOTE (2026-07-11): the old two-stage "double-tap Escape" confirm machinery
+    // (firstEscapePressTime / escapeDoublePressThreshold / escapeTimeoutTask +
+    // resetEscapeState) was REMOVED here. See handleEscapeShortcut() for the full
+    // why. Single Escape now cancels immediately, so there is no confirm window to
+    // track and nothing to reset.
+
     init(recorderUIManager: RecorderUIManager) {
         self.recorderUIManager = recorderUIManager
         setupShortcutChangeObserver()
@@ -46,7 +47,6 @@ final class RecorderPanelShortcutManager: ObservableObject {
                     refreshVisibleShortcuts()
                 } else {
                     visibleRecorderMonitor.stop()
-                    resetEscapeState()
                 }
             }
         }
@@ -56,16 +56,9 @@ final class RecorderPanelShortcutManager: ObservableObject {
         !ModeManager.shared.enabledConfigurations.isEmpty
     }
 
-    private func resetEscapeState() {
-        firstEscapePressTime = nil
-        escapeTimeoutTask?.cancel()
-        escapeTimeoutTask = nil
-    }
-    
     private func refreshVisibleShortcuts() {
         guard recorderUIManager.isRecorderPanelVisible else {
             visibleRecorderMonitor.stop()
-            resetEscapeState()
             return
         }
 
@@ -111,29 +104,47 @@ final class RecorderPanelShortcutManager: ObservableObject {
         }
     }
 
+    // Single-press Escape cancels the active recording IMMEDIATELY.
+    //
+    // WHY THIS CHANGED (2026-07-11, Ethan): upstream shipped a two-stage
+    // "double-tap Escape" confirm. The FIRST Escape only popped a
+    // "Press Esc again to cancel" HUD — an AppNotificationView whose bottom edge
+    // is a progress bar that shrinks from full width to zero over 1.5s (that
+    // shrinking bar is the "slider/timer going down" Ethan reported). Only a
+    // SECOND Escape within 1.5s actually cancelled. Two problems:
+    //   1. It took a double-hit to cancel at all.
+    //   2. WORSE — after the second Escape confirmed, cancelRecording() tore down
+    //      the recorder panel but did NOT dismiss that confirm HUD. Its dismiss
+    //      timer (NotificationManager.dismissTimer, also 1.5s) kept running, so
+    //      the countdown "slider" lingered on screen for the remainder of its
+    //      1.5s AFTER the cancel had already happened — i.e. "double-hit Escape
+    //      works, but the slider/timer going down doesn't stop / doesn't
+    //      disappear instantly".
+    //
+    // FIX: a single Escape now (1) cancels/stops the recording, (2) tears down the
+    // recorder overlay, and (3) leaves NO lingering confirm HUD — because we no
+    // longer show one. cancelRecording() → engine.cancelRecording() (discard, no
+    // paste, resume paused media) → dismissRecorderPanel() (orderOut, instant).
+    //
+    // IDEMPOTENT: a second Escape is a harmless no-op. handleRecorderPanelShortcut
+    // already guards on `recorderUIManager.isRecorderPanelVisible`, which is false
+    // once the first Escape dismissed the panel, so the repeat press does nothing.
+    //
+    // The deliberate, low-accident-risk cancel affordance (the red X button in the
+    // recorder panels) is unchanged; Escape is just the fast keyboard path.
     private func handleEscapeShortcut() async {
+        // If the user has bound an explicit "cancel recorder" shortcut, that one
+        // owns cancellation (handled in the .cancelRecorder case) and Escape here
+        // is inert — preserve that upstream behaviour.
         guard ShortcutStore.shortcut(for: .cancelRecorder) == nil else { return }
 
-        let now = Date()
-        if let firstTime = firstEscapePressTime,
-           now.timeIntervalSince(firstTime) <= escapeDoublePressThreshold {
-            resetEscapeState()
-            await recorderUIManager.cancelRecording()
-            return
-        }
+        // Belt-and-braces: proactively dismiss any notification HUD that might be
+        // on screen so nothing keeps counting down after we cancel. During an
+        // active recording the only HUD in play is recorder-related, so this is
+        // safe and guarantees "no lingering slider" even across build upgrades.
+        NotificationManager.shared.dismissNotification()
 
-        firstEscapePressTime = now
-        NotificationManager.shared.showNotification(
-            title: String(localized: "Press Esc again to cancel"),
-            type: .info,
-            duration: escapeDoublePressThreshold
-        )
-        escapeTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64((self?.escapeDoublePressThreshold ?? 1.5) * 1_000_000_000))
-            await MainActor.run {
-                self?.firstEscapePressTime = nil
-            }
-        }
+        await recorderUIManager.cancelRecording()
     }
 
     private func handleModeSelectionShortcut(index: Int) {
@@ -156,7 +167,6 @@ final class RecorderPanelShortcutManager: ObservableObject {
         visibilityTask?.cancel()
         MainActor.assumeIsolated {
             visibleRecorderMonitor.stop()
-            resetEscapeState()
         }
     }
 
