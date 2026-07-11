@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-11T19:29:32Z
+**Trigger:** Ethan 2026-07-11: 'double-hit Escape works but the slider/timer going down doesnt stop / doesnt disappear instantly'
+**Symptom:** Cancelling a dictation via Escape: double-hitting Escape cancels the recording, but the recorder overlay's countdown 'slider/timer' keeps going down / lingers on screen instead of disappearing instantly. Also required a double-tap to cancel at all.
+**Root cause:** RecorderPanelShortcutManager.handleEscapeShortcut() implemented an upstream two-stage double-tap-Escape confirm: the FIRST Esc only showed a 'Press Esc again to cancel' HUD (AppNotificationView, whose bottom edge is a progress-bar Rectangle that shrinks full-width->0 over the 1.5s duration = the 'slider/timer going down'); only a SECOND Esc within 1.5s called cancelRecording(). The lingering: on the confirming second Esc, cancelRecording() tore down the recorder panel but NEVER dismissed the confirm HUD — NotificationManager's own 1.5s dismissTimer kept running, so the countdown slider stayed on screen AFTER the cancel already happened.
+**Fix:** Rewrote handleEscapeShortcut() so a SINGLE Escape immediately calls recorderUIManager.cancelRecording() (engine.cancelRecording -> discard/no-paste/resume-media -> dismissRecorderPanel orderOut, instant) plus a belt-and-braces NotificationManager.shared.dismissNotification() so no HUD countdown lingers. Removed the dead double-tap state (firstEscapePressTime/escapeDoublePressThreshold/escapeTimeoutTask/resetEscapeState). Idempotent: 2nd Esc is a no-op via the isRecorderPanelVisible guard in handleRecorderPanelShortcut. An explicit user-bound .cancelRecorder shortcut still takes precedence; the red X cancel button unchanged.
+**Commit:** bb23665
+**Guard:** isRecorderPanelVisible guard makes repeat Esc idempotent; reuses the existing cancelRecording teardown (no new path); thorough WHY comment at the fix site naming the upstream double-tap confirm + lingering-HUD bug so it doesn't regress on future upstream merges
+---
+
+---
 **Date:** 2026-06-30T21:17:30Z
 **Trigger:** Telegram/voice task 2026-06-30
 **Symptom:** ChatGPT floating companion/quick-access window does not activate VoiceInk++ per-app mode (no auto-Enter) and menu-bar Mode indicator stays wrong; works fine from ChatGPT main window
