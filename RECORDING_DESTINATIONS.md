@@ -14,7 +14,8 @@ transcript belongs.
 
 When microphone recording successfully begins, VoiceInk++ briefly shows the app and input it saved,
 for example: **Recording start input: Codex — text area**. This is the destination that the Next Track
-stop action will use.
+stop action will use. If no editable field actually has focus, it instead warns: **Recording start
+input unavailable — focus a text input before recording**.
 
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
@@ -56,6 +57,12 @@ recording.
 Exact-input routing uses the macOS Accessibility API, which VoiceInk++ already needs for pasting.
 The focused Accessibility element is stored on the individual recording session, so overlapping
 background transcriptions cannot exchange destinations.
+
+Only editable Accessibility roles such as text areas, text fields, search fields, and combo boxes are
+accepted as destinations. Some apps briefly expose a container such as `AXGroup` while a modifier
+shortcut is being handled, so VoiceInk++ retries an invalid initial capture once when microphone
+recording becomes active. It never saves a generic container and later guesses which descendant the
+user intended.
 
 Before pasting across apps, VoiceInk++:
 

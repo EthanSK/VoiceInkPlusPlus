@@ -140,7 +140,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
 
     // The target is captured before recording starts and belongs to this exact session so
     // another recording can safely begin while this one is still transcribing.
-    let recordingStartFocusedInput: FocusLockService.Target?
+    var recordingStartFocusedInput: FocusLockService.Target?
     var pasteTarget: RecordingPasteTarget
 
     // ── Per-session bits migrated OFF the old engine singletons ──

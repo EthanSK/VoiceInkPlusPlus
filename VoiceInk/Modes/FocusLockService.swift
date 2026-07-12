@@ -55,7 +55,14 @@ final class FocusLockService: ObservableObject {
             return nil
         }
 
-        logger.info("Captured focused input pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(self.stringAttribute(kAXRoleAttribute, from: element) ?? "nil", privacy: .public) subrole=\(self.stringAttribute(kAXSubroleAttribute, from: element) ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
+        let role = stringAttribute(kAXRoleAttribute, from: element)
+        let subrole = stringAttribute(kAXSubroleAttribute, from: element)
+        guard isEditableInput(role: role, subrole: subrole) else {
+            logger.error("Focused input capture rejected non-editable element pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(role ?? "nil", privacy: .public) subrole=\(subrole ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
+            return nil
+        }
+
+        logger.info("Captured editable input pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(role ?? "nil", privacy: .public) subrole=\(subrole ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
         return Target(
             element: element,
             app: app,
@@ -67,9 +74,9 @@ final class FocusLockService: ObservableObject {
     func showRecordingStartInput(_ target: Target?) {
         guard let target else {
             NotificationManager.shared.showNotification(
-                title: String(localized: "Recording start input: unavailable"),
+                title: String(localized: "Recording start input unavailable — focus a text input before recording"),
                 type: .warning,
-                duration: 1.5
+                duration: 2.5
             )
             return
         }
@@ -227,6 +234,19 @@ final class FocusLockService: ObservableObject {
             return role.replacingOccurrences(of: "AX", with: "")
         case .none:
             return String(localized: "focused input")
+        }
+    }
+
+    private func isEditableInput(role: String?, subrole: String?) -> Bool {
+        if subrole == kAXSearchFieldSubrole {
+            return true
+        }
+
+        switch role {
+        case kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole:
+            return true
+        case .some(_), .none:
+            return false
         }
     }
 

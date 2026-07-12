@@ -400,7 +400,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.liveRecordingState = .recording
             session.phase = .recording
             recomputeDerivedState()
-            FocusLockService.shared.showRecordingStartInput(recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
+            if session.recordingStartFocusedInput == nil {
+                session.recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput() // A modifier shortcut can briefly expose a transient AXGroup; retry only when the first capture was not a real text input and the microphone has actually entered recording state.
+            }
+            FocusLockService.shared.showRecordingStartInput(session.recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
 
             await activeModeTask.value
 
