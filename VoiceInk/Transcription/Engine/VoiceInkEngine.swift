@@ -48,6 +48,12 @@ import os
 // requirements) as @Published members below, so the extension's conformance is satisfied.
 @MainActor
 class VoiceInkEngine: NSObject, ObservableObject {
+    enum PendingPasteRetargetResult {
+        case noPendingTranscription
+        case noFocusedInput
+        case retargeted
+    }
+
 
     // ── Session collection (drives the UI stack) ──
     // Ordered oldest→newest (creation order). The base/active recording card renders from
@@ -191,6 +197,36 @@ class VoiceInkEngine: NSObject, ObservableObject {
         sessions.last { $0.phase == .transcribing || $0.phase == .delivering }
     }
 
+    func retargetMostRecentPendingTranscriptionToFocusedInput() -> PendingPasteRetargetResult {
+        guard let session = sessions.last(where: {
+            ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteRetargeting
+        }) else {
+            vippLog.info("paste retarget: no pending transcription still accepts destination changes")
+            return .noPendingTranscription
+        }
+
+        guard let focusedInput = FocusLockService.shared.captureFocusedInput() else {
+            FocusLockService.shared.showPendingPasteInput(nil)
+            vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) kept existing destination because no editable input is focused")
+            return .noFocusedInput
+        }
+
+        let didRetarget = session.retargetPaste(
+            to: RecordingPasteTarget(
+                destination: .focusedDuringTranscription,
+                focusedInput: focusedInput
+            )
+        )
+        guard didRetarget else {
+            vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) reached delivery before its destination could change")
+            return .noPendingTranscription
+        }
+
+        FocusLockService.shared.showPendingPasteInput(focusedInput)
+        vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
+        return .retargeted
+    }
+
     /// Recompute the DERIVED compat `recordingState` + `partialTranscript` from the active
     /// recording session. See the big comment on `recordingState` for why we deliberately
     /// fall back to `.idle` (NOT a transcribing session's state) when nothing is recording.
@@ -254,6 +290,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     destination: .focusedAtStop,
                     focusedInput: FocusLockService.shared.captureFocusedInput()
                 )
+            case .focusedDuringTranscription:
+                preconditionFailure("A transcription-time target can only be selected after recording has stopped")
             }
 
             vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
@@ -603,7 +641,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     session?.contextStore?.snapshot
                 }
             },
-            pasteTarget: session.pasteTarget,
+            pasteTarget: { [weak session] in
+                guard let session else {
+                    preconditionFailure("The recording session must exist until its delivery target is resolved")
+                }
+                return session.resolvePasteTargetForDelivery()
+            },
             outputConfiguration: { [weak session] in
                 let resolved = ModeRuntimeResolver.outputConfiguration()
                 // ── VIPP (skip-mode-processing feature) — BYPASS POINT #2: mode script ──

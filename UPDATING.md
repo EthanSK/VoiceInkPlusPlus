@@ -32,7 +32,9 @@ The fork's important behavioral patches are:
   intercepted only while actively recording and stops into the exact Accessibility input captured
   at recording start; outside recording it continues to control media normally. Each
   `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
-  background transcriptions from mixing destinations. Delivery waits for cross-app activation,
+  background transcriptions from mixing destinations. While the newest transcription is still
+  loading, Next Track can replace its target with the input focused at that moment; the pipeline
+  resolves the session's target only immediately before delivery. Delivery waits for cross-app activation,
   restores and verifies the exact element, and copies to the clipboard rather than pasting into an
   unintended field if verification fails. See [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.

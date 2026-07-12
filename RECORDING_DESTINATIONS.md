@@ -10,7 +10,8 @@ transcript belongs.
 | --- | --- |
 | Normal configured recording shortcut | The exact text input focused when you stop recording |
 | macOS **Next Track** media key | The exact text input focused when you started recording |
-| **Next Track** while VoiceInk++ is not recording | Passed through normally to Spotify, Music, and other media apps |
+| **Next Track** while the newest transcription is still loading | Replace that pending transcription's destination with the text input focused now |
+| **Next Track** with no recording or retargetable transcription | Passed through normally to Spotify, Music, and other media apps |
 
 When microphone recording successfully begins, VoiceInk++ briefly shows the app and input it saved,
 for example: **Recording start input: Codex — text area**. This is the destination that the Next Track
@@ -39,8 +40,21 @@ transcription phase that starts after recording stops.
 
 ### Keep normal media controls outside recording
 
-1. With VoiceInk++ idle, press **Next Track**.
+1. With VoiceInk++ idle and no transcription still loading, press **Next Track**.
 2. VoiceInk++ does not consume the key, so the current media app advances normally.
+
+### Change your mind while transcription is loading
+
+1. Stop a recording normally and let transcription begin with its stop-time destination saved.
+2. While it is still transcribing or enhancing, focus a different text input.
+3. Press **Next Track**.
+4. VoiceInk++ shows **Pending transcription target: [app] — [input]** and replaces the destination
+   for the newest not-yet-delivered transcription.
+
+The change is accepted until delivery resolves its target immediately before paste. After that
+cutoff, or when no pending transcription exists, Next Track passes through to the media system. If
+no editable text input is focused, VoiceInk++ consumes the intentional retarget press, keeps the
+existing destination, and asks you to focus an input and try again.
 
 ## Mouse setup
 
@@ -49,8 +63,16 @@ event through its existing vendor software, such as Logitech G HUB. No VoiceInk-
 macro and no Karabiner configuration are required.
 
 Keep the ordinary mouse button assigned to the existing VoiceInk++ recording shortcut. Assign the
-alternative stop button to **Next Track**. VoiceInk++ only intercepts that button while it is actively
-recording.
+alternative button to **Next Track**. VoiceInk++ intercepts that button while recording or while a
+pending transcription can still be retargeted.
+
+## How Next Track is consumed
+
+VoiceInk++ installs a macOS `CGEvent` tap at the head of the session event stream and watches the
+system-defined `NX_KEYTYPE_NEXT` event. For a special VoiceInk++ action, its event-tap callback
+returns no event for both key-down and key-up, so Spotify and other media apps never receive that
+press. When no special action is available, the callback returns the original event unchanged and
+macOS routes it to the normal media destination. The behavior is global and is not Spotify-specific.
 
 ## Accessibility and safe failure behavior
 
@@ -89,6 +111,7 @@ The important destination values are:
 
 - `focusedAtStop` — normal recording shortcut.
 - `recordingStart` — Next Track stop.
+- `focusedDuringTranscription` — Next Track retarget while a result is still loading.
 
 ## Implementation map
 

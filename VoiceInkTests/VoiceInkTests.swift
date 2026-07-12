@@ -6,12 +6,22 @@
 //
 
 import Testing
-@testable import VoiceInk
+@testable import VoiceInkPlusPlus
 
 struct VoiceInkTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+    @MainActor
+    @Test func pendingPasteTargetCanChangeUntilDeliveryResolvesIt() {
+        let session = RecordingSession()
+        let retargeted = RecordingPasteTarget(
+            destination: .focusedDuringTranscription,
+            focusedInput: nil
+        )
+
+        #expect(session.retargetPaste(to: retargeted))
+        #expect(session.resolvePasteTargetForDelivery().destination == .focusedDuringTranscription)
+        #expect(!session.retargetPaste(to: RecordingPasteTarget(destination: .recordingStart, focusedInput: nil)))
+        #expect(session.pasteTarget.destination == .focusedDuringTranscription)
     }
 
 }

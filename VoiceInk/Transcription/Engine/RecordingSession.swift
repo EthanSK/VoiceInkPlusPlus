@@ -5,6 +5,7 @@ import os
 enum RecordingPasteDestination: Equatable {
     case recordingStart
     case focusedAtStop
+    case focusedDuringTranscription
 }
 
 struct RecordingPasteTarget {
@@ -142,6 +143,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // another recording can safely begin while this one is still transcribing.
     var recordingStartFocusedInput: FocusLockService.Target?
     var pasteTarget: RecordingPasteTarget
+    private(set) var acceptsPasteRetargeting = true
 
     // ── Per-session bits migrated OFF the old engine singletons ──
     // Previously these were single-flight members on VoiceInkEngine; now each session
@@ -211,6 +213,17 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // waveform. We expose the fine-grained liveRecordingState under that protocol name.
     var recordingState: RecordingState {
         liveRecordingState
+    }
+
+    func retargetPaste(to target: RecordingPasteTarget) -> Bool {
+        guard acceptsPasteRetargeting else { return false }
+        pasteTarget = target
+        return true
+    }
+
+    func resolvePasteTargetForDelivery() -> RecordingPasteTarget {
+        acceptsPasteRetargeting = false // Delivery resolves exactly once; a later media-key press must pass through rather than falsely claiming it changed an already-issued paste.
+        return pasteTarget
     }
 
     // Cancel + tear down this session's background context capture. Safe to call multiple times.

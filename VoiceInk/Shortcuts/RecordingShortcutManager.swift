@@ -331,20 +331,30 @@ class RecordingShortcutManager: ObservableObject {
             },
             onNextTrackKeyDown: { [weak self] in
                 MainActor.assumeIsolated {
-                    guard let self,
-                          self.engine.recordingState == .recording,
-                          self.recorderUIManager.isRecorderPanelVisible else {
-                        self?.logger.info("Next Track key-down passed through recordingState=\(String(describing: self?.engine.recordingState), privacy: .public) recorderVisible=\(self?.recorderUIManager.isRecorderPanelVisible ?? false, privacy: .public)")
-                        return false
+                    guard let self else { return false }
+
+                    if self.engine.recordingState == .recording,
+                       self.recorderUIManager.isRecorderPanelVisible {
+                        self.logger.info("Next Track key-down consumed recordingState=recording route=recordingStart")
+                        Task { @MainActor [weak self] in
+                            await self?.recorderUIManager.toggleRecorderPanel(
+                                stopPasteDestination: .recordingStart
+                            )
+                        }
+                        return true // Consume the entire press so the recording-start stop never also advances media.
                     }
 
-                    self.logger.info("Next Track key-down consumed recordingState=recording route=recordingStart")
-                    Task { @MainActor [weak self] in
-                        await self?.recorderUIManager.toggleRecorderPanel(
-                            stopPasteDestination: .recordingStart
-                        )
+                    switch self.engine.retargetMostRecentPendingTranscriptionToFocusedInput() {
+                    case .retargeted:
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=retargeted")
+                        return true
+                    case .noFocusedInput:
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
+                        return true
+                    case .noPendingTranscription:
+                        self.logger.info("Next Track key-down passed through because no recording or retargetable transcription is active")
+                        return false
                     }
-                    return true // Consume Next Track only for this stop press so Spotify is unchanged at every other time.
                 }
             }
         )

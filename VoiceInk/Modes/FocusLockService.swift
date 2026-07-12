@@ -90,6 +90,25 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    func showPendingPasteInput(_ target: Target?) {
+        guard let target else {
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Paste target unchanged — focus a text input and press Next Track again"),
+                type: .warning,
+                duration: 2.5
+            )
+            return
+        }
+
+        let appName = target.app.localizedName ?? target.bundleIdentifier ?? String(localized: "Unknown app")
+        let inputName = inputDisplayName(for: target.element)
+        NotificationManager.shared.showNotification(
+            title: "Pending transcription target: \(appName) — \(inputName)",
+            type: .info,
+            duration: 2
+        )
+    }
+
     func restoreFocus(to target: Target) async -> Bool {
         guard AXIsProcessTrusted() else {
             logger.error("Focused input restore failed because Accessibility is not trusted")
