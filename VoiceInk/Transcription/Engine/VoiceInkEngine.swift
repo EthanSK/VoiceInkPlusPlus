@@ -224,7 +224,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
     //     started session (re-press during the brief start window).
     //   • Otherwise (idle OR only background transcriptions running) → START a fresh
     //     active session.
-    func toggleRecord(modeId: UUID? = nil, isAssistantFollowUp: Bool = false) async {
+    func toggleRecord(
+        modeId: UUID? = nil,
+        isAssistantFollowUp: Bool = false,
+        stopPasteDestination: RecordingPasteDestination = .focusedAtStop
+    ) async {
         // Mid-start re-press: the active session is still starting → cancel it.
         if let active = activeRecordingSession, active.liveRecordingState == .starting {
             await cancelSession(active)
@@ -239,7 +243,20 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // that inline await is exactly what blocked the next start in the old engine.
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
-            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing (shouldCancel=\(active.shouldCancel, privacy: .public))")
+            switch stopPasteDestination {
+            case .recordingStart:
+                active.pasteTarget = RecordingPasteTarget(
+                    destination: .recordingStart,
+                    focusedInput: active.recordingStartFocusedInput
+                )
+            case .focusedAtStop:
+                active.pasteTarget = RecordingPasteTarget(
+                    destination: .focusedAtStop,
+                    focusedInput: FocusLockService.shared.captureFocusedInput()
+                )
+            }
+
+            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
@@ -299,10 +316,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 assistantSession.reset()
             }
 
+            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput() // Capture before any asynchronous recording setup so later focus changes cannot replace the intended input.
+
             requestRecordPermission { [self] granted in
                 if granted {
                     Task { @MainActor [self] in
-                        await self.startNewSession(modeId: modeId, useCase: useCase)
+                        await self.startNewSession(
+                            modeId: modeId,
+                            useCase: useCase,
+                            recordingStartFocusedInput: recordingStartFocusedInput
+                        )
                     }
                 } else {
                     logger.error("Recording permission denied")
@@ -316,9 +339,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // Creates a brand-new RecordingSession, drives the same start handshake the old engine
     // used (permission already granted, recorder.startRecording, mode config apply, streaming
     // session prepare, model preload), and appends it to `sessions` with phase .recording.
-    private func startNewSession(modeId: UUID?, useCase: RecordingSession.UseCase) async {
+    private func startNewSession(
+        modeId: UUID?,
+        useCase: RecordingSession.UseCase,
+        recordingStartFocusedInput: FocusLockService.Target?
+    ) async {
         let startID = UUID()
-        let session = RecordingSession(phase: .recording, useCase: useCase, startID: startID)
+        let session = RecordingSession(
+            phase: .recording,
+            useCase: useCase,
+            startID: startID,
+            recordingStartFocusedInput: recordingStartFocusedInput
+        )
         // Born .recording but we drive it through .starting → .recording during the handshake.
         session.liveRecordingState = .starting
 
@@ -368,6 +400,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.liveRecordingState = .recording
             session.phase = .recording
             recomputeDerivedState()
+            FocusLockService.shared.showRecordingStartInput(recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
 
             await activeModeTask.value
 
@@ -567,6 +600,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     session?.contextStore?.snapshot
                 }
             },
+            pasteTarget: session.pasteTarget,
             outputConfiguration: { [weak session] in
                 let resolved = ModeRuntimeResolver.outputConfiguration()
                 // ── VIPP (skip-mode-processing feature) — BYPASS POINT #2: mode script ──

@@ -2,6 +2,16 @@ import Foundation
 import SwiftUI
 import os
 
+enum RecordingPasteDestination: Equatable {
+    case recordingStart
+    case focusedAtStop
+}
+
+struct RecordingPasteTarget {
+    let destination: RecordingPasteDestination
+    let focusedInput: FocusLockService.Target?
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // RecordingSession — one in-flight "voice capture → transcription → paste" job.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -128,6 +138,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // debugging; delivery already pastes it).
     var transcript: String?
 
+    // The target is captured before recording starts and belongs to this exact session so
+    // another recording can safely begin while this one is still transcribing.
+    let recordingStartFocusedInput: FocusLockService.Target?
+    var pasteTarget: RecordingPasteTarget
+
     // ── Per-session bits migrated OFF the old engine singletons ──
     // Previously these were single-flight members on VoiceInkEngine; now each session
     // carries its own so two sessions (one recording, one transcribing) never share state.
@@ -176,7 +191,8 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     init(
         phase: Phase = .recording,
         useCase: UseCase = .newSession,
-        startID: UUID = UUID()
+        startID: UUID = UUID(),
+        recordingStartFocusedInput: FocusLockService.Target? = nil
     ) {
         self.phase = phase
         // A session is born recording, so its live UI state starts at .recording too.
@@ -184,6 +200,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         self.useCase = useCase
         self.startID = startID
         self.createdAt = Date()
+        self.recordingStartFocusedInput = recordingStartFocusedInput
+        self.pasteTarget = RecordingPasteTarget(
+            destination: .recordingStart,
+            focusedInput: recordingStartFocusedInput
+        )
     }
 
     // RecorderStateProvider conformance: the card reads `recordingState` for its spinner/

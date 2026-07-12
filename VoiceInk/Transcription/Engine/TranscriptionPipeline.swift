@@ -60,6 +60,7 @@ class TranscriptionPipeline {
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
+        pasteTarget: RecordingPasteTarget,
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         // ── VIPP (skip-mode-processing feature) — EXPLICIT bypass flag ──
         // Resolved at pipeline-run time from the owning RecordingSession's one-shot
@@ -373,6 +374,7 @@ class TranscriptionPipeline {
                 responseConfig: responseConfig,
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
+                pasteTarget: pasteTarget,
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).

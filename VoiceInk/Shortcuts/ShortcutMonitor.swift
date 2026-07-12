@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import IOKit
 import os
 
 final class ShortcutMonitor {
@@ -22,6 +23,8 @@ final class ShortcutMonitor {
     private var onKeyDown: ((ShortcutAction, TimeInterval) -> Void)?
     private var onKeyUp: ((ShortcutAction, TimeInterval) -> Void)?
     private var onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)?
+    private var onNextTrackKeyDown: (() -> Bool)?
+    private var isConsumingNextTrackPress = false
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "ShortcutMonitor")
@@ -38,7 +41,8 @@ final class ShortcutMonitor {
         interruptibleActions: Set<ShortcutAction> = [],
         onKeyDown: @escaping (ShortcutAction, TimeInterval) -> Void,
         onKeyUp: @escaping (ShortcutAction, TimeInterval) -> Void,
-        onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)? = nil
+        onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)? = nil,
+        onNextTrackKeyDown: (() -> Bool)? = nil
     ) -> Bool {
         stop()
 
@@ -54,6 +58,7 @@ final class ShortcutMonitor {
         self.onKeyDown = onKeyDown
         self.onKeyUp = onKeyUp
         self.onShortcutInterrupted = onShortcutInterrupted
+        self.onNextTrackKeyDown = onNextTrackKeyDown
 
         return installEventTap()
     }
@@ -124,6 +129,8 @@ final class ShortcutMonitor {
         onKeyDown = nil
         onKeyUp = nil
         onShortcutInterrupted = nil
+        onNextTrackKeyDown = nil
+        isConsumingNextTrackPress = false
     }
 
     private func installEventTap() -> Bool {
@@ -172,6 +179,10 @@ final class ShortcutMonitor {
     }
 
     private func handleCGEvent(type: CGEventType, event: CGEvent) -> Bool {
+        if type.rawValue == UInt32(NX_SYSDEFINED) {
+            return handleSystemDefinedEvent(event)
+        }
+
         guard let eventKind = EventKind(type) else {
             return false
         }
@@ -184,6 +195,37 @@ final class ShortcutMonitor {
             modifierFlags: modifierFlags,
             eventTime: ProcessInfo.processInfo.systemUptime
         )
+    }
+
+    private func handleSystemDefinedEvent(_ event: CGEvent) -> Bool {
+        guard let systemEvent = NSEvent(cgEvent: event),
+              systemEvent.subtype.rawValue == NX_SUBTYPE_AUX_CONTROL_BUTTONS else {
+            return false
+        }
+
+        let data = UInt32(truncatingIfNeeded: systemEvent.data1)
+        let keyType = Int((data & 0xFFFF_0000) >> 16)
+        guard keyType == NX_KEYTYPE_NEXT else { return false }
+
+        let keyState = Int((data & 0x0000_FF00) >> 8)
+        switch keyState {
+        case Int(NX_KEYDOWN):
+            if isConsumingNextTrackPress {
+                logger.info("Next Track repeat consumed because its initial key-down was consumed")
+                return true
+            }
+
+            isConsumingNextTrackPress = onNextTrackKeyDown?() == true
+            logger.info("Next Track key-down detected consumed=\(self.isConsumingNextTrackPress, privacy: .public)")
+            return isConsumingNextTrackPress
+        case Int(NX_KEYUP):
+            guard isConsumingNextTrackPress else { return false }
+            isConsumingNextTrackPress = false
+            logger.info("Next Track key-up consumed to complete the intercepted press")
+            return true
+        default:
+            return false
+        }
     }
 
     private func resetPressedShortcutsAfterTapInterruption() {
@@ -386,7 +428,7 @@ final class ShortcutMonitor {
         CGEventType.flagsChanged
     ].reduce(CGEventMask(0)) { mask, type in
         mask | (CGEventMask(1) << Int(type.rawValue))
-    }
+    } | (CGEventMask(1) << Int(NX_SYSDEFINED)) // Media keys arrive as legacy NX_SYSDEFINED events, which CGEventType does not expose as a named Swift case.
 }
 
 private extension ShortcutMonitor.EventKind {
