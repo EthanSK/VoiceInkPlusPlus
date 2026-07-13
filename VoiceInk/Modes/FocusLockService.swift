@@ -128,7 +128,7 @@ final class FocusLockService: ObservableObject {
             return false
         }
 
-        if let focusedElement = applicationFocusedElement(pid: target.pid), CFEqual(focusedElement, target.element) {
+        if isFocused(target.element) || applicationFocusedElement(pid: target.pid).map({ CFEqual($0, target.element) }) == true {
             logger.info("Background focused input already matches target pid=\(target.pid, privacy: .public) elementHash=\(CFHash(target.element), privacy: .public)")
             return true
         }
@@ -143,8 +143,9 @@ final class FocusLockService: ObservableObject {
             logger.error("Background focused input preparation failed with AX error \(restoreResult.rawValue) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return false
         }
-        guard let focusedElement = applicationFocusedElement(pid: target.pid), CFEqual(focusedElement, target.element) else {
-            logger.error("Background focused input preparation was accepted by AX but exact identity verification failed pid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(target.element), privacy: .public)")
+        let applicationFocusedElement = applicationFocusedElement(pid: target.pid)
+        guard isFocused(target.element) || applicationFocusedElement.map({ CFEqual($0, target.element) }) == true else {
+            logger.error("Background focused input preparation was accepted by AX but direct target focus verification failed pid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(target.element), privacy: .public) appFocusedElementHash=\(applicationFocusedElement.map { String(CFHash($0)) } ?? "nil", privacy: .public)")
             return false
         }
 
@@ -283,6 +284,18 @@ final class FocusLockService: ObservableObject {
         }
         let element = focusedValue as! AXUIElement
         return element
+    }
+
+    private func isFocused(_ element: AXUIElement) -> Bool {
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXFocusedAttribute as CFString,
+            &focusedValue
+        ) == .success else {
+            return false
+        }
+        return focusedValue as? Bool == true // Electron can return a different app-scoped AX wrapper for the same editor, so the saved element's own AXFocused state is the authoritative background verification.
     }
 
     private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
