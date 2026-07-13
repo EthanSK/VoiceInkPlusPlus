@@ -17,6 +17,7 @@ final class FocusLockService: ObservableObject {
         fileprivate let pid: pid_t
         let bundleIdentifier: String?
         let displayInfo: DisplayInfo
+        var processIdentifier: pid_t { pid }
     }
 
     static let shared = FocusLockService()

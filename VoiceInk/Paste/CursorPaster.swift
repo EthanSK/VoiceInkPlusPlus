@@ -244,7 +244,7 @@ class CursorPaster {
     // `transcriptLength` is the character count of the text just pasted; it scales
     // the redundant-Enter delay (see constants above). Defaults to 0 for callers
     // that don't have it (then the second Enter fires after just the base delay).
-    static func performAutoSend(_ key: AutoSendKey, transcriptLength: Int = 0) {
+    static func performAutoSend(_ key: AutoSendKey, transcriptLength: Int = 0, targetPID: pid_t? = nil) {
         guard key.isEnabled else { return }
         guard AXIsProcessTrusted() else { return }
 
@@ -264,8 +264,8 @@ class CursorPaster {
         }
 
         // First Return — posted immediately (in-process CGEvent, key code 36/0x24).
-        enterDown?.post(tap: .cghidEventTap)
-        enterUp?.post(tap: .cghidEventTap)
+        postAutoSendEvent(enterDown, targetPID: targetPID)
+        postAutoSendEvent(enterUp, targetPID: targetPID)
 
         // Feature B: schedule a SECOND Return ONLY for plain Enter, after a
         // length-scaled delay, to survive a lag-dropped first keystroke.
@@ -284,8 +284,17 @@ class CursorPaster {
             let retrySource = CGEventSource(stateID: .privateState)
             let retryDown = CGEvent(keyboardEventSource: retrySource, virtualKey: 0x24, keyDown: true)
             let retryUp   = CGEvent(keyboardEventSource: retrySource, virtualKey: 0x24, keyDown: false)
-            retryDown?.post(tap: .cghidEventTap)
-            retryUp?.post(tap: .cghidEventTap)
+            postAutoSendEvent(retryDown, targetPID: targetPID)
+            postAutoSendEvent(retryUp, targetPID: targetPID)
+        }
+    }
+
+    private static func postAutoSendEvent(_ event: CGEvent?, targetPID: pid_t?) {
+        guard let event else { return }
+        if let targetPID {
+            event.postToPid(targetPID) // A global event follows whatever app is frontmost after the 500ms paste delay; PID delivery keeps Return bound to the app that received the transcript even after focus moves elsewhere.
+        } else {
+            event.post(tap: .cghidEventTap)
         }
     }
 }

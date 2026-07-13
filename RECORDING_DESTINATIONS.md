@@ -96,6 +96,13 @@ Before pasting across apps, VoiceInk++:
 2. Restores the saved Accessibility element as the focused input.
 3. Verifies both the owning process and exact element identity.
 4. Sends the paste keystroke only after verification succeeds.
+5. Returns to the previously active app after the paste unless you already moved focus yourself.
+
+If the selected mode has auto-send enabled, Return is posted directly to the saved destination
+process rather than whichever app happens to be frontmost after the paste delay. This lets a
+Claude Code or other terminal prompt submit while you continue working in another app. AppleScript
+cannot reliably type into a background Electron app, so VoiceInk++ uses a process-targeted macOS
+keyboard event for this step.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.

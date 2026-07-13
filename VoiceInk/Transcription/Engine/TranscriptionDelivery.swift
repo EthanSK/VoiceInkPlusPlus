@@ -225,20 +225,13 @@ final class TranscriptionDelivery {
         FocusLockService.shared.setStartInputIndicatorVisible(target.destination == .recordingStart)
         await actions.dismiss()
 
-        guard let focusedInput = target.focusedInput,
-              await FocusLockService.shared.restoreFocus(to: focusedInput) else {
-            _ = ClipboardManager.copyToClipboard(pastedText)
-            FocusLockService.shared.clearLock()
-            let title = switch target.destination {
-            case .recordingStart:
-                String(localized: "Couldn’t focus the recording-start input — transcription copied to clipboard")
-            case .focusedAtStop:
-                String(localized: "Couldn’t focus the stop input — transcription copied to clipboard")
-            case .focusedDuringTranscription:
-                String(localized: "Couldn’t focus the retargeted input — transcription copied to clipboard")
-            }
-            NotificationManager.shared.showNotification(title: title, type: .error)
-            vippLog.error("paste: target restore failed; copied transcription to clipboard instead of pasting into an unintended input")
+        guard let focusedInput = target.focusedInput else {
+            handleMissingPasteTarget(pastedText, destination: target.destination)
+            return
+        }
+        let previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
+        guard await FocusLockService.shared.restoreFocus(to: focusedInput) else {
+            handleMissingPasteTarget(pastedText, destination: target.destination)
             return
         }
 
@@ -247,23 +240,61 @@ final class TranscriptionDelivery {
         let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
+        let targetPID = focusedInput.processIdentifier
+        let applicationToRestore = previouslyFrontmostApplication?.processIdentifier == targetPID ? nil : previouslyFrontmostApplication
+        vippLog.info("paste: delivery scheduled targetPid=\(targetPID, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public) restorePid=\(applicationToRestore?.processIdentifier ?? -1, privacy: .public)")
         // Feature B: capture transcript length now so the auto-send can scale its
         // redundant-Enter delay with how much text was pasted (longer paste => the
         // field settles slower under load, so the second Enter gets more headroom).
         let pastedLength = pastedText.count
         Task { @MainActor in
-            _ = await pasteTask.value
+            let pasteResult = await pasteTask.value
+            vippLog.info("paste: command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(targetPID, privacy: .public)")
+
+            if let applicationToRestore {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                restorePreviousApplication(applicationToRestore, displacedBy: targetPID) // Cross-app Next Track used to leave the destination app frontmost; return only if it is still frontmost so an intentional user switch is never overridden.
+            }
 
             if autoSendKey.isEnabled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 // Feature B: robust auto-send. For plain Enter this posts Return
                 // TWICE (with a length-scaled gap) to survive a lag-dropped first
                 // keystroke; Shift/Cmd+Enter still post once. See performAutoSend.
-                CursorPaster.performAutoSend(autoSendKey, transcriptLength: pastedLength)
+                CursorPaster.performAutoSend(autoSendKey, transcriptLength: pastedLength, targetPID: targetPID) // Bug fix: repro by stopping with Next Track for a Claude Code input, then using another app before this delay; a global Return went to that other app instead of Claude Code.
+                vippLog.info("paste: targeted auto-send posted key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
             }
 
             FocusLockService.shared.clearLock()
         }
+    }
+
+    private func handleMissingPasteTarget(_ pastedText: String, destination: RecordingPasteDestination) {
+        _ = ClipboardManager.copyToClipboard(pastedText)
+        FocusLockService.shared.clearLock()
+        let title = switch destination {
+        case .recordingStart:
+            String(localized: "Couldn’t focus the recording-start input — transcription copied to clipboard")
+        case .focusedAtStop:
+            String(localized: "Couldn’t focus the stop input — transcription copied to clipboard")
+        case .focusedDuringTranscription:
+            String(localized: "Couldn’t focus the retargeted input — transcription copied to clipboard")
+        }
+        NotificationManager.shared.showNotification(title: title, type: .error)
+        vippLog.error("paste: target restore failed; copied transcription to clipboard instead of pasting into an unintended input")
+    }
+
+    private func restorePreviousApplication(_ application: NSRunningApplication, displacedBy targetPID: pid_t) {
+        guard !application.isTerminated else {
+            vippLog.info("paste: skipped previous app restore because it terminated restorePid=\(application.processIdentifier, privacy: .public)")
+            return
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID else {
+            vippLog.info("paste: skipped previous app restore because focus already moved frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            return
+        }
+        let activated = application.activate(options: .activateAllWindows)
+        vippLog.info("paste: restored previous app restorePid=\(application.processIdentifier, privacy: .public) accepted=\(activated, privacy: .public)")
     }
 
     private func deliverableText(from text: String) -> String {
