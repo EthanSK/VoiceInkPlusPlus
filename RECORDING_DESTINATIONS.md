@@ -65,6 +65,11 @@ Track stops and chooses the recording-start input. After a normal stop has alrea
 transcription, Next Track is a one-click second chance to choose a new input. It replaces the pending
 target once; it does not toggle or release it.
 
+This exact second-chance route was live-confirmed repeatedly on 2026-07-13 after commit `1eabb1b`:
+the trace recorded `focusedDuringTranscription`, `targetAutoSend=enter`, and verified successful
+OpenAI composer submission after Ethan moved between apps. Treat that commit and the root
+`AGENTS.md` contract as the regression baseline.
+
 The change is accepted until delivery resolves its target immediately before paste. After that
 cutoff, or when no pending transcription exists, Next Track passes through to the media system. If
 no editable text input is focused, VoiceInk++ consumes the intentional retarget press, keeps the

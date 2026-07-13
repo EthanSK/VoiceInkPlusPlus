@@ -11,7 +11,7 @@ import Testing
 struct VoiceInkTests {
 
     @MainActor
-    @Test func pendingPasteTargetCanChangeUntilDeliveryResolvesIt() {
+    @Test func secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt() {
         let session = RecordingSession()
         let retargeted = RecordingPasteTarget(
             destination: .focusedDuringTranscription,

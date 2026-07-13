@@ -38,7 +38,11 @@ The fork's important behavioral patches are:
   loading, Next Track can replace its target with the input focused at that moment; the pipeline
   resolves the session's target only immediately before delivery. Delivery waits for cross-app activation,
   restores and verifies the exact element, and copies to the clipboard rather than pasting into an
-  unintended field if verification fails. See [Recording Destination Controls](RECORDING_DESTINATIONS.md)
+  unintended field if verification fails. The post-stop Next Track action is a distinct second-chance
+  route: while the newest result is loading it atomically replaces both the pending exact input and
+  that target app's auto-send key, so moving to another app before delivery cannot remove Return.
+  This is never a toggle and must not be confused with Next Track while recording, which stops into
+  the recording-start input. See [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.
 
 The active-window service's `start()` is wired once at app launch in `VoiceInk.swift` (right after
