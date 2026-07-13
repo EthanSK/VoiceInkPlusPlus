@@ -11,6 +11,22 @@ enum RecordingPasteDestination: Equatable {
 struct RecordingPasteTarget {
     let destination: RecordingPasteDestination
     let focusedInput: FocusLockService.Target?
+    // The destination and its paste behavior are one atomic per-session choice.
+    // In particular, the transcription-time Next Track route is a second chance:
+    // Ethan can stop normally, focus a different input, press Next Track while the
+    // transcript is still loading, then leave that app. The later app switch must
+    // not replace this target app's Return-after-paste setting.
+    let autoSendKey: AutoSendKey
+
+    init(
+        destination: RecordingPasteDestination,
+        focusedInput: FocusLockService.Target?,
+        autoSendKey: AutoSendKey = .none
+    ) {
+        self.destination = destination
+        self.focusedInput = focusedInput
+        self.autoSendKey = autoSendKey
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -142,7 +158,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // The target is captured before recording starts and belongs to this exact session so
     // another recording can safely begin while this one is still transcribing.
     @Published var recordingStartFocusedInput: FocusLockService.Target? // Published because an initially invalid shortcut-time capture can be replaced once microphone recording begins, and the destination icon must then appear immediately.
-    var pasteTarget: RecordingPasteTarget
+    @Published var pasteTarget: RecordingPasteTarget // Published so the icon remains visible after stop and immediately follows a Next Track retarget while transcription is still loading.
     private(set) var acceptsPasteRetargeting = true
 
     // ── Per-session bits migrated OFF the old engine singletons ──
@@ -213,6 +229,17 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // waveform. We expose the fine-grained liveRecordingState under that protocol name.
     var recordingState: RecordingState {
         liveRecordingState
+    }
+
+    var pasteDestinationIndicatorTarget: FocusLockService.Target? {
+        switch phase {
+        case .recording:
+            recordingStartFocusedInput // Before stop, the icon previews the original input that a Next Track stop will select.
+        case .transcribing, .delivering:
+            pasteTarget.focusedInput // After stop, keep showing the real per-session target until it is delivered, failed, or retargeted.
+        case .done:
+            nil
+        }
     }
 
     func retargetPaste(to target: RecordingPasteTarget) -> Bool {

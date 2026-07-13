@@ -81,8 +81,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // Live partial of the ACTIVE recording session (only the recording session streams partials).
     @Published var partialTranscript: String = ""
 
-    var recordingStartFocusedInput: FocusLockService.Target? {
-        activeRecordingSession?.recordingStartFocusedInput
+    var pasteDestinationIndicatorTarget: FocusLockService.Target? {
+        activeRecordingSession?.pasteDestinationIndicatorTarget
     }
 
     // VIPP (skip-mode-processing feature): RecorderStateProvider now requires a settable
@@ -210,7 +210,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         guard let focusedInput = FocusLockService.shared.captureFocusedInput() else {
-            FocusLockService.shared.showPendingPasteInput(nil)
+            FocusLockService.shared.showPendingPasteInputUnavailable()
             vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) kept existing destination because no editable input is focused")
             return .noFocusedInput
         }
@@ -218,7 +218,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let didRetarget = session.retargetPaste(
             to: RecordingPasteTarget(
                 destination: .focusedDuringTranscription,
-                focusedInput: focusedInput
+                focusedInput: focusedInput,
+                autoSendKey: ModeRuntimeResolver.autoSendKey(
+                    forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
+                )
             )
         )
         guard didRetarget else {
@@ -226,7 +229,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
             return .noPendingTranscription
         }
 
-        FocusLockService.shared.showPendingPasteInput(focusedInput)
+        // Success is communicated by the published per-session destination icon
+        // switching in place. Keep text reserved for failures; a toast here made the
+        // compact recorder noisy and duplicated the much clearer icon transition.
         vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
         return .retargeted
     }
@@ -285,14 +290,22 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // can immediately START a new session.
             switch stopPasteDestination {
             case .recordingStart:
+                let focusedInput = active.recordingStartFocusedInput
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .recordingStart,
-                    focusedInput: active.recordingStartFocusedInput
+                    focusedInput: focusedInput,
+                    autoSendKey: ModeRuntimeResolver.autoSendKey(
+                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
+                    )
                 )
             case .focusedAtStop:
+                let focusedInput = FocusLockService.shared.captureFocusedInput()
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .focusedAtStop,
-                    focusedInput: FocusLockService.shared.captureFocusedInput()
+                    focusedInput: focusedInput,
+                    autoSendKey: ModeRuntimeResolver.autoSendKey(
+                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
+                    )
                 )
             case .focusedDuringTranscription:
                 preconditionFailure("A transcription-time target can only be selected after recording has stopped")
@@ -339,6 +352,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // No file captured (e.g. start failed). Just tear the session down.
                 if !active.shouldCancel {
                     logger.error("❌ No recorded file found after stopping recording")
+                    NotificationManager.shared.showNotification(
+                        title: String(localized: "Recording failed: no audio file was captured"),
+                        type: .error
+                    )
                 }
                 active.transcriptionSession?.cancel()
                 removeSession(active)
@@ -358,7 +375,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 assistantSession.reset()
             }
 
-            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput() // Capture before any asynchronous recording setup so later focus changes cannot replace the intended input.
+            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Capture before asynchronous setup. Electron may expose only AXWebArea while the shortcut is down, so preserve the owning app for Next Track.
 
             requestRecordPermission { [self] granted in
                 if granted {
@@ -443,7 +460,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.phase = .recording
             recomputeDerivedState()
             if session.recordingStartFocusedInput == nil {
-                session.recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput() // A modifier shortcut can briefly expose a transient AXGroup; retry only when the first capture was not a real text input and the microphone has actually entered recording state.
+                session.recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Retry only if even the owning application could not be captured during the shortcut event.
             }
             FocusLockService.shared.showRecordingStartInput(session.recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
 
@@ -593,11 +610,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             transcription.text = String(localized: "Transcription Failed: No model selected")
             transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
             try? modelContext.save()
+            NotificationManager.shared.showNotification(title: String(localized: "Transcription failed: no model selected"), type: .error)
             removeSession(session)
             return
         }
 
         guard let audioURL = session.audioURL else {
+            NotificationManager.shared.showNotification(title: String(localized: "Transcription failed: recorded audio is unavailable"), type: .error)
             removeSession(session)
             return
         }

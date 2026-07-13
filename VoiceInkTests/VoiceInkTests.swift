@@ -15,11 +15,14 @@ struct VoiceInkTests {
         let session = RecordingSession()
         let retargeted = RecordingPasteTarget(
             destination: .focusedDuringTranscription,
-            focusedInput: nil
+            focusedInput: nil,
+            autoSendKey: .enter
         )
 
         #expect(session.retargetPaste(to: retargeted))
-        #expect(session.resolvePasteTargetForDelivery().destination == .focusedDuringTranscription)
+        let resolvedTarget = session.resolvePasteTargetForDelivery()
+        #expect(resolvedTarget.destination == .focusedDuringTranscription)
+        #expect(resolvedTarget.autoSendKey == .enter)
         #expect(!session.retargetPaste(to: RecordingPasteTarget(destination: .recordingStart, focusedInput: nil)))
         #expect(session.pasteTarget.destination == .focusedDuringTranscription)
     }

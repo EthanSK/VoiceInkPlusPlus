@@ -5,7 +5,7 @@ import Foundation
 protocol RecorderStateProvider: AnyObject {
     var recordingState: RecordingState { get }
     var partialTranscript: String { get }
-    var recordingStartFocusedInput: FocusLockService.Target? { get } // The recorder capsule displays this per-session target so the user can always see where a Next Track stop will paste.
+    var pasteDestinationIndicatorTarget: FocusLockService.Target? { get } // While recording this previews the Next Track destination; after stop it follows the session's actual pending paste target until delivery finishes.
 
     // VIPP (skip-mode-processing feature): the per-session, one-shot "skip post-processing
     // for THIS recording" flag. SETTABLE here so the recorder's toggle button (which is

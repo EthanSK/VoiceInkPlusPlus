@@ -30,7 +30,9 @@ The fork's important behavioral patches are:
 - **Per-recording destination control — choose the start or stop input at the end.** The normal
   recording shortcut stops into the exact input focused at stop. The macOS Next Track media key is
   intercepted only while actively recording and stops into the exact Accessibility input captured
-  at recording start; outside recording it continues to control media normally. Each
+  at recording start. When Electron/Chromium exposes only `AXWebArea` during the shortcut, it falls
+  back to the recording-start application; outside recording Next Track continues to control media
+  normally. Each
   `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
   background transcriptions from mixing destinations. While the newest transcription is still
   loading, Next Track can replace its target with the input focused at that moment; the pipeline
@@ -63,6 +65,24 @@ on first launch.
 The built bundle is **`VoiceInkPlusPlus.app`** (output: `~/Downloads/VoiceInkPlusPlus.app`) — the
 `PRODUCT_NAME` is the build-path-safe `VoiceInkPlusPlus`; the user-visible name is **VoiceInk++** via
 `CFBundleDisplayName`.
+
+### Install completed fixes into the running app (mandatory)
+
+A VoiceInk++ code fix is not complete when the source builds: install that exact build into
+`/Applications/VoiceInkPlusPlus.app` and relaunch it so Ethan is testing the corrected binary. Never
+replace or stop `/Applications/VoiceInk.app`, which is the separate official app.
+
+Before every update that quits or replaces the running VoiceInk++ app, warn Ethan and give him a real
+five-second recovery window:
+
+```sh
+osascript -e 'display notification "VoiceInk++ will restart in 5 seconds" with title "VoiceInk++ update"'
+sleep 5
+```
+
+Only after that delay: quit VoiceInk++, preserve a timestamped rollback bundle, replace the app,
+relaunch it, and verify the new PID plus the strict/deep code signature and stable designated
+requirement. Do not claim a live fix while an older PID/build remains running.
 
 ## Standalone-fork identity — VoiceInk++ (separate app from the official VoiceInk)
 

@@ -9,18 +9,20 @@ transcript belongs.
 | Stop action | Paste destination |
 | --- | --- |
 | Normal configured recording shortcut | The exact text input focused when you stop recording |
-| macOS **Next Track** media key | The exact text input focused when you started recording |
-| **Next Track** while the newest transcription is still loading | Replace that pending transcription's destination with the text input focused now |
+| macOS **Next Track** media key | The exact text input focused when you started recording, or that application when macOS hides the editor element |
+| **Next Track** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next Track** with no recording or retargetable transcription | Passed through normally to Spotify, Music, and other media apps |
 
-When microphone recording successfully begins, VoiceInk++ briefly shows the app and input it saved,
-for example: **Recording start input: Codex — text area**. This is the destination that the Next Track
-stop action will use. If no editable field actually has focus, it instead warns: **Recording start
-input unavailable — focus a text input before recording**.
-
-While recording, the right side of the recorder capsule persistently shows that saved app's icon,
-so the destination of a Next Track stop is always visible. Hover over the icon to see the exact app
-and input name. A warning icon means no valid recording-start input was captured.
+The Mode emoji/symbol sits immediately left of the waveform. Two app icons sit to its right: the
+first is the app focused now; the second is the saved destination owned by that recording. While
+recording, the second icon previews where a Next Track stop will paste. After stopping, it remains
+visible for that session until delivery succeeds or visibly fails. If Next Track retargets a loading
+transcription, that second icon silently changes to the new pending destination; successful retargets
+do not add a redundant text popup. The same destination icon remains on a compact transcription chip
+if a newer recording starts. Hover over either icon to distinguish current focus from the exact
+pending app/input. If Electron/Chromium exposes only an app-level container while the shortcut is
+down, VoiceInk++ saves the owning application. A warning icon and notification appear when neither
+an editable input nor a safe web-app container can be captured.
 
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
@@ -52,8 +54,16 @@ transcription phase that starts after recording stops.
 1. Stop a recording normally and let transcription begin with its stop-time destination saved.
 2. While it is still transcribing or enhancing, focus a different text input.
 3. Press **Next Track**.
-4. VoiceInk++ shows **Pending transcription target: [app] — [input]** and replaces the destination
-   for the newest not-yet-delivered transcription.
+4. The locked destination icon switches to that app. VoiceInk++ replaces both the exact input and
+   its configured auto-send key for the newest not-yet-delivered transcription.
+5. You may immediately move to another app. When the result finishes, VoiceInk++ returns to the
+   second-chance input, pastes there, performs that input app's configured Return, then restores your
+   newer workspace.
+
+This is deliberately separate from pressing Next Track while recording. During recording, Next
+Track stops and chooses the recording-start input. After a normal stop has already started
+transcription, Next Track is a one-click second chance to choose a new input. It replaces the pending
+target once; it does not toggle or release it.
 
 The change is accepted until delivery resolves its target immediately before paste. After that
 cutoff, or when no pending transcription exists, Next Track passes through to the media system. If
@@ -82,28 +92,48 @@ macOS routes it to the normal media destination. The behavior is global and is n
 
 Exact-input routing uses the macOS Accessibility API, which VoiceInk++ already needs for pasting.
 The focused Accessibility element is stored on the individual recording session, so overlapping
-background transcriptions cannot exchange destinations.
+background transcriptions cannot exchange destinations. The selected app's auto-send key is stored
+on that same per-session target; it is not re-read from whichever app happens to be current when the
+transcription service returns.
 
-Only editable Accessibility roles such as text areas, text fields, search fields, and combo boxes are
-accepted as destinations. Some apps briefly expose a container such as `AXGroup` while a modifier
-shortcut is being handled, so VoiceInk++ retries an invalid initial capture once when microphone
-recording becomes active. It never saves a generic container and later guesses which descendant the
-user intended.
+Editable Accessibility roles such as text areas, text fields, search fields, and combo boxes are
+saved as exact destinations. Some apps briefly expose only a container such as `AXWebArea` or
+`AXGroup` while a modifier shortcut is being handled. For the recording-start/Next Track route,
+VoiceInk++ then saves the owning application as a fallback. It uses the same app fallback if Electron
+replaces the saved editor's Accessibility wrapper before delivery. Normal stop-time and
+transcription-time retargets still require an exact editable input, so an incidental non-editable
+control cannot silently replace their destination.
 
-Before pasting into the app you are already using, VoiceInk++ restores the saved Accessibility
-element, verifies its exact identity, and only then sends the paste keystroke.
+Before pasting, VoiceInk++:
 
-For a saved input in a background app, VoiceInk++ instead verifies that exact element inside the
-background application's Accessibility hierarchy and posts Command–V directly to that process.
-The background app is not activated, so the app you are currently using stays frontmost. If the
-saved app refuses background focus preparation or the targeted paste cannot be posted, VoiceInk++
-copies the transcription to the clipboard and warns instead of bringing that app forward or guessing.
+1. Activates the saved application and waits until macOS reports it as genuinely frontmost.
+2. Restores the saved Accessibility element and verifies its exact identity. For a safe
+   recording-start app fallback, it uses that now-frontmost application's current input.
+3. Sends an ordinary Command–V to the verified frontmost destination.
+4. If auto-send is enabled, keeps that destination frontmost through the paste-settle delay,
+   verifies it again, and issues the configured Return there.
+5. Only after the complete paste/Return sequence, restores and verifies the application that was
+   active before delivery. A plain paste restores it after a 100 ms settlement delay. If Ethan has
+   already moved focus himself, VoiceInk++ preserves that live choice instead of overriding it.
 
-If the selected mode has auto-send enabled, Return is also posted directly to the saved destination
-process rather than whichever app happens to be frontmost after the paste delay. This lets a
-Claude Code or other terminal prompt paste and submit while you continue working in another app.
-AppleScript cannot reliably type into a background Electron app, so VoiceInk++ uses process-targeted
-macOS keyboard events for both Paste and Return.
+VoiceInk++ deliberately does not post Command–V to a background process: macOS can report that the
+event was posted even when apps such as VS Code ignore it. If app activation, input restoration, or
+paste-command creation fails, VoiceInk++ copies the transcription to the clipboard and shows an
+error instead of pasting into an unintended field or reporting a false success.
+
+For ordinary destinations, auto-send uses a foreground HID Return with a real key-down/key-up
+interval; plain Enter retains its bounded redundant retry. The OpenAI ChatGPT/Codex Electron composer
+gets a stricter route because live tests proved that it can ignore both process-targeted Return and
+an instantaneous foreground event while macOS reports success. VoiceInk++ first presses the nearby
+accessibility **Send** control when that exact composer exposes one. If the control is absent (for
+example, while a response is already running), it asks System Events to issue script key code 36,
+then tries one human-timed HID Return only if the editor text remains unchanged. If both routes leave
+the pasted transcript untouched, VoiceInk++ keeps the text in the editor and shows a visible
+“transcription pasted, but Return could not be sent” error.
+
+VoiceInk++ deliberately does not use process-targeted Return or `AXConfirm`: Electron can ignore
+either even when macOS accepts the request. Every fallback immediately rechecks that the saved app is
+still frontmost, so Ethan using the Mac during delivery cannot make Return drift into another app.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.

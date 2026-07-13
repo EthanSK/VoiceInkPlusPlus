@@ -28,7 +28,7 @@ import SwiftUI
 //   shifted up by `cardSpacing * indexFromBottom`. cardSpacing ≈ control-bar height + gap.
 //
 // The active/base card uses the FULL MiniRecorderView (with live waveform, controls,
-// assistant panel, focus-lock indicator). Background transcribing cards use a slim
+// assistant panel, destination indicator). Background transcribing cards use a slim
 // TranscribingChip to keep the pile compact.
 //
 // NOTE on which card is "base": the spec says the active .recording card is the base and
@@ -159,6 +159,8 @@ struct NotchRecorderStackView: View {
     @ObservedObject var engine: VoiceInkEngine
     @ObservedObject var recorder: Recorder
     @ObservedObject var assistantSession: AssistantSession
+    let notchWidth: CGFloat
+    let notchHeight: CGFloat
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
     let onCancelTapped: () -> Void
@@ -195,6 +197,8 @@ struct NotchRecorderStackView: View {
                     stateProvider: pillSession,
                     recorder: recorder,
                     assistantSession: assistantSession,
+                    notchWidth: notchWidth,
+                    notchHeight: notchHeight,
                     onRecordButtonTapped: onRecordButtonTapped,
                     onCloseTapped: onCloseTapped,
                     onCancelTapped: onCancelTapped,
@@ -205,6 +209,8 @@ struct NotchRecorderStackView: View {
                     stateProvider: engine,
                     recorder: recorder,
                     assistantSession: assistantSession,
+                    notchWidth: notchWidth,
+                    notchHeight: notchHeight,
                     onRecordButtonTapped: onRecordButtonTapped,
                     onCloseTapped: onCloseTapped,
                     onCancelTapped: onCancelTapped,
@@ -256,6 +262,11 @@ struct TranscribingChip: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.white.opacity(0.82))
                 .lineLimit(1)
+
+            PasteDestinationIndicator(
+                target: session.pasteDestinationIndicatorTarget,
+                context: .pendingPaste
+            ) // A session moved behind a newer recording still owns its target, so its compact chip must keep showing that target until delivery finishes.
 
             // Per-card cancel — discards THIS session only.
             RecorderCancelButton(action: onCancel)

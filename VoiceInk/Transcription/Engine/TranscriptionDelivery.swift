@@ -9,6 +9,10 @@ final class TranscriptionDelivery {
     // branch runs and the actual paste (text length) so an empty/suppressed paste is
     // distinguishable from a real one in the unified log.
     private let vippLog = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "VIPPDebug")
+    private static let openAIComposerBundleIdentifiers: Set<String> = [
+        "com.openai.codex",
+        "com.openai.chat"
+    ]
 
     struct Request {
         let transcription: Transcription
@@ -220,7 +224,7 @@ final class TranscriptionDelivery {
         let textToPaste = deliverableText(from: text)
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
         let pastedText = textToPaste + (appendSpace ? " " : "")
-        vippLog.info("paste: BEGIN len=\(pastedText.count, privacy: .public) destination=\(String(describing: target.destination), privacy: .public) targetCaptured=\(target.focusedInput != nil, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        vippLog.info("paste: BEGIN len=\(pastedText.count, privacy: .public) destination=\(String(describing: target.destination), privacy: .public) targetCaptured=\(target.focusedInput != nil, privacy: .public) exactInput=\(target.focusedInput?.hasExactInput ?? false, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         SoundManager.shared.playStopSound()
         FocusLockService.shared.setStartInputIndicatorVisible(target.destination == .recordingStart)
         await actions.dismiss()
@@ -230,28 +234,29 @@ final class TranscriptionDelivery {
             return
         }
         let targetPID = focusedInput.processIdentifier
-        let postsToBackgroundProcess = NSWorkspace.shared.frontmostApplication?.processIdentifier != targetPID
-        let preparedTarget = if postsToBackgroundProcess {
-            FocusLockService.shared.prepareBackgroundFocus(to: focusedInput)
-        } else {
-            await FocusLockService.shared.restoreFocus(to: focusedInput)
-        }
-        guard preparedTarget else {
+        let previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
+        let allowsApplicationFallback = target.destination == .recordingStart
+        guard await FocusLockService.shared.restoreFocus(to: focusedInput, allowApplicationFallback: allowsApplicationFallback) else { // Next Track must reactivate and verify the saved app before Cmd-V; posting to a background PID reported false success when VS Code ignored it.
             handleMissingPasteTarget(pastedText, destination: target.destination)
             return
         }
 
-        vippLog.info("paste: target prepared; issuing paste keystroke background=\(postsToBackgroundProcess, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        vippLog.info("paste: target restored; issuing paste keystroke targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
 
-        let pasteTask = CursorPaster.startPasteAtCursor(pastedText, targetPID: postsToBackgroundProcess ? targetPID : nil) // Bug fix: cross-app Next Track previously activated the saved app before Cmd+V; targeting Cmd+V by PID keeps the user's current Ableton/Codex/etc. workspace frontmost.
+        let pasteTask = CursorPaster.startPasteAtCursor(pastedText) // Use the proven foreground Cmd-V path from cba45ba; CGEvent.postToPid can succeed without the background app accepting the paste.
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
-        vippLog.info("paste: delivery scheduled targetPid=\(targetPID, privacy: .public) background=\(postsToBackgroundProcess, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public)")
+        let applicationToRestore = previouslyFrontmostApplication?.processIdentifier == targetPID
+            ? nil
+            : previouslyFrontmostApplication
+        vippLog.info("paste: delivery scheduled targetPid=\(targetPID, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public) restorePid=\(applicationToRestore?.processIdentifier ?? -1, privacy: .public)")
         // Feature B: capture transcript length now so the auto-send can scale its
         // redundant-Enter delay with how much text was pasted (longer paste => the
         // field settles slower under load, so the second Enter gets more headroom).
         let pastedLength = pastedText.count
         Task { @MainActor in
+            defer { FocusLockService.shared.clearLock() }
+
             let pasteResult = await pasteTask.value
             vippLog.info("paste: command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(targetPID, privacy: .public)")
             guard pasteResult.didPostPasteCommand else {
@@ -261,20 +266,195 @@ final class TranscriptionDelivery {
                     type: .error
                 )
                 vippLog.error("paste: command was not posted; copied transcription to clipboard and skipped auto-send")
-                FocusLockService.shared.clearLock()
+                if let applicationToRestore {
+                    await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+                }
                 return
             }
 
             if autoSendKey.isEnabled {
+                // Keep the destination frontmost for the complete atomic delivery.
+                // The live Codex trace proved that AXConfirm can return `.success`
+                // without submitting an Electron editor, while Terminal happened to
+                // accept it. A real foreground key-code Return is the reliable public
+                // macOS route; restore the user's previous app only after it is posted.
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                // Feature B: robust auto-send. For plain Enter this posts Return
-                // TWICE (with a length-scaled gap) to survive a lag-dropped first
-                // keystroke; Shift/Cmd+Enter still post once. See performAutoSend.
-                CursorPaster.performAutoSend(autoSendKey, transcriptLength: pastedLength, targetPID: targetPID) // Bug fix: repro by stopping with Next Track for a Claude Code input, then using another app before this delay; a global Return went to that other app instead of Claude Code.
-                vippLog.info("paste: targeted auto-send posted key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
-            }
+                guard await FocusLockService.shared.restoreFocus(
+                    to: focusedInput,
+                    allowApplicationFallback: allowsApplicationFallback
+                ) else {
+                    showAutoSendFailure(
+                        "Transcription pasted, but couldn’t focus the destination to press Return",
+                        detail: "foreground Return restore failed targetPid=\(targetPID)"
+                    )
+                    if let applicationToRestore {
+                        await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+                    }
+                    return
+                }
 
-            FocusLockService.shared.clearLock()
+                let autoSendSucceeded = await performAutoSend(
+                    autoSendKey,
+                    to: focusedInput,
+                    allowsApplicationFallback: allowsApplicationFallback,
+                    transcriptLength: pastedLength,
+                    expectedFrontmostPID: targetPID
+                )
+
+                vippLog.info("paste: foreground auto-send finished success=\(autoSendSucceeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+                if let applicationToRestore {
+                    await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+                }
+
+                guard autoSendSucceeded else {
+                    showAutoSendFailure(
+                        "Transcription pasted, but couldn’t press Return automatically",
+                        detail: "foreground Return produced no verified submit targetPid=\(targetPID)"
+                    )
+                    return
+                }
+            } else if let applicationToRestore {
+                // Plain paste still gets a short settlement window before returning
+                // to the workspace that was active when delivery began.
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+            }
+        }
+    }
+
+    private func performAutoSend(
+        _ key: AutoSendKey,
+        to target: FocusLockService.Target,
+        allowsApplicationFallback: Bool,
+        transcriptLength: Int,
+        expectedFrontmostPID: pid_t
+    ) async -> Bool {
+        let isOpenAIComposer = target.bundleIdentifier.map {
+            Self.openAIComposerBundleIdentifiers.contains($0)
+        } ?? false
+
+        guard key == .enter, isOpenAIComposer else {
+            return await CursorPaster.performAutoSend(
+                key,
+                transcriptLength: transcriptLength,
+                expectedFrontmostPID: expectedFrontmostPID
+            ).didPostAutoSendCommand
+        }
+
+        // OpenAI's Electron composer has now ignored both a background AXConfirm
+        // that returned success and an instantaneous foreground CGEvent pair. First
+        // use its tightly-scoped adjacent Send button when present. While a response
+        // is already running that button becomes Stop, so fall back to System Events'
+        // script-level key code 36—the public equivalent of a real scripted Return.
+        let textBeforeSubmit = FocusLockService.shared.focusedInputText(
+            for: target,
+            allowApplicationFallback: allowsApplicationFallback
+        )
+        var primaryIssued = false
+        switch FocusLockService.shared.pressNearbySubmitButton(
+            for: target,
+            allowApplicationFallback: allowsApplicationFallback
+        ) {
+        case .pressed:
+            primaryIssued = true
+            vippLog.info("paste: OpenAI composer auto-send used nearby Send button targetPid=\(expectedFrontmostPID, privacy: .public)")
+        case .unavailable:
+            let result = await CursorPaster.performAutoSend(
+                .enter,
+                transcriptLength: transcriptLength,
+                expectedFrontmostPID: expectedFrontmostPID,
+                method: .systemEvents,
+                sendRedundantEnter: false
+            )
+            primaryIssued = result.didPostAutoSendCommand
+            vippLog.info("paste: OpenAI composer nearby Send unavailable; System Events Return issued=\(primaryIssued, privacy: .public) targetPid=\(expectedFrontmostPID, privacy: .public)")
+        case .failed(let error):
+            vippLog.error("paste: OpenAI composer nearby Send failed AXError=\(error, privacy: .public); trying System Events Return targetPid=\(expectedFrontmostPID, privacy: .public)")
+            let result = await CursorPaster.performAutoSend(
+                .enter,
+                transcriptLength: transcriptLength,
+                expectedFrontmostPID: expectedFrontmostPID,
+                method: .systemEvents,
+                sendRedundantEnter: false
+            )
+            primaryIssued = result.didPostAutoSendCommand
+        }
+
+        guard primaryIssued else {
+            return await CursorPaster.performAutoSend(
+                .enter,
+                transcriptLength: transcriptLength,
+                expectedFrontmostPID: expectedFrontmostPID,
+                method: .cgEvent,
+                sendRedundantEnter: false
+            ).didPostAutoSendCommand
+        }
+
+        // Chat composers clear or replace the editor value when a submit is accepted.
+        // If AX cannot read the value, report only that the action was issued. If it
+        // can read the value and it remains identical, retry once with a humanized HID
+        // CGEvent; if that also leaves the transcript untouched, surface a real error
+        // instead of another false-success log.
+        guard let textBeforeSubmit, !textBeforeSubmit.isEmpty else {
+            vippLog.notice("paste: OpenAI composer submit verification unavailable before action targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return true
+        }
+
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        guard FocusLockService.shared.focusedInputText(
+            for: target,
+            allowApplicationFallback: allowsApplicationFallback
+        ) == textBeforeSubmit else {
+            vippLog.info("paste: OpenAI composer changed after primary auto-send targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return true
+        }
+
+        vippLog.notice("paste: OpenAI composer ignored primary auto-send; trying humanized CGEvent Return targetPid=\(expectedFrontmostPID, privacy: .public)")
+        let fallback = await CursorPaster.performAutoSend(
+            .enter,
+            transcriptLength: transcriptLength,
+            expectedFrontmostPID: expectedFrontmostPID,
+            method: .cgEvent,
+            sendRedundantEnter: false
+        )
+        guard fallback.didPostAutoSendCommand else { return false }
+
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        let textAfterFallback = FocusLockService.shared.focusedInputText(
+            for: target,
+            allowApplicationFallback: allowsApplicationFallback
+        )
+        guard textAfterFallback != textBeforeSubmit else {
+            vippLog.error("paste: OpenAI composer still contained identical text after both auto-send routes targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return false
+        }
+
+        vippLog.info("paste: OpenAI composer changed after humanized CGEvent fallback targetPid=\(expectedFrontmostPID, privacy: .public)")
+        return true
+    }
+
+    private func showAutoSendFailure(_ title: String, detail: String) {
+        NotificationManager.shared.showNotification(
+            title: title,
+            type: .error
+        )
+        vippLog.error("paste: auto-send failed after successful paste; \(detail, privacy: .public)")
+    }
+
+    private func restorePreviousApplication(_ application: NSRunningApplication, displacedBy targetPID: pid_t) async {
+        guard !application.isTerminated else {
+            vippLog.info("paste: skipped previous app restore because it terminated restorePid=\(application.processIdentifier, privacy: .public)")
+            return
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID else {
+            vippLog.info("paste: skipped previous app restore because focus already moved frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            return
+        }
+        let restored = await FocusLockService.shared.activateApplication(application)
+        if restored {
+            vippLog.info("paste: restored and verified previous app restorePid=\(application.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        } else {
+            vippLog.error("paste: failed to restore previous app restorePid=\(application.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         }
     }
 

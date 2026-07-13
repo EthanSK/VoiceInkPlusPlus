@@ -311,15 +311,16 @@ class TranscriptionPipeline {
             let isCancelled = (error as? URLError)?.code == .cancelled
             vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public)")
 
-            if let nativeAppleError = error as? NativeAppleTranscriptionService.ServiceError,
-               nativeAppleError.shouldShowNotification {
+            let wasIntentionalCancellation = isCancelled && shouldCancel()
+            if !wasIntentionalCancellation {
+                let shortReason = String(errorDescription.prefix(120))
                 await MainActor.run {
                     NotificationManager.shared.showNotification(
-                        title: errorDescription,
+                        title: String(format: String(localized: "Transcription failed: %@"), shortReason),
                         type: .error,
                         duration: 5.0
                     )
-                }
+                } // Unexpected transcription failures used to live only in logs/history while the bar vanished; always surface the actual reason unless the user deliberately canceled.
             }
 
             transcription.text = String(format: String(localized: "Transcription Failed: %@"), errorDescription)
@@ -365,16 +366,35 @@ class TranscriptionPipeline {
             }
         }
 
-        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) outputMode=\(String(describing: outputForDelivery?.outputMode), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public)")
+        let pasteTargetForDelivery = resolvePasteTarget()
+        let pipelineOutput = outputForDelivery ?? outputConfiguration()
+        let outputForPasteTarget: OutputRuntimeConfiguration
+        if skipPostProcessingNow {
+            // The one-shot raw/skip contract is stronger than any destination Mode:
+            // it explicitly means paste only, with no Return or other action.
+            outputForPasteTarget = pipelineOutput
+        } else {
+            // The target selected at stop—or replaced by the second-chance Next Track
+            // press during transcription—owns auto-send. Do not read this from the app
+            // Ethan happens to be using when the network response finally arrives.
+            outputForPasteTarget = OutputRuntimeConfiguration(
+                mode: pipelineOutput.mode,
+                outputMode: pipelineOutput.outputMode,
+                autoSendKey: pasteTargetForDelivery.autoSendKey,
+                customCommand: pipelineOutput.customCommand
+            )
+        }
+
+        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public)")
         await delivery.deliver(
             TranscriptionDelivery.Request(
                 transcription: transcription,
                 text: finalText,
-                output: outputForDelivery ?? outputConfiguration(),
+                output: outputForPasteTarget,
                 responseConfig: responseConfig,
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
-                pasteTarget: resolvePasteTarget(), // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
+                pasteTarget: pasteTargetForDelivery, // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).
