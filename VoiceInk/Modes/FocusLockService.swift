@@ -90,29 +90,23 @@ final class FocusLockService: ObservableObject {
         )
     }
 
-    func showPasteDestination(useRecordingStartInput: Bool, target: Target?) {
-        let title: String
-        if let target {
-            let appName = target.app.localizedName ?? target.bundleIdentifier ?? String(localized: "Unknown app")
-            let inputName = inputDisplayName(for: target.element)
-            title = useRecordingStartInput
-                ? "Paste target: recording start — \(appName) — \(inputName)"
-                : "Paste target: recording stop — \(appName) — \(inputName)"
-        } else {
-            title = String(localized: "Paste target: input focused when recording stops")
+    func showPendingPasteInput(_ target: Target?) {
+        guard let target else {
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Paste target unchanged — focus a text input and press Next Track again"),
+                type: .warning,
+                duration: 2.5
+            )
+            return
         }
+
+        let appName = target.app.localizedName ?? target.bundleIdentifier ?? String(localized: "Unknown app")
+        let inputName = inputDisplayName(for: target.element)
         NotificationManager.shared.showNotification(
-            title: title,
+            title: "Pending transcription target: \(appName) — \(inputName)",
             type: .info,
             duration: 2
         )
-    }
-
-    func showPasteDestinationUnavailable(useRecordingStartInput: Bool) {
-        let title = useRecordingStartInput
-            ? String(localized: "Recording-start input unavailable — paste mode unchanged")
-            : String(localized: "Recording-stop input unavailable — paste mode unchanged")
-        NotificationManager.shared.showNotification(title: title, type: .warning, duration: 2.5)
     }
 
     func restoreFocus(to target: Target) async -> Bool {

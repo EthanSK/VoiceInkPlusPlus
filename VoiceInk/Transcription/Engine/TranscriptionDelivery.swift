@@ -234,6 +234,8 @@ final class TranscriptionDelivery {
                 String(localized: "Couldn’t focus the recording-start input — transcription copied to clipboard")
             case .focusedAtStop:
                 String(localized: "Couldn’t focus the stop input — transcription copied to clipboard")
+            case .focusedDuringTranscription:
+                String(localized: "Couldn’t focus the retargeted input — transcription copied to clipboard")
             }
             NotificationManager.shared.showNotification(title: title, type: .error)
             vippLog.error("paste: target restore failed; copied transcription to clipboard instead of pasting into an unintended input")

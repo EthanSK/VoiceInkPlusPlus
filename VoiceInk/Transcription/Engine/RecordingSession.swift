@@ -5,6 +5,7 @@ import os
 enum RecordingPasteDestination: Equatable {
     case recordingStart
     case focusedAtStop
+    case focusedDuringTranscription
 }
 
 struct RecordingPasteTarget {
@@ -141,9 +142,8 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // The target is captured before recording starts and belongs to this exact session so
     // another recording can safely begin while this one is still transcribing.
     var recordingStartFocusedInput: FocusLockService.Target?
-    var recordingStopFocusedInput: FocusLockService.Target?
-    @Published private(set) var useRecordingStartInput = false
-    private(set) var acceptsPasteDestinationToggle = true
+    var pasteTarget: RecordingPasteTarget
+    private(set) var acceptsPasteRetargeting = true
 
     // ── Per-session bits migrated OFF the old engine singletons ──
     // Previously these were single-flight members on VoiceInkEngine; now each session
@@ -203,6 +203,10 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         self.startID = startID
         self.createdAt = Date()
         self.recordingStartFocusedInput = recordingStartFocusedInput
+        self.pasteTarget = RecordingPasteTarget(
+            destination: .recordingStart,
+            focusedInput: recordingStartFocusedInput
+        )
     }
 
     // RecorderStateProvider conformance: the card reads `recordingState` for its spinner/
@@ -211,28 +215,15 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         liveRecordingState
     }
 
-    var showsPasteDestinationIndicator: Bool { true }
-
-    func toggleRecordingStartInputMode() -> Bool? {
-        guard acceptsPasteDestinationToggle else { return nil }
-        useRecordingStartInput.toggle()
-        return useRecordingStartInput
+    func retargetPaste(to target: RecordingPasteTarget) -> Bool {
+        guard acceptsPasteRetargeting else { return false }
+        pasteTarget = target
+        return true
     }
 
     func resolvePasteTargetForDelivery() -> RecordingPasteTarget {
-        acceptsPasteDestinationToggle = false // Delivery resolves exactly once; a later media-key press must pass through rather than falsely claiming it changed an already-issued paste.
-        switch useRecordingStartInput {
-        case true:
-            return RecordingPasteTarget(
-                destination: .recordingStart,
-                focusedInput: recordingStartFocusedInput
-            )
-        case false:
-            return RecordingPasteTarget(
-                destination: .focusedAtStop,
-                focusedInput: recordingStopFocusedInput
-            )
-        }
+        acceptsPasteRetargeting = false // Delivery resolves exactly once; a later media-key press must pass through rather than falsely claiming it changed an already-issued paste.
+        return pasteTarget
     }
 
     // Cancel + tear down this session's background context capture. Safe to call multiple times.

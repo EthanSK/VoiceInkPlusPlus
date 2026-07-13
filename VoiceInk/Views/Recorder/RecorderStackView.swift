@@ -248,17 +248,6 @@ struct TranscribingChip: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: session.useRecordingStartInput ? "arrow.uturn.backward.circle.fill" : "cursorarrow")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(
-                    session.useRecordingStartInput
-                        ? Color(red: 1.0, green: 0.78, blue: 0.35)
-                        : .white.opacity(0.5)
-                )
-                .accessibilityLabel(
-                    Text(session.useRecordingStartInput ? "Recording-start input" : "Recording-stop input")
-                )
-
             // Reuse the existing spinning processing indicator for visual consistency.
             ProcessingIndicator(color: .white.opacity(0.86))
                 .frame(width: 14, height: 14)

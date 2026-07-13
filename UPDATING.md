@@ -27,14 +27,14 @@ The fork's important behavioral patches are:
   focused element DOES follow into the panel, so we read its owning pid → bundle id. Safe/additive:
   for ordinary windows the AX-focused app == frontmost app. Falls back when AX is untrusted, exposes
   no focused element, or the focus is VoiceInk's own (also non-activating) recorder panel.
-- **Per-recording destination control — toggle between the start and stop inputs.** The normal
-  recording shortcut is the only start/stop control and always captures the exact editable input at
-  both boundaries. The macOS Next Track media key toggles that session between its saved start and
-  stop inputs during recording or while transcription/enhancement is still loading; outside an
-  eligible session it continues to control media normally. Each `RecordingSession` owns both inputs,
-  the toggle, and the persistent UI state, preventing concurrent background transcriptions from
-  mixing destinations. The pipeline freezes the session's final choice only immediately before
-  delivery. Delivery waits for cross-app activation,
+- **Per-recording destination control — choose the start or stop input at the end.** The normal
+  recording shortcut stops into the exact input focused at stop. The macOS Next Track media key is
+  intercepted only while actively recording and stops into the exact Accessibility input captured
+  at recording start; outside recording it continues to control media normally. Each
+  `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
+  background transcriptions from mixing destinations. While the newest transcription is still
+  loading, Next Track can replace its target with the input focused at that moment; the pipeline
+  resolves the session's target only immediately before delivery. Delivery waits for cross-app activation,
   restores and verifies the exact element, and copies to the clipboard rather than pasting into an
   unintended field if verification fails. See [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.

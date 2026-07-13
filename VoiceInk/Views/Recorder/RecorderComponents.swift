@@ -466,29 +466,54 @@ struct LiveTranscriptView: View {
     }
 }
 
-// MARK: - Recording Paste Destination Indicator
-
-struct RecordingPasteDestinationIndicator: View {
-    let useRecordingStartInput: Bool
+// MARK: - Focus Lock Indicator
+//
+// Small, unobtrusive caption shown ABOVE the waveform in the recorder UI to tell
+// Ethan that the CURRENT recording is in the long-press "lock the start field"
+// capture mode (Feature A — see FocusLockService). When that mode is NOT active
+// (an ordinary short-press recording) the view collapses to nothing, so a normal
+// recording shows no label at all.
+//
+// Reactivity: observes FocusLockService.shared (an ObservableObject). The
+// service's @Published `isLockActive` flips true when promoteToLock() arms the
+// lock at record-start and false when clearLock() releases it at delivery/end —
+// so this caption appears/disappears live alongside the lock, including clearing
+// itself before any subsequent short-press recording.
+struct FocusLockIndicator: View {
+    // shared singleton; @ObservedObject so SwiftUI re-renders when isLockActive flips.
+    @ObservedObject private var focusLock = FocusLockService.shared
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: useRecordingStartInput ? "arrow.uturn.backward.circle.fill" : "cursorarrow")
-                .font(.system(size: 9, weight: .bold))
-            Text(useRecordingStartInput ? "Paste: recording-start input" : "Paste: recording-stop input")
-                .font(.system(size: 10, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+        Group {
+            if focusLock.isLockActive {
+                // VIPP (2026-06-21): made the indicator VISIBLY DISTINCT for the new
+                // STOP-hold focus-lock path. Ethan's stop-hold gesture (⇧⌃⌥ held on
+                // stop) is subtle and easy to second-guess, so he asked for a clear
+                // at-a-glance signal that the long-hold registered and the special
+                // "lock to start field" mode is engaged. We now prepend a LOCK GLYPH
+                // ("lock.fill") to the caption + tint the whole row a warm accent so it
+                // pops against the recorder's black background — not just the quiet grey
+                // footnote it was before. The lock engages the instant promoteToLock()
+                // flips isLockActive (whether via the STOP-hold timer or the START-hold
+                // path) and clears the moment clearLock() flips it false at delivery/end.
+                HStack(spacing: 4) {
+                    // Lock glyph — the unmistakable "you are in locked mode" cue.
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    // Caption. The exact string is intentional — do not reword.
+                    Text("Using input from voice start")
+                        .font(.system(size: 10, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                // Warm amber accent so the locked state reads as a distinct, deliberate
+                // mode at a glance (vs the neutral grey of a normal recording's UI).
+                .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.35))
+                .transition(.opacity)
+                .accessibilityLabel(Text("Locked: using input from voice start"))
+            }
         }
-        .foregroundColor(
-            useRecordingStartInput
-                ? Color(red: 1.0, green: 0.78, blue: 0.35)
-                : .white.opacity(0.55)
-        )
-        .accessibilityLabel(
-            Text(useRecordingStartInput ? "Paste into the recording-start input" : "Paste into the recording-stop input")
-        )
-        .animation(.easeInOut(duration: 0.2), value: useRecordingStartInput)
+        .animation(.easeInOut(duration: 0.2), value: focusLock.isLockActive)
     }
 }
 
