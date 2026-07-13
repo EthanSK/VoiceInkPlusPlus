@@ -35,7 +35,7 @@ My goal is to make it **the most efficient and privacy-focused voice-to-text sol
 - ⚡ **Modes**: Intelligent app detection automatically applies your perfect pre-configured settings based on the app/ URL you're on
 - 🧠 **Context Aware**: Smart AI that understands your screen content and adapts to the context
 - 🎯 **Global Shortcuts**: Configurable keyboard shortcuts for quick recording and push-to-talk functionality
-- 🧭 **Recording Destination Controls (VoiceInk++)**: Stop normally to paste into the input focused at the end, stop with Next Track to return to the input where recording began, or press Next Track while transcription loads to retarget it again
+- 🧭 **Recording Destination Controls (VoiceInk++)**: Press Next Track during recording or transcription to toggle between the exact inputs captured when recording started and stopped
 - 📝 **Personal Dictionary**: Train the AI to understand your unique terminology with custom words, industry terms, and smart text replacements
 - 🔄 **Smart Modes**: Instantly switch between AI-powered modes optimized for different writing styles and contexts
 - 🤖 **AI Assistant**: Built-in voice assistant mode for a quick chatGPT like conversational assistant

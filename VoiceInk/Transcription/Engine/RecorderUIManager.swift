@@ -194,10 +194,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
     // MARK: - Recorder Panel Management
 
-    func toggleRecorderPanel(
-        modeId: UUID? = nil,
-        stopPasteDestination: RecordingPasteDestination = .focusedAtStop
-    ) async {
+    func toggleRecorderPanel(modeId: UUID? = nil) async {
         guard let engine = engine else { return }
 
         vippLog.info("toggleRecorderPanel: enter panelVisible=\(self.isRecorderPanelVisible, privacy: .public) state=\(String(describing: engine.recordingState), privacy: .public) modeId=\(modeId?.uuidString ?? "nil", privacy: .public)")
@@ -205,10 +202,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         if isRecorderPanelVisible {
             switch engine.recordingState {
             case .recording:
-                await engine.toggleRecord(
-                    modeId: modeId,
-                    stopPasteDestination: stopPasteDestination
-                )
+                await engine.toggleRecord(modeId: modeId)
             case .starting:
                 // Pre-recording: a re-press here genuinely cancels a not-yet-started
                 // session, so cancelling is correct.

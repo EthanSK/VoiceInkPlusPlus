@@ -48,10 +48,11 @@ import os
 // requirements) as @Published members below, so the extension's conformance is satisfied.
 @MainActor
 class VoiceInkEngine: NSObject, ObservableObject {
-    enum PendingPasteRetargetResult {
-        case noPendingTranscription
-        case noFocusedInput
-        case retargeted
+    enum PasteDestinationToggleResult {
+        case noSession
+        case unavailable
+        case usingRecordingStart
+        case usingRecordingStop
     }
 
 
@@ -90,6 +91,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // directly). Kept settable + harmless so the generic view's toggle compiles on the fallback
     // card without affecting any real recording.
     var skipPostProcessing: Bool = false
+    var useRecordingStartInput: Bool { false }
+    var showsPasteDestinationIndicator: Bool { false }
 
     // ── Pipeline cancel-poisoning ──
     // Set of Transcription ids whose pipeline result must be DISCARDED (per-session cancel).
@@ -197,34 +200,42 @@ class VoiceInkEngine: NSObject, ObservableObject {
         sessions.last { $0.phase == .transcribing || $0.phase == .delivering }
     }
 
-    func retargetMostRecentPendingTranscriptionToFocusedInput() -> PendingPasteRetargetResult {
-        guard let session = sessions.last(where: {
-            ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteRetargeting
-        }) else {
-            vippLog.info("paste retarget: no pending transcription still accepts destination changes")
-            return .noPendingTranscription
+    func togglePasteDestinationForCurrentSession() -> PasteDestinationToggleResult {
+        let session = activeRecordingSession ?? sessions.last(where: {
+            ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteDestinationToggle
+        })
+        guard let session else {
+            vippLog.info("paste destination toggle: no recording or pending transcription still accepts changes")
+            return .noSession
         }
 
-        guard let focusedInput = FocusLockService.shared.captureFocusedInput() else {
-            FocusLockService.shared.showPendingPasteInput(nil)
-            vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) kept existing destination because no editable input is focused")
-            return .noFocusedInput
+        let willUseRecordingStart = !session.useRecordingStartInput
+        let selectedInput: FocusLockService.Target?
+        switch willUseRecordingStart {
+        case true:
+            selectedInput = session.recordingStartFocusedInput
+        case false:
+            selectedInput = session.recordingStopFocusedInput
         }
 
-        let didRetarget = session.retargetPaste(
-            to: RecordingPasteTarget(
-                destination: .focusedDuringTranscription,
-                focusedInput: focusedInput
-            )
+        let canSelectDestination = selectedInput != nil || (!willUseRecordingStart && session.phase == .recording)
+        guard canSelectDestination else {
+            FocusLockService.shared.showPasteDestinationUnavailable(useRecordingStartInput: willUseRecordingStart)
+            vippLog.info("paste destination toggle: session \(session.id.uuidString, privacy: .public) unavailable requestedStart=\(willUseRecordingStart, privacy: .public)")
+            return .unavailable
+        }
+
+        guard let nowUsesRecordingStart = session.toggleRecordingStartInputMode() else {
+            vippLog.info("paste destination toggle: session \(session.id.uuidString, privacy: .public) reached delivery before state could change")
+            return .noSession
+        }
+
+        FocusLockService.shared.showPasteDestination(
+            useRecordingStartInput: nowUsesRecordingStart,
+            target: nowUsesRecordingStart ? session.recordingStartFocusedInput : session.recordingStopFocusedInput
         )
-        guard didRetarget else {
-            vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) reached delivery before its destination could change")
-            return .noPendingTranscription
-        }
-
-        FocusLockService.shared.showPendingPasteInput(focusedInput)
-        vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
-        return .retargeted
+        vippLog.info("paste destination toggle: session \(session.id.uuidString, privacy: .public) useRecordingStartInput=\(nowUsesRecordingStart, privacy: .public) phase=\(String(describing: session.phase), privacy: .public)")
+        return nowUsesRecordingStart ? .usingRecordingStart : .usingRecordingStop
     }
 
     /// Recompute the DERIVED compat `recordingState` + `partialTranscript` from the active
@@ -260,11 +271,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     //     started session (re-press during the brief start window).
     //   • Otherwise (idle OR only background transcriptions running) → START a fresh
     //     active session.
-    func toggleRecord(
-        modeId: UUID? = nil,
-        isAssistantFollowUp: Bool = false,
-        stopPasteDestination: RecordingPasteDestination = .focusedAtStop
-    ) async {
+    func toggleRecord(modeId: UUID? = nil, isAssistantFollowUp: Bool = false) async {
         // Mid-start re-press: the active session is still starting → cancel it.
         if let active = activeRecordingSession, active.liveRecordingState == .starting {
             await cancelSession(active)
@@ -279,22 +286,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // that inline await is exactly what blocked the next start in the old engine.
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
-            switch stopPasteDestination {
-            case .recordingStart:
-                active.pasteTarget = RecordingPasteTarget(
-                    destination: .recordingStart,
-                    focusedInput: active.recordingStartFocusedInput
-                )
-            case .focusedAtStop:
-                active.pasteTarget = RecordingPasteTarget(
-                    destination: .focusedAtStop,
-                    focusedInput: FocusLockService.shared.captureFocusedInput()
-                )
-            case .focusedDuringTranscription:
-                preconditionFailure("A transcription-time target can only be selected after recording has stopped")
-            }
-
-            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
+            active.recordingStopFocusedInput = FocusLockService.shared.captureFocusedInput()
+            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing useRecordingStartInput=\(active.useRecordingStartInput, privacy: .public) startTargetCaptured=\(active.recordingStartFocusedInput != nil, privacy: .public) stopTargetCaptured=\(active.recordingStopFocusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing

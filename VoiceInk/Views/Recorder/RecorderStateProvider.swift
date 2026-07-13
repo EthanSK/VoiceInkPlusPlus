@@ -5,6 +5,8 @@ import Foundation
 protocol RecorderStateProvider: AnyObject {
     var recordingState: RecordingState { get }
     var partialTranscript: String { get }
+    var useRecordingStartInput: Bool { get }
+    var showsPasteDestinationIndicator: Bool { get }
 
     // VIPP (skip-mode-processing feature): the per-session, one-shot "skip post-processing
     // for THIS recording" flag. SETTABLE here so the recorder's toggle button (which is
