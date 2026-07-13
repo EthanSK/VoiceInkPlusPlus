@@ -20,6 +20,12 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
 
+    private var capsuleWidth: CGFloat {
+        if hasAssistantResponse { return assistantWidth }
+        if hasLiveTranscript { return expandedWidth }
+        return stateProvider.recordingState == .recording ? 210 : compactWidth // The recording-only width gives the persistent Next Track destination icon room without squeezing the waveform or existing controls.
+    }
+
     // true when live transcript is streaming in during recording
     private var hasLiveTranscript: Bool {
         stateProvider.recordingState == .recording
@@ -111,10 +117,17 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
             Spacer(minLength: 0)
 
-            RecorderModeButton(
-                buttonSize: 22,
-                padding: EdgeInsets()
-            )
+            HStack(spacing: 6) {
+                RecorderModeButton(
+                    buttonSize: 22,
+                    padding: EdgeInsets()
+                )
+
+                if stateProvider.recordingState == .recording {
+                    RecordingStartDestinationIndicator(target: stateProvider.recordingStartFocusedInput) // This is the saved recording-start input—not the currently focused app—because it previews exactly where a Next Track stop will paste.
+                        .transition(.opacity)
+                }
+            }
             .padding(.trailing, 12)
         }
         .frame(height: controlBarHeight)
@@ -152,7 +165,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 .padding(.top, hasLiveTranscript || hasAssistantResponse ? 4 : 6)
             controlBar
         }
-        .frame(width: hasAssistantResponse ? assistantWidth : (hasLiveTranscript ? expandedWidth : compactWidth))
+        .frame(width: capsuleWidth)
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: hasLiveTranscript || hasAssistantResponse ? expandedCornerRadius : compactCornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.3), value: hasLiveTranscript)

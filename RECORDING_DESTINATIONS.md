@@ -18,6 +18,10 @@ for example: **Recording start input: Codex — text area**. This is the destina
 stop action will use. If no editable field actually has focus, it instead warns: **Recording start
 input unavailable — focus a text input before recording**.
 
+While recording, the right side of the recorder capsule persistently shows that saved app's icon,
+so the destination of a Next Track stop is always visible. Hover over the icon to see the exact app
+and input name. A warning icon means no valid recording-start input was captured.
+
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
 transcription phase that starts after recording stops.

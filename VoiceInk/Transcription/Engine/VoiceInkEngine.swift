@@ -81,6 +81,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // Live partial of the ACTIVE recording session (only the recording session streams partials).
     @Published var partialTranscript: String = ""
 
+    var recordingStartFocusedInput: FocusLockService.Target? {
+        activeRecordingSession?.recordingStartFocusedInput
+    }
+
     // VIPP (skip-mode-processing feature): RecorderStateProvider now requires a settable
     // `skipPostProcessing`. The REAL per-session flag lives on each RecordingSession (that's
     // what the live recorder card binds to). The engine only conforms to RecorderStateProvider

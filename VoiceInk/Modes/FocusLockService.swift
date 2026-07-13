@@ -6,10 +6,17 @@ import os
 @MainActor
 final class FocusLockService: ObservableObject {
     struct Target {
+        struct DisplayInfo {
+            let applicationName: String
+            let inputName: String
+            let applicationIcon: NSImage?
+        }
+
         fileprivate let element: AXUIElement
         fileprivate let app: NSRunningApplication
         fileprivate let pid: pid_t
         let bundleIdentifier: String?
+        let displayInfo: DisplayInfo
     }
 
     static let shared = FocusLockService()
@@ -67,7 +74,12 @@ final class FocusLockService: ObservableObject {
             element: element,
             app: app,
             pid: pid,
-            bundleIdentifier: app.bundleIdentifier
+            bundleIdentifier: app.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: app.localizedName ?? app.bundleIdentifier ?? String(localized: "Unknown app"),
+                inputName: inputDisplayName(for: element),
+                applicationIcon: app.icon
+            )
         )
     }
 
@@ -81,10 +93,8 @@ final class FocusLockService: ObservableObject {
             return
         }
 
-        let appName = target.app.localizedName ?? target.bundleIdentifier ?? String(localized: "Unknown app")
-        let inputName = inputDisplayName(for: target.element)
         NotificationManager.shared.showNotification(
-            title: "Recording start input: \(appName) — \(inputName)",
+            title: "Recording start input: \(target.displayInfo.applicationName) — \(target.displayInfo.inputName)",
             type: .info,
             duration: 1.5
         )
@@ -100,10 +110,8 @@ final class FocusLockService: ObservableObject {
             return
         }
 
-        let appName = target.app.localizedName ?? target.bundleIdentifier ?? String(localized: "Unknown app")
-        let inputName = inputDisplayName(for: target.element)
         NotificationManager.shared.showNotification(
-            title: "Pending transcription target: \(appName) — \(inputName)",
+            title: "Pending transcription target: \(target.displayInfo.applicationName) — \(target.displayInfo.inputName)",
             type: .info,
             duration: 2
         )

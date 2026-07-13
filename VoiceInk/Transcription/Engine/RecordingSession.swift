@@ -141,7 +141,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
 
     // The target is captured before recording starts and belongs to this exact session so
     // another recording can safely begin while this one is still transcribing.
-    var recordingStartFocusedInput: FocusLockService.Target?
+    @Published var recordingStartFocusedInput: FocusLockService.Target? // Published because an initially invalid shortcut-time capture can be replaced once microphone recording begins, and the destination icon must then appear immediately.
     var pasteTarget: RecordingPasteTarget
     private(set) var acceptsPasteRetargeting = true
 

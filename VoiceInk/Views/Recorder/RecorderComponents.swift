@@ -517,6 +517,48 @@ struct FocusLockIndicator: View {
     }
 }
 
+// MARK: - Recording Start Destination
+
+struct RecordingStartDestinationIndicator: View {
+    let target: FocusLockService.Target?
+    private let iconSize: CGFloat = 20
+
+    private var helpText: String {
+        guard let target else {
+            return String(localized: "Next Track has no recording-start input — focus an editable input before starting")
+        }
+        return "Next Track → \(target.displayInfo.applicationName) — \(target.displayInfo.inputName)"
+    }
+
+    var body: some View {
+        Group {
+            if let target, let applicationIcon = target.displayInfo.applicationIcon {
+                Image(nsImage: applicationIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            } else if target != nil {
+                Image(systemName: "app.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: iconSize, height: iconSize)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            } else {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(AppTheme.Status.warningStrong)
+                    .frame(width: iconSize, height: iconSize)
+                    .background(AppTheme.Status.warningStrong.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            }
+        }
+        .frame(width: iconSize, height: iconSize)
+        .help(helpText)
+        .accessibilityLabel(Text(helpText))
+    }
+}
+
 // MARK: - Recorder Status Display
 
 struct RecorderStatusDisplay: View {

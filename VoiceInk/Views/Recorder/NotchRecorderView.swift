@@ -260,6 +260,12 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     audioMeter: recorder.audioMeter,
                     menuBarHeight: notchHeight
                 )
+
+                if stateProvider.recordingState == .recording {
+                    RecordingStartDestinationIndicator(target: stateProvider.recordingStartFocusedInput) // Mirrors the mini capsule and previews the exact destination used if Next Track stops this recording.
+                        .padding(.leading, 8)
+                        .transition(.opacity)
+                }
             }
             .padding(.trailing, sideEdgePadding)
             .frame(width: sideExpansion)
