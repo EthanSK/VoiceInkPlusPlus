@@ -32,9 +32,9 @@ class CursorPaster {
 
     @MainActor
     @discardableResult
-    static func startPasteAtCursor(_ text: String) -> Task<PasteResult, Never> {
+    static func startPasteAtCursor(_ text: String, targetPID: pid_t? = nil) -> Task<PasteResult, Never> {
         Task { @MainActor in
-            await performPasteSession(text)
+            await performPasteSession(text, targetPID: targetPID)
         }
     }
 
@@ -44,7 +44,7 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func performPasteSession(_ text: String) async -> PasteResult {
+    private static func performPasteSession(_ text: String, targetPID: pid_t?) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
         let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
@@ -61,7 +61,7 @@ class CursorPaster {
 
         await wait(prePasteDelay)
 
-        let pasteResult = await postPasteCommand()
+        let pasteResult = await postPasteCommand(targetPID: targetPID)
         if shouldRestoreClipboard {
             scheduleClipboardRestore(
                 savedContents,
@@ -86,11 +86,14 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func postPasteCommand() async -> PasteResult {
+    private static func postPasteCommand(targetPID: pid_t?) async -> PasteResult {
+        if let targetPID {
+            return await pasteFromClipboard(targetPID: targetPID) // AppleScript always types into the frontmost app, so cross-app delivery must use process-targeted CGEvents to leave the user's current app untouched.
+        }
         if PasteMethod.current() == .appleScript {
             return pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
         } else {
-            return await pasteFromClipboard()
+            return await pasteFromClipboard(targetPID: nil)
         }
     }
 
@@ -176,7 +179,7 @@ class CursorPaster {
 
     // Posts Cmd+V via CGEvent without modifying the active input source.
     @MainActor
-    private static func pasteFromClipboard() async -> PasteResult {
+    private static func pasteFromClipboard(targetPID: pid_t?) async -> PasteResult {
         guard AXIsProcessTrusted() else {
             logger.error("Accessibility permission is required to paste with simulated key events")
             return .commandNotPosted
@@ -196,13 +199,13 @@ class CursorPaster {
         vDown.flags   = .maskCommand
         vUp.flags     = .maskCommand
 
-        cmdDown.post(tap: .cghidEventTap)
+        postKeyboardEvent(cmdDown, targetPID: targetPID)
         await wait(pasteShortcutEventDelay)
-        vDown.post(tap: .cghidEventTap)
+        postKeyboardEvent(vDown, targetPID: targetPID)
         await wait(pasteShortcutEventDelay)
-        vUp.post(tap: .cghidEventTap)
+        postKeyboardEvent(vUp, targetPID: targetPID)
         await wait(pasteShortcutEventDelay)
-        cmdUp.post(tap: .cghidEventTap)
+        postKeyboardEvent(cmdUp, targetPID: targetPID)
 
         return .commandPosted
     }
@@ -264,8 +267,8 @@ class CursorPaster {
         }
 
         // First Return — posted immediately (in-process CGEvent, key code 36/0x24).
-        postAutoSendEvent(enterDown, targetPID: targetPID)
-        postAutoSendEvent(enterUp, targetPID: targetPID)
+        postKeyboardEvent(enterDown, targetPID: targetPID)
+        postKeyboardEvent(enterUp, targetPID: targetPID)
 
         // Feature B: schedule a SECOND Return ONLY for plain Enter, after a
         // length-scaled delay, to survive a lag-dropped first keystroke.
@@ -284,15 +287,15 @@ class CursorPaster {
             let retrySource = CGEventSource(stateID: .privateState)
             let retryDown = CGEvent(keyboardEventSource: retrySource, virtualKey: 0x24, keyDown: true)
             let retryUp   = CGEvent(keyboardEventSource: retrySource, virtualKey: 0x24, keyDown: false)
-            postAutoSendEvent(retryDown, targetPID: targetPID)
-            postAutoSendEvent(retryUp, targetPID: targetPID)
+            postKeyboardEvent(retryDown, targetPID: targetPID)
+            postKeyboardEvent(retryUp, targetPID: targetPID)
         }
     }
 
-    private static func postAutoSendEvent(_ event: CGEvent?, targetPID: pid_t?) {
+    private static func postKeyboardEvent(_ event: CGEvent?, targetPID: pid_t?) {
         guard let event else { return }
         if let targetPID {
-            event.postToPid(targetPID) // A global event follows whatever app is frontmost after the 500ms paste delay; PID delivery keeps Return bound to the app that received the transcript even after focus moves elsewhere.
+            event.postToPid(targetPID) // Process-targeted Paste/Return stays bound to the saved app instead of following or changing whichever app the user currently has frontmost.
         } else {
             event.post(tap: .cghidEventTap)
         }

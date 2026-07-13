@@ -90,19 +90,20 @@ shortcut is being handled, so VoiceInk++ retries an invalid initial capture once
 recording becomes active. It never saves a generic container and later guesses which descendant the
 user intended.
 
-Before pasting across apps, VoiceInk++:
+Before pasting into the app you are already using, VoiceInk++ restores the saved Accessibility
+element, verifies its exact identity, and only then sends the paste keystroke.
 
-1. Activates the saved app and waits until macOS reports it as frontmost.
-2. Restores the saved Accessibility element as the focused input.
-3. Verifies both the owning process and exact element identity.
-4. Sends the paste keystroke only after verification succeeds.
-5. Returns to the previously active app after the paste unless you already moved focus yourself.
+For a saved input in a background app, VoiceInk++ instead verifies that exact element inside the
+background application's Accessibility hierarchy and posts Command–V directly to that process.
+The background app is not activated, so the app you are currently using stays frontmost. If the
+saved app refuses background focus preparation or the targeted paste cannot be posted, VoiceInk++
+copies the transcription to the clipboard and warns instead of bringing that app forward or guessing.
 
-If the selected mode has auto-send enabled, Return is posted directly to the saved destination
+If the selected mode has auto-send enabled, Return is also posted directly to the saved destination
 process rather than whichever app happens to be frontmost after the paste delay. This lets a
-Claude Code or other terminal prompt submit while you continue working in another app. AppleScript
-cannot reliably type into a background Electron app, so VoiceInk++ uses a process-targeted macOS
-keyboard event for this step.
+Claude Code or other terminal prompt paste and submit while you continue working in another app.
+AppleScript cannot reliably type into a background Electron app, so VoiceInk++ uses process-targeted
+macOS keyboard events for both Paste and Return.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.

@@ -229,20 +229,24 @@ final class TranscriptionDelivery {
             handleMissingPasteTarget(pastedText, destination: target.destination)
             return
         }
-        let previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
-        guard await FocusLockService.shared.restoreFocus(to: focusedInput) else {
+        let targetPID = focusedInput.processIdentifier
+        let postsToBackgroundProcess = NSWorkspace.shared.frontmostApplication?.processIdentifier != targetPID
+        let preparedTarget = if postsToBackgroundProcess {
+            FocusLockService.shared.prepareBackgroundFocus(to: focusedInput)
+        } else {
+            await FocusLockService.shared.restoreFocus(to: focusedInput)
+        }
+        guard preparedTarget else {
             handleMissingPasteTarget(pastedText, destination: target.destination)
             return
         }
 
-        vippLog.info("paste: target restored; issuing paste keystroke now (frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public))")
+        vippLog.info("paste: target prepared; issuing paste keystroke background=\(postsToBackgroundProcess, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
 
-        let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
+        let pasteTask = CursorPaster.startPasteAtCursor(pastedText, targetPID: postsToBackgroundProcess ? targetPID : nil) // Bug fix: cross-app Next Track previously activated the saved app before Cmd+V; targeting Cmd+V by PID keeps the user's current Ableton/Codex/etc. workspace frontmost.
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
-        let targetPID = focusedInput.processIdentifier
-        let applicationToRestore = previouslyFrontmostApplication?.processIdentifier == targetPID ? nil : previouslyFrontmostApplication
-        vippLog.info("paste: delivery scheduled targetPid=\(targetPID, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public) restorePid=\(applicationToRestore?.processIdentifier ?? -1, privacy: .public)")
+        vippLog.info("paste: delivery scheduled targetPid=\(targetPID, privacy: .public) background=\(postsToBackgroundProcess, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public)")
         // Feature B: capture transcript length now so the auto-send can scale its
         // redundant-Enter delay with how much text was pasted (longer paste => the
         // field settles slower under load, so the second Enter gets more headroom).
@@ -250,10 +254,15 @@ final class TranscriptionDelivery {
         Task { @MainActor in
             let pasteResult = await pasteTask.value
             vippLog.info("paste: command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(targetPID, privacy: .public)")
-
-            if let applicationToRestore {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                restorePreviousApplication(applicationToRestore, displacedBy: targetPID) // Cross-app Next Track used to leave the destination app frontmost; return only if it is still frontmost so an intentional user switch is never overridden.
+            guard pasteResult.didPostPasteCommand else {
+                _ = ClipboardManager.copyToClipboard(pastedText)
+                NotificationManager.shared.showNotification(
+                    title: String(localized: "Couldn’t send the paste to the saved input — transcription copied to clipboard"),
+                    type: .error
+                )
+                vippLog.error("paste: command was not posted; copied transcription to clipboard and skipped auto-send")
+                FocusLockService.shared.clearLock()
+                return
             }
 
             if autoSendKey.isEnabled {
@@ -282,19 +291,6 @@ final class TranscriptionDelivery {
         }
         NotificationManager.shared.showNotification(title: title, type: .error)
         vippLog.error("paste: target restore failed; copied transcription to clipboard instead of pasting into an unintended input")
-    }
-
-    private func restorePreviousApplication(_ application: NSRunningApplication, displacedBy targetPID: pid_t) {
-        guard !application.isTerminated else {
-            vippLog.info("paste: skipped previous app restore because it terminated restorePid=\(application.processIdentifier, privacy: .public)")
-            return
-        }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID else {
-            vippLog.info("paste: skipped previous app restore because focus already moved frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return
-        }
-        let activated = application.activate(options: .activateAllWindows)
-        vippLog.info("paste: restored previous app restorePid=\(application.processIdentifier, privacy: .public) accepted=\(activated, privacy: .public)")
     }
 
     private func deliverableText(from text: String) -> String {

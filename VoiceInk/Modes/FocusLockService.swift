@@ -118,6 +118,40 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    func prepareBackgroundFocus(to target: Target) -> Bool {
+        guard AXIsProcessTrusted() else {
+            logger.error("Background focused input preparation failed because Accessibility is not trusted")
+            return false
+        }
+        guard !target.app.isTerminated else {
+            logger.error("Background focused input preparation failed because the target application terminated")
+            return false
+        }
+
+        if let focusedElement = applicationFocusedElement(pid: target.pid), CFEqual(focusedElement, target.element) {
+            logger.info("Background focused input already matches target pid=\(target.pid, privacy: .public) elementHash=\(CFHash(target.element), privacy: .public)")
+            return true
+        }
+
+        let appElement = AXUIElementCreateApplication(target.pid)
+        let restoreResult = AXUIElementSetAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            target.element
+        )
+        guard restoreResult == .success else {
+            logger.error("Background focused input preparation failed with AX error \(restoreResult.rawValue) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return false
+        }
+        guard let focusedElement = applicationFocusedElement(pid: target.pid), CFEqual(focusedElement, target.element) else {
+            logger.error("Background focused input preparation was accepted by AX but exact identity verification failed pid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(target.element), privacy: .public)")
+            return false
+        }
+
+        logger.info("Prepared and verified background focused input pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) elementHash=\(CFHash(target.element), privacy: .public)")
+        return true
+    }
+
     func restoreFocus(to target: Target) async -> Bool {
         guard AXIsProcessTrusted() else {
             logger.error("Focused input restore failed because Accessibility is not trusted")
@@ -233,6 +267,22 @@ final class FocusLockService: ObservableObject {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return nil }
         return (element, pid)
+    }
+
+    private func applicationFocusedElement(pid: pid_t) -> AXUIElement? {
+        let appElement = AXUIElementCreateApplication(pid)
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedValue
+        ) == .success,
+        let focusedValue,
+        CFGetTypeID(focusedValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        let element = focusedValue as! AXUIElement
+        return element
     }
 
     private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
