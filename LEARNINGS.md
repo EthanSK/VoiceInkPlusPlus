@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-14T19:14:59Z
+**Trigger:** Ethan asked for a Logitech G HUB sanity check before trusting and preserving the canonical primary/Next terminology.
+**Symptom:** The repository's button aliases matched Ethan's intent, but the live physical G HUB mapping had not been verified. Raw assignment inspection appeared to make the separate forward control look like ordinary Mouse Button 5, risking a new implementation that listened for the wrong event.
+**Root cause:** Ethan's G502 X LIGHTSPEED exposes several distinct side and top controls. G HUB's raw profile/card data is not enough on its own to identify the resolved physical label, and the spoken word 'forward' can be confused with macOS Mouse Button 5 even though Ethan means the separate control assigned to Next Track.
+**Fix:** Commit 0de10b2 records the live Desktop: Default mapping in TERMINOLOGY.md, AGENTS.md, RECORDING_DESTINATIONS.md, and the shared learnings skill: the upper side thumb control runs the speech-to-text Shift-Control-Option macro and is Primary; a different control explicitly labeled Next Track is Next; G HUB's Mouse Button 4 and Mouse Button 5 controls are separate.
+**Commit:** 0de10b2
+**Guard:** A read-only live check confirmed G HUB Desktop: Default was active with onboard mode off; VoiceInk++ stored modifier-only Shift-Control-Option in toggle mode; G HUB View 2 showed speech to text plus separate Mouse Button 4/5 controls, while View 1 showed Next Track. Future checks must compare the active resolved assignment diagram with VoiceInk++'s stored shortcut, then run skill validation.
+---
+
+
+---
 **Date:** 2026-07-14T18:51:36Z
 **Trigger:** Ethan asked for a cross-session terminology audit and clarified that pressing the same primary/thumb/toggle button to stop must never paste into the old recording-start input.
 **Symptom:** “Toggle,” “same button,” “normal button,” “secondary behavior,” “latch,” and “start of transcription” had been used for different controls or timing routes. The repo standardized Next-button aliases but never defined the primary button, while Git history still contained both the primary shortcut's `.toggle` mode and the rejected Next-destination toggle experiment.
