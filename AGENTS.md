@@ -1,6 +1,6 @@
 # VoiceInk++ agent instructions
 
-These repository-specific rules are mandatory for every future agent working on recording destinations, Next Track handling, focus restoration, recorder UI, paste delivery, or auto-send.
+These repository-specific rules are mandatory for every future agent working on recording destinations, mouse-button handling, focus restoration, recorder UI, paste delivery, or auto-send.
 
 ## Repository learnings contract
 
@@ -9,13 +9,19 @@ These repository-specific rules are mandatory for every future agent working on 
 - When a lesson changes the reusable workflow, terminology, safety rules, or validation procedure, update the learnings skill itself, retest its affected scripts/behavior, and validate the skill before finishing.
 - Codex discovers the canonical skill in `.agents/skills`; Claude Code uses the same folder through `.claude/skills/learnings`. Never maintain divergent copies.
 
-## Non-negotiable Next Track contract
+## Canonical mouse terminology
+
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop into only the exact input focused at stop (`focusedAtStop`). A primary normal stop must never reuse or fall back to `recordingStart`; capture or verification failure must remain visible and safe.
+
+The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
+
+## Non-negotiable Next button contract
 
 Use **Next button** as the preferred user-facing term. **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases for the same physical control or its macOS event. They do not create additional routes. Use **second chance** only for route 3 below, and never describe it as a toggle.
 
 VoiceInk++ has three distinct one-click destination routes. Do not merge them, reinterpret them as a toggle, or infer one from another:
 
-1. **Normal stop while recording:** stop recording and save the exact editable input focused at stop (`focusedAtStop`).
+1. **Primary button again while recording:** normal stop and save only the exact editable input focused at stop (`focusedAtStop`). Never fall back to the recording-start input.
 2. **Next Track while recording:** stop recording and save the input captured at recording start (`recordingStart`), with the documented safe application fallback for Electron/Chromium.
 3. **Next Track after a normal stop, while the newest result is still transcribing/enhancing:** this is Ethan's **second chance**. Replace that pending session's destination with the exact editable input focused now (`focusedDuringTranscription`). It does not stop anything, toggle anything, or release the target.
 
@@ -44,7 +50,7 @@ The saved input and its target app's `autoSendKey` are one atomic, per-session d
 
 ## Required reading and validation
 
-Before changing this behavior, read `RECORDING_DESTINATIONS.md` and the newest relevant entries in `LEARNINGS.md`. The accepted implementation is commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`). The earlier accepted retarget foundation is `cba45ba`; the later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`.
+Before changing this behavior, read `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, and the newest relevant entries in `LEARNINGS.md`. The accepted implementation is commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`). The earlier accepted retarget foundation is `cba45ba`; the later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`.
 
 At minimum, preserve the regression test named `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` and verify a real trace contains all of:
 

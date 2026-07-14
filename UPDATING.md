@@ -42,7 +42,9 @@ The fork's important behavioral patches are:
   route: while the newest result is loading it atomically replaces both the pending exact input and
   that target app's auto-send key, so moving to another app before delivery cannot remove Return.
   This is never a toggle and must not be confused with Next Track while recording, which stops into
-  the recording-start input. See [Recording Destination Controls](RECORDING_DESTINATIONS.md)
+  the recording-start input. A normal primary-button stop must never reuse or fall back to that
+  recording-start input if stop-time capture or verification fails. See the canonical
+  [Mouse terminology](TERMINOLOGY.md) and [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.
 
 The active-window service's `start()` is wired once at app launch in `VoiceInk.swift` (right after

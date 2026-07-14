@@ -6,13 +6,15 @@ transcript belongs.
 
 ## Terminology
 
-**Next button** is the preferred user-facing name for the programmable mouse button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” “Secondary mouse button,” “latch button,” and “retarget button” are conversational aliases for that same control. They do not name separate modes. “Second chance” refers only to a Next-button retarget after a normal stop while transcription is still loading.
+The **primary button** is Ethan's normal/thumb/toggle recording button: the first press starts recording and pressing that same button again performs a normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
+
+Read [VoiceInk++ terminology](TERMINOLOGY.md) for the complete alias map, timing table, and history of the deliberately reverted Next-toggle experiment.
 
 ## Controls
 
 | Stop action | Paste destination |
 | --- | --- |
-| Normal configured recording shortcut | The exact text input focused when you stop recording |
+| Primary/thumb/toggle button again | Normal stop: only the exact text input focused when you stop recording; never the recording-start input |
 | **Next button** while recording | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next button** with no recording or retargetable transcription | Its Next Track event passes through normally to Spotify, Music, and other media apps |
@@ -68,6 +70,10 @@ This is deliberately separate from pressing Next Track while recording. During r
 Track stops and chooses the recording-start input. After a normal stop has already started
 transcription, Next Track is a one-click second chance to choose a new input. It replaces the pending
 target once; it does not toggle or release it.
+
+If a primary normal stop cannot capture or later verify its exact stop-time input, VoiceInk++ must
+fail visibly and preserve the transcript safely. It must not silently fall back to the older
+recording-start input; that input is invoked only by Next while recording.
 
 This exact second-chance route was live-confirmed repeatedly on 2026-07-13 after commit `1eabb1b`:
 the trace recorded `focusedDuringTranscription`, `targetAutoSend=enter`, and verified successful

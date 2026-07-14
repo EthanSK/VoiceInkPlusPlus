@@ -7,7 +7,7 @@
 
   **Either you or the agent is running.**
 
-  [Website](https://ethansk.github.io/VoiceInkPlusPlus/) · [Build guide](BUILDING.md) · [Destination guide](RECORDING_DESTINATIONS.md) · [Issues](https://github.com/EthanSK/VoiceInkPlusPlus/issues)
+  [Website](https://ethansk.github.io/VoiceInkPlusPlus/) · [Build guide](BUILDING.md) · [Button glossary](TERMINOLOGY.md) · [Destination guide](RECORDING_DESTINATIONS.md) · [Issues](https://github.com/EthanSK/VoiceInkPlusPlus/issues)
 
   [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-50e3bf.svg)](LICENSE)
   ![Platform: macOS 14.4+](https://img.shields.io/badge/macOS-14.4%2B-7aa7ff.svg)
@@ -21,11 +21,11 @@ It is built for people who use AI agents, terminals, chats, and editors all day�
 
 ## The reason VoiceInk++ exists
 
-Most dictation tools bind a recording to wherever you happen to be when the result arrives. VoiceInk++ gives two mouse buttons three deliberate routes. In this documentation, **Next button** means the programmable mouse button mapped to the standard macOS **Next Track** media action.
+Most dictation tools bind a recording to wherever you happen to be when the result arrives. VoiceInk++ gives two mouse buttons three deliberate routes. The **primary button** is Ethan's normal/thumb/toggle recording button; the separate **Next button** is mapped to the standard macOS **Next Track** media action. [The canonical glossary](TERMINOLOGY.md) records every conversational alias.
 
 | What you do | Where the transcript goes |
 | --- | --- |
-| Stop with the normal recording button | The exact editable input focused when you stop |
+| Press the primary button again to stop normally | The exact editable input focused when you stop; never the recording-start input |
 | Press the **Next button** while recording | The input captured when recording started |
 | Stop normally, then press the **Next button** while transcription is loading | A second chance: replace the pending destination with the exact input focused now |
 
@@ -125,6 +125,7 @@ open ~/Downloads/VoiceInkPlusPlus.app
 ## Documentation
 
 - [Build VoiceInk++](BUILDING.md)
+- [Translate Ethan's mouse-button terminology](TERMINOLOGY.md)
 - [Understand the Next button and recording destinations](RECORDING_DESTINATIONS.md)
 - [Read the accepted implementation learnings](LEARNINGS.md)
 - [Use the self-improving Codex/Claude Code learnings skill](.agents/skills/learnings/SKILL.md)

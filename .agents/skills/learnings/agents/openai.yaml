@@ -1,4 +1,4 @@
 interface:
   display_name: "Learnings"
-  short_description: "Preserve verified VoiceInk++ lessons"
-  default_prompt: "Use $learnings to check prior project evidence and preserve every durable verified lesson from this task."
+  short_description: "Preserve VoiceInk++ terminology and evidence"
+  default_prompt: "Use $learnings to normalize Ethan's button terminology, check prior VoiceInk++ evidence, and preserve every durable verified lesson from this task."
