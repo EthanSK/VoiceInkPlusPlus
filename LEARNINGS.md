@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-14T20:20:54Z
+**Trigger:** Ethan asked for the floating recorder app icon corresponding to the action just taken to fade in and pulsate with a neon glow: left for a normal primary-button stop and right for the secondary/Next latch behavior.
+**Symptom:** The current-focus and locked-destination icons showed persistent routing state but gave no momentary confirmation of which physical button route had just fired, making a normal stop and a Next-button destination action harder to distinguish at a glance across the mirrored recorder panels.
+**Root cause:** Recorder UI state exposed only the current application and saved paste target. There was no per-session action event, and deriving one later from global focus or transcription state would be ambiguous, could drift after an app switch, and would not reliably synchronize independent SwiftUI hierarchies on every display.
+**Fix:** Commit `eca6bda` added a uniquely identified `RecorderIconActionPulse` owned and published by each `RecordingSession`. `focusedAtStop` emits a left/current-focus pulse after the primary stop owns its target; `recordingStart` emits a right/locked pulse for Next while recording; an accepted `focusedDuringTranscription` retarget emits that same right pulse atomically inside the successful latch. Mini and notch views on every monitor consume the shared token through a cyan fade-in/two-beat halo modifier, with a non-scaling Reduce Motion variant. Failed second-chance capture, rejected late retargets, and ordinary media pass-through do not emit a success pulse. The numbered installed release is `v2.0.205`.
+**Commit:** eca6bda
+**Guard:** `recorderIconPulseMapsPrimaryAndNextRoutesToSeparateIcons` asserts the route-to-icon mapping and unique event tokens; `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` now also asserts that only an accepted second chance emits the locked pulse and a rejected late retarget cannot replace it. All five tests passed on the Mac Mini, the shared learnings skill validated, and the signed build-205 bundle was installed after the five-second warning with the official VoiceInk app untouched.
+---
+
+---
 **Date:** 2026-07-14T20:04:50Z
 **Trigger:** Ethan asked to show the exact app version beside Stop and reiterated that every completed VoiceInk++ change must replace the installed app after a five-second warning.
 **Symptom:** Native source could change while the still-running installed app remained older, and the recorder bar exposed no build identifier. With marketing version 2.0 unchanged across builds, Ethan could not tell at a glance whether an agent had actually installed and restarted the release it claimed was current.
