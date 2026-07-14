@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-14T18:51:36Z
+**Trigger:** Ethan asked for a cross-session terminology audit and clarified that pressing the same primary/thumb/toggle button to stop must never paste into the old recording-start input.
+**Symptom:** “Toggle,” “same button,” “normal button,” “secondary behavior,” “latch,” and “start of transcription” had been used for different controls or timing routes. The repo standardized Next-button aliases but never defined the primary button, while Git history still contained both the primary shortcut's `.toggle` mode and the rejected Next-destination toggle experiment.
+**Root cause:** The behavior evolved from a long-press experiment into two physical buttons, then briefly into a Next toggle, then back to one-click timing routes. Without a timing-based glossary, later agents could merge primary normal stop, recording-time Next, and post-stop second chance or treat the recording-start input as a normal-stop fallback.
+**Fix:** Commit `055b39e` added `TERMINOLOGY.md` with the canonical alias and timing tables plus the historical audit, linked it from README.md, AGENTS.md, RECORDING_DESTINATIONS.md, and UPDATING.md, and taught the shared Codex/Claude learnings skill the same mapping. The hard rule is now explicit: primary again selects only `focusedAtStop`; only Next while recording selects `recordingStart`; Next after a primary normal stop selects `focusedDuringTranscription`.
+**Commit:** 055b39e
+**Guard:** Future destination work must read TERMINOLOGY.md and restate physical control + timing + destination before changing code. Static inspection confirms `VoiceInkEngine` assigns `.focusedAtStop` and `.recordingStart` in separate switch branches, while delivery permits application fallback only for `.recordingStart`; skill validation, shell syntax checks, link checks, and `git diff --check` passed.
+---
+
+---
 **Date:** 2026-07-14T00:53:13Z
 **Trigger:** Ethan asked to add Codex and Claude Code support, consolidate Next-button aliases, and make project learnings self-improving.
 **Symptom:** Codex and Claude Code needed explicit Next-button support without risking the accepted three-route destination behavior.
