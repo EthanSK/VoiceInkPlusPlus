@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-14T20:31:21Z
+**Trigger:** Ethan requested the version number split over two lines with larger text to use the recorder bar's top and bottom whitespace.
+**Symptom:** The recorder's one-line v2.0.205 label was cramped at 8 pt and left unused vertical space, making the exact running release hard to read.
+**Root cause:** RecorderVersionLabel concatenated CFBundleShortVersionString and CFBundleVersion into one compact Text view instead of treating the 40 pt bar as a two-row information slot.
+**Fix:** RecorderVersionPresentation now renders v<marketing-version> above .<build-number> in a centered 10 pt semibold monospaced stack shared by every recorder panel; release docs describe the split and native build 206 was signed, installed, and relaunched.
+**Commit:** 94e98b9
+**Guard:** recorderVersionSplitsMarketingAndBuildAcrossTwoRows asserts 2.0 + 206 becomes v2.0 / .206 with one accessibility label; all six tests pass on the Mac Mini and installed v2.0.206 passed deep/strict signature plus live PID verification.
+---
+
+
+---
 **Date:** 2026-07-14T20:20:54Z
 **Trigger:** Ethan asked for the floating recorder app icon corresponding to the action just taken to fade in and pulsate with a neon glow: left for a normal primary-button stop and right for the secondary/Next latch behavior.
 **Symptom:** The current-focus and locked-destination icons showed persistent routing state but gave no momentary confirmation of which physical button route had just fired, making a normal stop and a Next-button destination action harder to distinguish at a glance across the mirrored recorder panels.
