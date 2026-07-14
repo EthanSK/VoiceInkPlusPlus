@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-14T00:53:13Z
+**Trigger:** Ethan asked to add Codex and Claude Code support, consolidate Next-button aliases, and make project learnings self-improving.
+**Symptom:** Codex and Claude Code needed explicit Next-button support without risking the accepted three-route destination behavior.
+**Root cause:** Codex CLI and Claude Code do not own separate macOS editable inputs; the terminal or editor host owns the Accessibility element and therefore must also own the per-session Mode and auto-send decision. Codex desktop remains the distinct verified composer case.
+**Fix:** Documented the host-input compatibility model in README.md, RECORDING_DESTINATIONS.md, and GitHub Pages; standardized the public Next button term; added one canonical self-improving repository skill shared by Codex and Claude Code. Native delivery code was intentionally unchanged.
+**Commit:** 00066dd
+**Guard:** The existing secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt contract remains untouched; the skill preserves all three routes and aliases; static site, HTML, CSS, JS, skill, and script validation pass.
+---
+
+
+---
 **Date:** 2026-07-13T22:31:45Z
 **Trigger:** Ethan clarified—again—that normal stop followed by Next Track during transcription is a separate second-chance workflow, not the recording-start Next Track stop route
 **Symptom:** A pending session could correctly replace its input with `destination=focusedDuringTranscription`, yet paste-time Return could still disappear after Ethan moved to another app. This made the destination icon look latched while auto-send behaved as though it belonged to whichever app was current when the network response finished.
