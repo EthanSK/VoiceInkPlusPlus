@@ -2,7 +2,7 @@
 
 Per-repo institutional memory for fixes. Every entry below is a real bug we hit + how we solved it. Check this file BEFORE attempting a same-looking fix.
 
-Maintained by the `learnings` skill — see `~/.claude/skills/learnings/skill.md`.
+Maintained by the public, self-improving `learnings` skill at `.agents/skills/learnings/SKILL.md`. Codex discovers that canonical folder directly; Claude Code follows `.claude/skills/learnings` to the same skill.
 
 ## Format
 
@@ -14,7 +14,8 @@ Each entry looks like:
 **Trigger:** <voice N / message snippet / null>
 **Symptom:** <what was visible>
 **Root cause:** <what we actually found>
-**Fix:** <file:line + short prose + commit SHA>
+**Fix:** <file:line + short prose>
+**Commit:** <implementation SHA>
 **Guard:** <test / lint / watchdog / comment that prevents regression — or 'none'>
 ---
 ```
@@ -22,6 +23,17 @@ Each entry looks like:
 ## Entries
 
 (newest first)
+
+---
+**Date:** 2026-07-14T00:53:13Z
+**Trigger:** Ethan asked to add Codex and Claude Code support, consolidate Next-button aliases, and make project learnings self-improving.
+**Symptom:** Codex and Claude Code needed explicit Next-button support without risking the accepted three-route destination behavior.
+**Root cause:** Codex CLI and Claude Code do not own separate macOS editable inputs; the terminal or editor host owns the Accessibility element and therefore must also own the per-session Mode and auto-send decision. Codex desktop remains the distinct verified composer case.
+**Fix:** Documented the host-input compatibility model in README.md, RECORDING_DESTINATIONS.md, and GitHub Pages; standardized the public Next button term; added one canonical self-improving repository skill shared by Codex and Claude Code. Native delivery code was intentionally unchanged.
+**Commit:** 00066dd
+**Guard:** The existing secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt contract remains untouched; the skill preserves all three routes and aliases; static site, HTML, CSS, JS, skill, and script validation pass.
+---
+
 
 ---
 **Date:** 2026-07-13T22:31:45Z
