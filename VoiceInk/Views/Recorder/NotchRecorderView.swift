@@ -220,13 +220,16 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     menuBarHeight: notchHeight
                 )
 
-                CurrentFocusApplicationIndicator()
+                CurrentFocusApplicationIndicator(
+                    actionPulseID: stateProvider.currentFocusIconActionPulseID
+                )
                     .padding(.leading, 8)
 
                 if shouldShowPasteDestinationIndicator {
                     PasteDestinationIndicator(
                         target: stateProvider.pasteDestinationIndicatorTarget,
-                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste
+                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
+                        actionPulseID: stateProvider.lockedDestinationIconActionPulseID
                     ) // Mirrors the mini capsule and stays attached to this session until paste succeeds or visibly fails.
                         .padding(.leading, 8)
                         .transition(.opacity)

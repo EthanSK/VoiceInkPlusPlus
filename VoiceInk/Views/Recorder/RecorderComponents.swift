@@ -516,9 +516,123 @@ struct LiveTranscriptView: View {
 
 // MARK: - Current App + Paste Destination
 
+/// A short, deliberate confirmation effect for destination actions. The app icon
+/// fades up, lands with two restrained beats, then leaves no persistent decoration.
+/// Scale is disabled under Reduce Motion while the useful light confirmation remains.
+private struct RecorderIconActionPulseModifier: ViewModifier {
+    let trigger: UUID?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var glowStrength: CGFloat = 0
+    @State private var iconScale: CGFloat = 1
+    @State private var iconOpacity: Double = 1
+    @State private var pulseTask: Task<Void, Never>?
+
+    private let neon = Color(red: 0.20, green: 0.91, blue: 1.00)
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(iconOpacity)
+            .scaleEffect(iconScale)
+            .background {
+                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                    .fill(neon.opacity(0.22 * Double(glowStrength)))
+                    .scaleEffect(1 + (0.52 * glowStrength))
+                    .blur(radius: 5)
+                    .allowsHitTesting(false)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                    .stroke(
+                        neon.opacity(0.95 * Double(glowStrength)),
+                        lineWidth: 0.7 + glowStrength
+                    )
+                    .scaleEffect(1 + (0.24 * glowStrength))
+                    .shadow(
+                        color: neon.opacity(0.90 * Double(glowStrength)),
+                        radius: 2 + (6 * glowStrength)
+                    )
+                    .shadow(
+                        color: Color.blue.opacity(0.56 * Double(glowStrength)),
+                        radius: 5 + (7 * glowStrength)
+                    )
+                    .allowsHitTesting(false)
+            }
+            .onChange(of: trigger) {
+                guard trigger != nil else { return }
+                startPulse()
+            }
+            .onDisappear {
+                pulseTask?.cancel()
+                pulseTask = nil
+            }
+    }
+
+    private func startPulse() {
+        pulseTask?.cancel()
+        let shouldReduceMotion = reduceMotion
+
+        var resetTransaction = Transaction()
+        resetTransaction.disablesAnimations = true
+        withTransaction(resetTransaction) {
+            glowStrength = 0
+            iconScale = shouldReduceMotion ? 1 : 0.82
+            iconOpacity = shouldReduceMotion ? 0.68 : 0.42
+        }
+
+        pulseTask = Task { @MainActor in
+            withAnimation(.easeOut(duration: 0.16)) {
+                glowStrength = shouldReduceMotion ? 0.76 : 1
+                iconScale = shouldReduceMotion ? 1 : 1.12
+                iconOpacity = 1
+            }
+
+            do { try await Task.sleep(nanoseconds: 170_000_000) } catch { return }
+
+            if shouldReduceMotion {
+                withAnimation(.easeOut(duration: 0.42)) {
+                    glowStrength = 0
+                }
+                return
+            }
+
+            withAnimation(.easeInOut(duration: 0.18)) {
+                glowStrength = 0.44
+                iconScale = 0.96
+            }
+
+            do { try await Task.sleep(nanoseconds: 190_000_000) } catch { return }
+
+            withAnimation(.easeOut(duration: 0.16)) {
+                glowStrength = 0.82
+                iconScale = 1.07
+            }
+
+            do { try await Task.sleep(nanoseconds: 170_000_000) } catch { return }
+
+            withAnimation(.easeOut(duration: 0.42)) {
+                glowStrength = 0
+                iconScale = 1
+                iconOpacity = 1
+            }
+        }
+    }
+}
+
+private extension View {
+    func recorderIconActionPulse(trigger: UUID?) -> some View {
+        modifier(RecorderIconActionPulseModifier(trigger: trigger))
+    }
+}
+
 struct CurrentFocusApplicationIndicator: View {
     @ObservedObject private var activeWindowService = ActiveWindowService.shared
+    let actionPulseID: UUID?
     private let iconSize: CGFloat = 20
+
+    init(actionPulseID: UUID? = nil) {
+        self.actionPulseID = actionPulseID
+    }
 
     private var application: NSRunningApplication? {
         if let currentApplication = activeWindowService.currentApplication,
@@ -557,6 +671,7 @@ struct CurrentFocusApplicationIndicator: View {
             }
         }
         .frame(width: iconSize, height: iconSize)
+        .recorderIconActionPulse(trigger: actionPulseID)
         .help(helpText)
         .accessibilityLabel(Text(helpText))
     }
@@ -570,7 +685,18 @@ struct PasteDestinationIndicator: View {
 
     let target: FocusLockService.Target?
     let context: Context
+    let actionPulseID: UUID?
     private let iconSize: CGFloat = 20
+
+    init(
+        target: FocusLockService.Target?,
+        context: Context,
+        actionPulseID: UUID? = nil
+    ) {
+        self.target = target
+        self.context = context
+        self.actionPulseID = actionPulseID
+    }
 
     private var helpText: String {
         guard let target else {
@@ -610,6 +736,7 @@ struct PasteDestinationIndicator: View {
             }
         }
         .frame(width: iconSize, height: iconSize)
+        .recorderIconActionPulse(trigger: actionPulseID)
         .help(helpText)
         .accessibilityLabel(Text(helpText))
     }

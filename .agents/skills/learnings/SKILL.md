@@ -44,6 +44,8 @@ Keep these three routes distinct:
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still loading | Second chance: replace that pending session's input and auto-send atomically (`focusedDuringTranscription`) |
 
+Preserve the recorder's action feedback mapping on every mirrored panel: a primary normal stop pulses the left/current-focus app icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Keep the Reduce Motion variant non-scaling.
+
 For delivery, never use process-targeted Command-V. A targeted Return is permitted only inside the proven exact-background session that uniquely resolves the saved window/editor, prepares Electron activation state, verifies the exact insertion, keeps the macOS frontmost PID unchanged, and verifies submission from Accessibility contents. Otherwise use the verified foreground route or fail visibly to the clipboard; never treat AX/event acceptance alone as success.
 
 ## Record only durable verified findings

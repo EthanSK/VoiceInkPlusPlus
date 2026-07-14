@@ -8,6 +8,29 @@ enum RecordingPasteDestination: Equatable {
     case focusedDuringTranscription
 }
 
+/// One user-confirmation pulse in the recorder bar. The token belongs to the
+/// recording session so every mirrored monitor panel sees the same action, and
+/// the icon is derived from the destination route at the moment it is chosen.
+struct RecorderIconActionPulse: Equatable {
+    enum Icon: Equatable {
+        case currentFocus
+        case lockedDestination
+    }
+
+    let id: UUID
+    let icon: Icon
+
+    init(destination: RecordingPasteDestination, id: UUID = UUID()) {
+        self.id = id
+        switch destination {
+        case .focusedAtStop:
+            icon = .currentFocus
+        case .recordingStart, .focusedDuringTranscription:
+            icon = .lockedDestination
+        }
+    }
+}
+
 struct RecordingPasteTarget {
     let destination: RecordingPasteDestination
     let focusedInput: FocusLockService.Target?
@@ -160,6 +183,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // another recording can safely begin while this one is still transcribing.
     @Published var recordingStartFocusedInput: FocusLockService.Target? // Published because an initially invalid shortcut-time capture can be replaced once microphone recording begins, and the destination icon must then appear immediately.
     @Published var pasteTarget: RecordingPasteTarget // Published so the icon remains visible after stop and immediately follows a Next Track retarget while transcription is still loading.
+    @Published private(set) var iconActionPulse: RecorderIconActionPulse?
     private(set) var acceptsPasteRetargeting = true
     private var triggerWordModeOverride: ModeConfig?
 
@@ -257,7 +281,17 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     func retargetPaste(to target: RecordingPasteTarget) -> Bool {
         guard acceptsPasteRetargeting else { return false }
         pasteTarget = target
+        // This method is the successful second-chance latch boundary. Emit only
+        // after the target was accepted; a failed/no-input Next press must keep
+        // its warning behavior and never flash a misleading success pulse.
+        if target.destination == .focusedDuringTranscription {
+            signalDestinationAction(target.destination)
+        }
         return true
+    }
+
+    func signalDestinationAction(_ destination: RecordingPasteDestination) {
+        iconActionPulse = RecorderIconActionPulse(destination: destination)
     }
 
     func applyTriggerWordModeOverride(_ mode: ModeConfig) {

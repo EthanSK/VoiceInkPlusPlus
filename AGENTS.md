@@ -40,6 +40,7 @@ The saved input and its target app's `autoSendKey` are one atomic, per-session d
 - Mode icon/emoji is left of the waveform.
 - The right side has two separate icons: current focused app first, then the per-session locked destination.
 - The locked icon remains visible through transcription and changes immediately after a successful second-chance retarget. Do not replace that visual confirmation with a success toast.
+- Destination actions use the per-session neon confirmation pulse on every mirrored panel: a primary-button normal stop pulses the left/current-focus icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Preserve the non-scaling Reduce Motion variant.
 
 ## Delivery safety
 

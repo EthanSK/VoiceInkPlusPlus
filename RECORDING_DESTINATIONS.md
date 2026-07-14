@@ -30,6 +30,12 @@ pending app/input. If Electron/Chromium exposes only an app-level container whil
 down, VoiceInk++ saves the owning application. A warning icon and notification appear when neither
 an editable input nor a safe web-app container can be captured.
 
+The icon for the action just taken confirms the route with a brief neon pulse on every monitor. A
+primary-button normal stop pulses the first/current-focus icon. Next while recording pulses the
+second/locked icon, as does a successful Next second-chance retarget while transcription is loading.
+A failed retarget or an ordinary pass-through Next Track media press does not pulse. With macOS
+Reduce Motion enabled, the same confirmation uses a light fade without the scale beats.
+
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
 transcription phase that starts after recording stops.

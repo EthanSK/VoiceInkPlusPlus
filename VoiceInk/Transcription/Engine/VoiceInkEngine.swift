@@ -85,6 +85,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingSession?.pasteDestinationIndicatorTarget
     }
 
+    // RecorderStateProvider fallback used only by the assistant-only card. Real
+    // recording UI observes RecordingSession, which owns the per-action pulse.
+    var iconActionPulse: RecorderIconActionPulse? { nil }
+
     // VIPP (skip-mode-processing feature): RecorderStateProvider now requires a settable
     // `skipPostProcessing`. The REAL per-session flag lives on each RecordingSession (that's
     // what the live recorder card binds to). The engine only conforms to RecorderStateProvider
@@ -310,6 +314,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
             case .focusedDuringTranscription:
                 preconditionFailure("A transcription-time target can only be selected after recording has stopped")
             }
+
+            // Publish the feedback token only after the selected route has owned
+            // its per-session target. All mirrored recorder windows observe this
+            // same session and therefore pulse in sync without re-reading focus.
+            active.signalDestinationAction(stopPasteDestination)
 
             vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 

@@ -140,12 +140,15 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 6) {
-                CurrentFocusApplicationIndicator()
+                CurrentFocusApplicationIndicator(
+                    actionPulseID: stateProvider.currentFocusIconActionPulseID
+                )
 
                 if shouldShowPasteDestinationIndicator {
                     PasteDestinationIndicator(
                         target: stateProvider.pasteDestinationIndicatorTarget,
-                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste
+                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
+                        actionPulseID: stateProvider.lockedDestinationIconActionPulseID
                     ) // Do not hide this at stop: the same per-session icon confirms VoiceInk still owns the target while transcription is loading, and updates if Next Track retargets it.
                         .transition(.opacity)
                 }

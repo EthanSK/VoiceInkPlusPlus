@@ -27,6 +27,10 @@ struct VoiceInkTests {
         )
 
         #expect(session.retargetPaste(to: retargeted))
+        let acceptedPulse = session.iconActionPulse
+        #expect(acceptedPulse?.icon == .lockedDestination)
+        #expect(session.lockedDestinationIconActionPulseID == acceptedPulse?.id)
+        #expect(session.currentFocusIconActionPulseID == nil)
         let resolvedTarget = session.resolvePasteTargetForDelivery()
         #expect(resolvedTarget.destination == .focusedDuringTranscription)
         #expect(resolvedTarget.autoSendKey == .enter)
@@ -35,6 +39,25 @@ struct VoiceInkTests {
         #expect(resolvedTarget.mode?.isTextFormattingEnabled == true)
         #expect(!session.retargetPaste(to: RecordingPasteTarget(destination: .recordingStart, focusedInput: nil)))
         #expect(session.pasteTarget.destination == .focusedDuringTranscription)
+        #expect(session.iconActionPulse == acceptedPulse)
+    }
+
+    @MainActor
+    @Test func recorderIconPulseMapsPrimaryAndNextRoutesToSeparateIcons() {
+        let session = RecordingSession()
+
+        session.signalDestinationAction(.focusedAtStop)
+        let primaryPulse = session.iconActionPulse
+        #expect(primaryPulse?.icon == .currentFocus)
+        #expect(session.currentFocusIconActionPulseID == primaryPulse?.id)
+        #expect(session.lockedDestinationIconActionPulseID == nil)
+
+        session.signalDestinationAction(.recordingStart)
+        let nextPulse = session.iconActionPulse
+        #expect(nextPulse?.icon == .lockedDestination)
+        #expect(nextPulse?.id != primaryPulse?.id)
+        #expect(session.currentFocusIconActionPulseID == nil)
+        #expect(session.lockedDestinationIconActionPulseID == nextPulse?.id)
     }
 
     @MainActor
