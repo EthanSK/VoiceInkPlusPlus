@@ -25,6 +25,26 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-14T20:04:50Z
+**Trigger:** Ethan asked to show the exact app version beside Stop and reiterated that every completed VoiceInk++ change must replace the installed app after a five-second warning.
+**Symptom:** Native source could change while the still-running installed app remained older, and the recorder bar exposed no build identifier. With marketing version 2.0 unchanged across builds, Ethan could not tell at a glance whether an agent had actually installed and restarted the release it claimed was current.
+**Root cause:** The restart/install expectation existed in conversation history and scattered delivery notes, but it was not a numbered release invariant. Agents could treat an edit, commit, or successful build as completion without incrementing `CURRENT_PROJECT_VERSION`, replacing the signed VoiceInk++ app, or proving which binary was running.
+**Fix:** Commit `bc10f8a` added `RecorderVersionLabel` immediately left of Stop in both mini and notch recorder bars and made the build number part of the visible label (`v<marketing-version>.<build-number>`). It also made per-release build increments, Mac Mini builds, the real five-second warning, signed installation at `/Applications/VoiceInkPlusPlus.app`, live identity verification, and preservation of `/Applications/VoiceInk.app` mandatory in `AGENTS.md` and the shared learnings skill. The first release under this contract is `v2.0.204`.
+**Commit:** bc10f8a
+**Guard:** Never reuse a build number for a different installed binary. A native source change is not shipped until the uniquely numbered signed build is installed and running after the warning; verify its bundle versions, process, CDHash/signing authority, and that the official VoiceInk app remains untouched. Validate the learnings skill whenever this release procedure changes.
+---
+
+---
+**Date:** 2026-07-14T20:04:49Z
+**Trigger:** Ethan made exact background-input delivery the primary objective: preserve the original input even after changing apps, windows, or focused elements, and paste plus auto-send without bringing Codex front and center.
+**Symptom:** Application-level focus locks and saved `AXUIElement` wrappers were insufficient for multiple inputs/windows/tabs, while ordinary process-targeted Command-V/Return could be accepted by macOS yet ignored by Electron. Foreground fallback interrupted Ethan's current workspace and still could not prove that the intended composer alone received or submitted the text.
+**Root cause:** Accessibility element wrappers can become stale or be indistinguishable from a lookalike composer after a document/tab change. Electron also requires its internal inactive-to-active notification sequence before a background editor handles targeted text/key events. Event-post success alone proves neither exact destination identity nor insertion/submission.
+**Fix:** Commit `b8d9a99` saves exact window/input fingerprints with identifiers, structure, geometry, and bounded content anchors; conservatively re-resolves stale wrappers; snapshots the destination-owned Mode/auto-send decision; and adds a verified background route that prepares Electron's internal focus without changing the macOS frontmost app, types Unicode directly, verifies insertion, performs narrowly scoped auto-send, verifies submission, and restores the target app's prior internal focus. Ambiguous or failed checkpoints fall back safely or surface the transcript through the clipboard instead of guessing.
+**Commit:** b8d9a99
+**Guard:** A disposable two-window Codex probe proved that only the saved composer changed and submitted, the comparison composer remained unchanged, and Codex stayed backgrounded. Preserve `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` plus the input-context fingerprint guards; a real release trace must contain `paste: background exact focus verified`, `paste: background text verified success=true`, and `paste: background auto-send finished success=true`. The later 50 ms internal-focus restoration settlement is defensive but still requires a dedicated live re-proof before claiming that post-delivery internal restoration is independently verified.
+---
+
+---
 **Date:** 2026-07-14T19:14:59Z
 **Trigger:** Ethan asked for a Logitech G HUB sanity check before trusting and preserving the canonical primary/Next terminology.
 **Symptom:** The repository's button aliases matched Ethan's intent, but the live physical G HUB mapping had not been verified. Raw assignment inspection appeared to make the separate forward control look like ordinary Mouse Button 5, risking a new implementation that listened for the wrong event.
