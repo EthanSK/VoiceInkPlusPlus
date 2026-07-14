@@ -11,21 +11,22 @@ enum RecordingPasteDestination: Equatable {
 struct RecordingPasteTarget {
     let destination: RecordingPasteDestination
     let focusedInput: FocusLockService.Target?
-    // The destination and its paste behavior are one atomic per-session choice.
+    // The destination and its complete Mode are one atomic per-session choice.
     // In particular, the transcription-time Next Track route is a second chance:
     // Ethan can stop normally, focus a different input, press Next Track while the
     // transcript is still loading, then leave that app. The later app switch must
-    // not replace this target app's Return-after-paste setting.
-    let autoSendKey: AutoSendKey
+    // not replace any part of this target app's formatting/output/Return behavior.
+    let mode: ModeConfig?
+    var autoSendKey: AutoSendKey { mode?.autoSendKey ?? .none }
 
     init(
         destination: RecordingPasteDestination,
         focusedInput: FocusLockService.Target?,
-        autoSendKey: AutoSendKey = .none
+        mode: ModeConfig? = nil
     ) {
         self.destination = destination
         self.focusedInput = focusedInput
-        self.autoSendKey = autoSendKey
+        self.mode = mode
     }
 }
 
@@ -160,6 +161,14 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     @Published var recordingStartFocusedInput: FocusLockService.Target? // Published because an initially invalid shortcut-time capture can be replaced once microphone recording begins, and the destination icon must then appear immediately.
     @Published var pasteTarget: RecordingPasteTarget // Published so the icon remains visible after stop and immediately follows a Next Track retarget while transcription is still loading.
     private(set) var acceptsPasteRetargeting = true
+    private var triggerWordModeOverride: ModeConfig?
+
+    /// The saved destination normally owns post-processing. An explicit spoken
+    /// trigger-word Mode remains the intentional higher-priority override; keeping it
+    /// on the session avoids falling back to unrelated global focus state.
+    var postProcessingMode: ModeConfig? {
+        triggerWordModeOverride ?? pasteTarget.mode
+    }
 
     // ── Per-session bits migrated OFF the old engine singletons ──
     // Previously these were single-flight members on VoiceInkEngine; now each session
@@ -221,7 +230,10 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         self.recordingStartFocusedInput = recordingStartFocusedInput
         self.pasteTarget = RecordingPasteTarget(
             destination: .recordingStart,
-            focusedInput: recordingStartFocusedInput
+            focusedInput: recordingStartFocusedInput,
+            mode: ModeRuntimeResolver.modeSnapshot(
+                forPasteTargetBundleIdentifier: recordingStartFocusedInput?.bundleIdentifier
+            )
         )
     }
 
@@ -246,6 +258,10 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         guard acceptsPasteRetargeting else { return false }
         pasteTarget = target
         return true
+    }
+
+    func applyTriggerWordModeOverride(_ mode: ModeConfig) {
+        triggerWordModeOverride = mode
     }
 
     func resolvePasteTargetForDelivery() -> RecordingPasteTarget {

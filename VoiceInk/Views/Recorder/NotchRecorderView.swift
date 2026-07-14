@@ -40,8 +40,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     // MARK: - Layout Constants
 
-    private let recordingSideExpansion: CGFloat = 116
-    private let transcriptSideExpansion: CGFloat = 124
+    private let recordingSideExpansion: CGFloat = 180
+    private let transcriptSideExpansion: CGFloat = 180
     private let assistantSideExpansion: CGFloat = 230
     private let activeHeightBonus: CGFloat = 6
     private let transcriptPanelHeight: CGFloat = 57
@@ -170,6 +170,10 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             Color.clear
 
             HStack(spacing: 14) {
+                // Mirrors the mini recorder: the exact running build sits
+                // immediately left of the Stop control on every monitor.
+                RecorderVersionLabel()
+
                 if shouldShowCloseButton {
                     RecorderCloseButton(action: onCloseTapped)
                 } else {

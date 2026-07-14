@@ -1,6 +1,53 @@
 import SwiftUI
 import AppKit
 
+// MARK: - App Version
+
+/// A deliberately compact release identifier for the recorder bar. The build
+/// number is included because it increments for every installed VoiceInk++
+/// release, while the marketing version changes only for product milestones.
+/// This lets Ethan confirm the exact running build without opening Settings.
+struct RecorderVersionLabel: View {
+    private static let marketingVersion = Bundle.main.object(
+        forInfoDictionaryKey: "CFBundleShortVersionString"
+    ) as? String
+    private static let buildNumber = Bundle.main.object(
+        forInfoDictionaryKey: "CFBundleVersion"
+    ) as? String
+
+    private static var compactVersion: String {
+        switch (marketingVersion, buildNumber) {
+        case let (marketing?, build?) where !marketing.isEmpty && !build.isEmpty:
+            return "v\(marketing).\(build)"
+        case let (marketing?, _) where !marketing.isEmpty:
+            return "v\(marketing)"
+        case let (_, build?) where !build.isEmpty:
+            return "v\(build)"
+        default:
+            return "v?"
+        }
+    }
+
+    private static var accessibilityVersion: String {
+        switch (marketingVersion, buildNumber) {
+        case let (marketing?, build?) where !marketing.isEmpty && !build.isEmpty:
+            return "VoiceInk++ version \(marketing), build \(build)"
+        default:
+            return "VoiceInk++ version unavailable"
+        }
+    }
+
+    var body: some View {
+        Text(Self.compactVersion)
+            .font(.system(size: 8, weight: .medium, design: .monospaced))
+            .foregroundStyle(Color.white.opacity(0.48))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .help(Self.accessibilityVersion)
+            .accessibilityLabel(Text(Self.accessibilityVersion))
+    }
+}
+
 // MARK: - Icon Toggle Button
 
 struct RecorderToggleButton: View {

@@ -236,6 +236,19 @@ final class TranscriptionDelivery {
         let targetPID = focusedInput.processIdentifier
         let previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
         let allowsApplicationFallback = target.destination == .recordingStart
+        let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
+
+        if focusedInput.hasExactInput,
+           previouslyFrontmostApplication?.processIdentifier != targetPID {
+            await deliverToBackgroundExactInput(
+                pastedText,
+                target: target,
+                focusedInput: focusedInput,
+                autoSendKey: autoSendKey
+            )
+            return
+        }
+
         guard await FocusLockService.shared.restoreFocus(to: focusedInput, allowApplicationFallback: allowsApplicationFallback) else { // Next Track must reactivate and verify the saved app before Cmd-V; posting to a background PID reported false success when VS Code ignored it.
             handleMissingPasteTarget(pastedText, destination: target.destination)
             return
@@ -245,7 +258,6 @@ final class TranscriptionDelivery {
 
         let pasteTask = CursorPaster.startPasteAtCursor(pastedText) // Use the proven foreground Cmd-V path from cba45ba; CGEvent.postToPid can succeed without the background app accepting the paste.
 
-        let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
         let applicationToRestore = previouslyFrontmostApplication?.processIdentifier == targetPID
             ? nil
             : previouslyFrontmostApplication
@@ -320,6 +332,248 @@ final class TranscriptionDelivery {
                 await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
             }
         }
+    }
+
+    private func deliverToBackgroundExactInput(
+        _ pastedText: String,
+        target: RecordingPasteTarget,
+        focusedInput: FocusLockService.Target,
+        autoSendKey: AutoSendKey
+    ) async {
+        defer { FocusLockService.shared.clearLock() }
+        guard let session = await FocusLockService.shared.prepareBackgroundDelivery(
+            to: focusedInput
+        ) else {
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "exact background focus preparation failed"
+            )
+            return
+        }
+        defer { FocusLockService.shared.finishBackgroundDelivery(session) }
+
+        guard let textBeforeInsertion = FocusLockService.shared.backgroundInputText(
+            for: session
+        ) else {
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "saved input does not expose readable text for verification"
+            )
+            return
+        }
+
+        vippLog.info("paste: background exact focus verified targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(session.expectedFrontmostProcessIdentifier, privacy: .public) destination=\(String(describing: target.destination), privacy: .public)")
+        let textEventsPosted = await CursorPaster.typeTextIntoTargetedProcess(
+            pastedText,
+            pid: session.processIdentifier
+        )
+        let insertionVerified: Bool
+        if textEventsPosted {
+            insertionVerified = await waitForBackgroundInsertion(
+                pastedText,
+                previousText: textBeforeInsertion,
+                session: session
+            )
+        } else {
+            insertionVerified = false
+        }
+        guard insertionVerified,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == session.expectedFrontmostProcessIdentifier else {
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "targeted text was posted but exact insertion/frontmost verification failed"
+            )
+            return
+        }
+
+        vippLog.info("paste: background text verified success=true targetPid=\(session.processIdentifier, privacy: .public) chars=\(pastedText.count, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        guard autoSendKey.isEnabled else {
+            vippLog.info("paste: background exact delivery finished success=true autoSend=none targetPid=\(session.processIdentifier, privacy: .public)")
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        guard await FocusLockService.shared.refreshBackgroundFocus(session),
+              let textBeforeSubmit = FocusLockService.shared.backgroundInputText(for: session) else {
+            showAutoSendFailure(
+                "Transcription inserted, but couldn’t restore the saved background input to press Return",
+                detail: "background auto-send focus verification failed targetPid=\(session.processIdentifier)"
+            )
+            return
+        }
+
+        let isOpenAIComposer = session.bundleIdentifier.map {
+            Self.openAIComposerBundleIdentifiers.contains($0)
+        } ?? false
+        var submitRoute = "targetedKey"
+        var submitIssued = false
+        if autoSendKey == .enter, isOpenAIComposer {
+            switch FocusLockService.shared.pressNearbySubmitButton(for: session) {
+            case .pressed:
+                submitRoute = "semanticSend"
+                submitIssued = true
+            case .unavailable:
+                break
+            case .failed(let error):
+                vippLog.error("paste: background semantic Send failed AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+            }
+        }
+
+        if !submitIssued {
+            submitIssued = await CursorPaster.performTargetedAutoSend(
+                autoSendKey,
+                pid: session.processIdentifier
+            ).didPostAutoSendCommand
+        }
+        guard submitIssued else {
+            showAutoSendFailure(
+                "Transcription inserted, but couldn’t press Return in the saved background input",
+                detail: "no background auto-send event was created targetPid=\(session.processIdentifier)"
+            )
+            return
+        }
+
+        var submitVerified = await waitForBackgroundValueChange(
+            from: textBeforeSubmit,
+            session: session
+        )
+        if !submitVerified,
+           submitRoute == "semanticSend",
+           await FocusLockService.shared.refreshBackgroundFocus(session) {
+            submitRoute = "semanticSend+targetedKey"
+            let fallbackIssued = await CursorPaster.performTargetedAutoSend(
+                autoSendKey,
+                pid: session.processIdentifier
+            ).didPostAutoSendCommand
+            if fallbackIssued {
+                submitVerified = await waitForBackgroundValueChange(
+                    from: textBeforeSubmit,
+                    session: session
+                )
+            }
+        } else if !submitVerified,
+                  autoSendKey == .enter,
+                  await FocusLockService.shared.refreshBackgroundFocus(session) {
+            submitRoute = "targetedKeyRetry"
+            let retryIssued = await CursorPaster.performTargetedAutoSend(
+                .enter,
+                pid: session.processIdentifier
+            ).didPostAutoSendCommand
+            if retryIssued {
+                submitVerified = await waitForBackgroundValueChange(
+                    from: textBeforeSubmit,
+                    session: session
+                )
+            }
+        }
+
+        let stayedBackground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == session.expectedFrontmostProcessIdentifier
+        let requiresVisibleSubmittedMessage = autoSendKey == .enter && isOpenAIComposer
+        let submittedTextVisible: Bool
+        if requiresVisibleSubmittedMessage {
+            submittedTextVisible = await waitForBackgroundSubmittedText(
+                pastedText,
+                session: session
+            )
+        } else {
+            submittedTextVisible = FocusLockService.shared.backgroundWindowContains(
+                pastedText.trimmingCharacters(in: .whitespacesAndNewlines),
+                for: session
+            )
+        }
+        let succeeded = submitVerified
+            && stayedBackground
+            && (!requiresVisibleSubmittedMessage || submittedTextVisible)
+        vippLog.info("paste: background auto-send finished success=\(succeeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=\(submitRoute, privacy: .public) submittedTextVisible=\(submittedTextVisible, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        guard succeeded else {
+            showAutoSendFailure(
+                "Transcription inserted, but Return could not be verified in the saved background input",
+                detail: "background auto-send produced no verified value change targetPid=\(session.processIdentifier)"
+            )
+            return
+        }
+    }
+
+    private func waitForBackgroundInsertion(
+        _ insertedText: String,
+        previousText: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async -> Bool {
+        let verificationText = insertedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let currentText = FocusLockService.shared.backgroundInputText(for: session),
+               currentText != previousText,
+               currentText.contains(verificationText) {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard let currentText = FocusLockService.shared.backgroundInputText(for: session) else {
+            return false
+        }
+        return currentText != previousText && currentText.contains(verificationText)
+    }
+
+    private func waitForBackgroundValueChange(
+        from previousText: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.75
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if FocusLockService.shared.backgroundInputText(for: session) != previousText {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return FocusLockService.shared.backgroundInputText(for: session) != previousText
+    }
+
+    private func waitForBackgroundSubmittedText(
+        _ submittedText: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async -> Bool {
+        let verificationText = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !verificationText.isEmpty else { return false }
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if FocusLockService.shared.backgroundWindowContains(
+                verificationText,
+                for: session,
+                excludingSavedInput: true
+            ) {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return FocusLockService.shared.backgroundWindowContains(
+            verificationText,
+            for: session,
+            excludingSavedInput: true
+        )
+    }
+
+    private func handleBackgroundPasteFailure(
+        _ pastedText: String,
+        destination: RecordingPasteDestination,
+        detail: String
+    ) {
+        _ = ClipboardManager.copyToClipboard(pastedText)
+        let destinationName = switch destination {
+        case .recordingStart: "recording-start"
+        case .focusedAtStop: "stop-time"
+        case .focusedDuringTranscription: "second-chance"
+        }
+        NotificationManager.shared.showNotification(
+            title: String(localized: "Couldn’t verify the saved background input — transcription copied to clipboard"),
+            type: .error
+        )
+        vippLog.error("paste: background exact delivery failed destination=\(destinationName, privacy: .public) detail=\(detail, privacy: .public)")
     }
 
     private func performAutoSend(

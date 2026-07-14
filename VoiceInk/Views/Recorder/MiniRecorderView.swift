@@ -14,8 +14,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     // MARK: - Layout Constants
 
     private let controlBarHeight: CGFloat = 40
-    private let compactWidth: CGFloat = 184
-    private let expandedWidth: CGFloat = 300
+    private let compactWidth: CGFloat = 228
+    private let expandedWidth: CGFloat = 344
     private let assistantWidth: CGFloat = 520
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
@@ -32,7 +32,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var capsuleWidth: CGFloat {
         if hasAssistantResponse { return assistantWidth }
         if hasLiveTranscript { return expandedWidth }
-        return shouldShowPasteDestinationIndicator ? 236 : compactWidth // Active layout has mode + waveform plus current-app and locked-destination icons without squeezing any control.
+        return shouldShowPasteDestinationIndicator ? 280 : compactWidth // Active layout also includes the exact build label immediately left of Stop.
     }
 
     // true when live transcript is streaming in during recording
@@ -85,6 +85,10 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var controlBar: some View {
         HStack(spacing: 0) {
             HStack(spacing: 6) {
+                // Every shipped build increments CFBundleVersion. Keeping this
+                // immediately left of Stop makes the running release obvious.
+                RecorderVersionLabel()
+
                 Group {
                     if shouldShowCloseButton {
                         RecorderCloseButton(action: onCloseTapped)

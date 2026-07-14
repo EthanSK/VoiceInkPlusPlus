@@ -219,7 +219,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             to: RecordingPasteTarget(
                 destination: .focusedDuringTranscription,
                 focusedInput: focusedInput,
-                autoSendKey: ModeRuntimeResolver.autoSendKey(
+                mode: ModeRuntimeResolver.modeSnapshot(
                     forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
                 )
             )
@@ -294,7 +294,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .recordingStart,
                     focusedInput: focusedInput,
-                    autoSendKey: ModeRuntimeResolver.autoSendKey(
+                    mode: ModeRuntimeResolver.modeSnapshot(
                         forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
                     )
                 )
@@ -303,7 +303,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .focusedAtStop,
                     focusedInput: focusedInput,
-                    autoSendKey: ModeRuntimeResolver.autoSendKey(
+                    mode: ModeRuntimeResolver.modeSnapshot(
                         forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
                     )
                 )
@@ -631,12 +631,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
             transcription: transcription,
             audioURL: audioURL,
             transcriptionConfiguration: transcriptionConfiguration,
-            formattingConfiguration: {
-                ModeRuntimeResolver.transcriptionFormattingConfiguration()
+            formattingConfiguration: { [weak session] in
+                ModeRuntimeResolver.pasteTargetTranscriptionFormattingConfiguration(
+                    mode: session?.postProcessingMode
+                )
             },
             session: streamingSession,
-            triggerWordModeSelection: { [weak self] text in
-                self?.selectTriggerWordModeIfNeeded(for: text)
+            triggerWordModeSelection: { [weak self, weak session] text in
+                guard let selection = self?.selectTriggerWordModeIfNeeded(for: text) else {
+                    return nil
+                }
+                session?.applyTriggerWordModeOverride(selection.mode)
+                return selection.processedText
             },
             enhancementConfiguration: { [weak self, weak session] in
                 guard let self else { return nil }
@@ -654,7 +660,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                       let aiService = enhancementService.getAIService() else {
                     return nil
                 }
-                return ModeRuntimeResolver.currentEnhancementConfiguration(
+                return ModeRuntimeResolver.pasteTargetEnhancementConfiguration(
+                    mode: session?.postProcessingMode,
                     enhancementService: enhancementService,
                     aiService: aiService
                 )
@@ -671,7 +678,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 return session.resolvePasteTargetForDelivery()
             },
             outputConfiguration: { [weak session] in
-                let resolved = ModeRuntimeResolver.outputConfiguration()
+                let resolved = ModeRuntimeResolver.pasteTargetOutputConfiguration(
+                    mode: session?.postProcessingMode
+                )
                 // ── VIPP (skip-mode-processing feature) — BYPASS POINT #2: mode script ──
                 // If THIS session is flagged one-shot raw, rewrite the output config to a
                 // plain `.paste` with the customCommand stripped. That forces
@@ -784,13 +793,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
-    private func selectTriggerWordModeIfNeeded(for text: String) -> String? {
+    private func selectTriggerWordModeIfNeeded(
+        for text: String
+    ) -> (mode: ModeConfig, processedText: String)? {
         guard let (triggeredMode, processedText) = ModeManager.shared.getConfigurationForTriggerWord(text) else {
             return nil
         }
 
         ModeManager.shared.setActiveConfiguration(triggeredMode)
-        return processedText
+        return (triggeredMode, processedText)
     }
 
     // MARK: - Cancellation

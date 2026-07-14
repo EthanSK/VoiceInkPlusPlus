@@ -86,7 +86,23 @@ enum ModeRuntimeResolver {
     }
 
     static func transcriptionFormattingConfiguration(mode: ModeConfig? = nil) -> TranscriptionFormattingConfiguration {
-        let mode = mode ?? ModeManager.shared.currentEffectiveConfiguration
+        makeTranscriptionFormattingConfiguration(
+            mode: mode ?? ModeManager.shared.currentEffectiveConfiguration
+        )
+    }
+
+    /// Resolve formatting for a saved destination. Unlike the general resolver above,
+    /// `nil` is deliberately neutral: it must not fall through to whichever unrelated
+    /// Mode became current after this recording chose its exact input.
+    static func pasteTargetTranscriptionFormattingConfiguration(
+        mode: ModeConfig?
+    ) -> TranscriptionFormattingConfiguration {
+        makeTranscriptionFormattingConfiguration(mode: mode)
+    }
+
+    private static func makeTranscriptionFormattingConfiguration(
+        mode: ModeConfig?
+    ) -> TranscriptionFormattingConfiguration {
 
         return TranscriptionFormattingConfiguration(
             mode: mode,
@@ -99,7 +115,33 @@ enum ModeRuntimeResolver {
         enhancementService: AIEnhancementService,
         aiService: AIService
     ) -> EnhancementRuntimeConfiguration {
-        let mode = mode ?? ModeManager.shared.currentEffectiveConfiguration
+        makeEnhancementConfiguration(
+            mode: mode ?? ModeManager.shared.currentEffectiveConfiguration,
+            enhancementService: enhancementService,
+            aiService: aiService
+        )
+    }
+
+    /// Resolve enhancement from the destination-owned Mode snapshot. A target with
+    /// no matching/default Mode is intentionally plain and cannot inherit the live
+    /// Mode from an app Ethan focused later.
+    static func pasteTargetEnhancementConfiguration(
+        mode: ModeConfig?,
+        enhancementService: AIEnhancementService,
+        aiService: AIService
+    ) -> EnhancementRuntimeConfiguration {
+        makeEnhancementConfiguration(
+            mode: mode,
+            enhancementService: enhancementService,
+            aiService: aiService
+        )
+    }
+
+    private static func makeEnhancementConfiguration(
+        mode: ModeConfig?,
+        enhancementService: AIEnhancementService,
+        aiService: AIService
+    ) -> EnhancementRuntimeConfiguration {
         let prompt = resolvedPrompt(
             promptId: mode?.selectedPrompt,
             enhancementService: enhancementService
@@ -127,7 +169,19 @@ enum ModeRuntimeResolver {
     }
 
     static func outputConfiguration(mode: ModeConfig? = nil) -> OutputRuntimeConfiguration {
-        let mode = mode ?? ModeManager.shared.currentEffectiveConfiguration
+        makeOutputConfiguration(
+            mode: mode ?? ModeManager.shared.currentEffectiveConfiguration
+        )
+    }
+
+    /// Resolve the complete delivery action owned by a saved paste target. This is
+    /// intentionally separate from `outputConfiguration`: `nil` means neutral paste,
+    /// never "look at the current global Mode".
+    static func pasteTargetOutputConfiguration(mode: ModeConfig?) -> OutputRuntimeConfiguration {
+        makeOutputConfiguration(mode: mode)
+    }
+
+    private static func makeOutputConfiguration(mode: ModeConfig?) -> OutputRuntimeConfiguration {
 
         return OutputRuntimeConfiguration(
             mode: mode,
@@ -137,19 +191,18 @@ enum ModeRuntimeResolver {
         )
     }
 
-    /// Resolve the auto-send behavior owned by a saved paste destination, without
-    /// consulting whichever unrelated app happens to be current at delivery time.
-    /// This intentionally uses the app mapping (then the enabled default, then
-    /// neutral `.none`) so a transcription-time Next Track retarget remains stable
-    /// after Ethan immediately moves on to another app.
-    static func autoSendKey(forPasteTargetBundleIdentifier bundleIdentifier: String?) -> AutoSendKey {
-        guard let bundleIdentifier else {
-            return .none
-        }
-
-        let mode = ModeManager.shared.getConfigurationForApp(bundleIdentifier)
+    /// Capture the complete value-type Mode owned by a saved paste destination.
+    /// Destination selection and Mode selection are one atomic per-session decision:
+    /// later focus changes must not mix another app's formatting/output/script/Return
+    /// behavior into the exact input that will receive this transcript.
+    static func modeSnapshot(forPasteTargetBundleIdentifier bundleIdentifier: String?) -> ModeConfig? {
+        guard let bundleIdentifier else { return nil }
+        return ModeManager.shared.getConfigurationForApp(bundleIdentifier)
             ?? ModeManager.shared.getDefaultConfiguration()
-        return mode?.autoSendKey ?? .none
+    }
+
+    static func autoSendKey(forPasteTargetBundleIdentifier bundleIdentifier: String?) -> AutoSendKey {
+        modeSnapshot(forPasteTargetBundleIdentifier: bundleIdentifier)?.autoSendKey ?? .none
     }
 
     private static func resolvedModel(

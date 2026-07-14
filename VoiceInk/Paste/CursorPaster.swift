@@ -230,6 +230,152 @@ class CursorPaster {
         try? await Task.sleep(nanoseconds: nanoseconds)
     }
 
+    // MARK: - Verified background exact-input delivery
+
+    /// Electron ignores ordinary process-targeted keyboard events while inactive.
+    /// A real background app transition delivers these two private AppKit state
+    /// notifications first; the exact two-window Codex probe proved that reproducing
+    /// them lets the app acknowledge its saved internal window/editor without becoming
+    /// macOS frontmost. Callers still verify the AX window, AX editor, resulting text,
+    /// and unchanged frontmost PID before treating any post as delivered.
+    @MainActor
+    static func beginTargetedInputSession(pid: pid_t) -> Bool {
+        guard let keyFocusReturned = makeOtherEvent(
+            typeRawValue: 21,
+            subtypeRawValue: 0x8000
+        ),
+        let applicationActivated = makeOtherEvent(
+            typeRawValue: NSEvent.EventType.appKitDefined.rawValue,
+            subtypeRawValue: 1
+        ) else {
+            logger.error("Failed to create targeted input activation-state events pid=\(pid, privacy: .public)")
+            return false
+        }
+        keyFocusReturned.postToPid(pid)
+        applicationActivated.postToPid(pid)
+        return true
+    }
+
+    @MainActor
+    static func endTargetedInputSession(pid: pid_t) {
+        makeOtherEvent(
+            typeRawValue: NSEvent.EventType.appKitDefined.rawValue,
+            subtypeRawValue: 2
+        )?.postToPid(pid)
+    }
+
+    @MainActor
+    static func typeTextIntoTargetedProcess(_ text: String, pid: pid_t) async -> Bool {
+        guard !text.isEmpty,
+              AXIsProcessTrusted(),
+              beginTargetedInputSession(pid: pid) else {
+            return false
+        }
+        defer { endTargetedInputSession(pid: pid) }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+        let utf16 = Array(text.utf16)
+        for start in stride(from: 0, to: utf16.count, by: 20) {
+            let end = min(start + 20, utf16.count)
+            let chunk = Array(utf16[start..<end])
+            guard let keyDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 0,
+                keyDown: true
+            ),
+            let keyUp = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 0,
+                keyDown: false
+            ) else {
+                logger.error("Failed to create targeted Unicode keyboard events pid=\(pid, privacy: .public)")
+                return false
+            }
+
+            chunk.withUnsafeBufferPointer { buffer in
+                keyDown.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+            }
+            keyDown.postToPid(pid)
+            await wait(0.005)
+            keyUp.postToPid(pid)
+            await wait(0.005)
+        }
+        await wait(0.05)
+        logger.info("Issued targeted Unicode text events pid=\(pid, privacy: .public) utf16Units=\(utf16.count, privacy: .public)")
+        return true
+    }
+
+    @MainActor
+    static func performTargetedAutoSend(
+        _ key: AutoSendKey,
+        pid: pid_t
+    ) async -> AutoSendResult {
+        guard key.isEnabled,
+              AXIsProcessTrusted(),
+              beginTargetedInputSession(pid: pid) else {
+            return .commandNotPosted
+        }
+        defer { endTargetedInputSession(pid: pid) }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let keyDown = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: 0x24,
+            keyDown: true
+        ),
+        let keyUp = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: 0x24,
+            keyDown: false
+        ) else {
+            logger.error("Failed to create targeted auto-send events pid=\(pid, privacy: .public)")
+            return .commandNotPosted
+        }
+
+        switch key {
+        case .none:
+            return .commandNotPosted
+        case .enter:
+            keyDown.flags = []
+            keyUp.flags = []
+        case .shiftEnter:
+            keyDown.flags = .maskShift
+            keyUp.flags = .maskShift
+        case .commandEnter:
+            keyDown.flags = .maskCommand
+            keyUp.flags = .maskCommand
+        }
+
+        keyDown.postToPid(pid)
+        await wait(0.03)
+        keyUp.postToPid(pid)
+        await wait(0.05)
+        logger.info("Issued targeted background auto-send key=\(key.rawValue, privacy: .public) pid=\(pid, privacy: .public)")
+        return .commandPosted
+    }
+
+    @MainActor
+    private static func makeOtherEvent(
+        typeRawValue: UInt,
+        subtypeRawValue: UInt16
+    ) -> CGEvent? {
+        guard let eventType = NSEvent.EventType(rawValue: typeRawValue) else { return nil }
+        return NSEvent.otherEvent(
+            with: eventType,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            subtype: Int16(bitPattern: subtypeRawValue),
+            data1: 0,
+            data2: 0
+        )?.cgEvent
+    }
+
     // MARK: - Auto Send Keys
 
     // Feature B (robust double-Enter) tunables.

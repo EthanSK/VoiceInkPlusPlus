@@ -367,7 +367,13 @@ class TranscriptionPipeline {
         }
 
         let pasteTargetForDelivery = resolvePasteTarget()
-        let pipelineOutput = outputForDelivery ?? outputConfiguration()
+        // Re-resolve after the target is frozen so a second-chance Next-button press
+        // that arrived during transcription/enhancement supplies the latest target's
+        // complete Mode (output action, command, and Return), not just its input. The
+        // one-shot raw path keeps the already-forced neutral output below.
+        let pipelineOutput = skipPostProcessingNow
+            ? (outputForDelivery ?? outputConfiguration())
+            : outputConfiguration()
         let outputForPasteTarget: OutputRuntimeConfiguration
         if skipPostProcessingNow {
             // The one-shot raw/skip contract is stronger than any destination Mode:
