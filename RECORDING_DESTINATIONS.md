@@ -48,7 +48,7 @@ transcription phase that starts after recording stops.
 1. Focus an input in Codex and start recording with the normal recording shortcut.
 2. Move to a VS Code editor while speaking.
 3. Stop with the **Next button**.
-4. VoiceInk++ reactivates Codex, restores that exact original input, verifies it, and pastes there.
+4. If Codex is in the background, VoiceInk++ restores and verifies that exact original composer internally, types and submits there, and leaves the current app frontmost. An app-only fallback uses the verified foreground route.
 
 ### Keep normal media controls outside recording
 
@@ -62,9 +62,9 @@ transcription phase that starts after recording stops.
 3. Press the **Next button**.
 4. The locked destination icon switches to that app. VoiceInk++ replaces both the exact input and
    its configured auto-send key for the newest not-yet-delivered transcription.
-5. You may immediately move to another app. When the result finishes, VoiceInk++ returns to the
-   second-chance input, pastes there, performs that input app's configured Return, then restores your
-   newer workspace.
+5. You may immediately move to another app. When the result finishes, VoiceInk++ delivers into the
+   second-chance input and performs that input app's configured Return without displacing your newer
+   workspace when an exact background target is available.
 
 This is deliberately separate from pressing Next Track while recording. During recording, Next
 Track stops and chooses the recording-start input. After a normal stop has already started
@@ -131,36 +131,33 @@ replaces the saved editor's Accessibility wrapper before delivery. Normal stop-t
 transcription-time retargets still require an exact editable input, so an incidental non-editable
 control cannot silently replace their destination.
 
-Before pasting, VoiceInk++:
+For an exact saved input whose app is currently backgrounded, VoiceInk++:
 
-1. Activates the saved application and waits until macOS reports it as genuinely frontmost.
-2. Restores the saved Accessibility element and verifies its exact identity. For a safe
-   recording-start app fallback, it uses that now-frontmost application's current input.
-3. Sends an ordinary Command–V to the verified frontmost destination.
-4. If auto-send is enabled, keeps that destination frontmost through the paste-settle delay,
-   verifies it again, and issues the configured Return there.
-5. Only after the complete paste/Return sequence, restores and verifies the application that was
-   active before delivery. A plain paste restores it after a 100 ms settlement delay. If Ethan has
-   already moved focus himself, VoiceInk++ preserves that live choice instead of overriding it.
+1. Uniquely resolves the saved Accessibility window and editor. Structural identity plus nearby
+   content anchors fail closed if a stale wrapper could match a different document or tab.
+2. Reproduces Electron's inactive-to-active internal notification sequence without making the app
+   macOS-frontmost, restores the exact internal window/editor, and verifies both.
+3. Types Unicode directly into that process in bounded chunks. It never uses background Command–V.
+4. Verifies that the exact editor changed, the intended transcript appeared, and the app that Ethan
+   was using remained frontmost.
+5. If auto-send is enabled, uses a nearby semantic Send control when available or the narrowly scoped
+   targeted key route, then verifies editor clearing/value change and—for Codex/ChatGPT—the submitted
+   text appearing outside the composer.
+6. Restores the target app's previous internal window/editor state. A failure at any checkpoint copies
+   the transcript to the clipboard and shows a visible error rather than guessing.
 
-VoiceInk++ deliberately does not post Command–V to a background process: macOS can report that the
-event was posted even when apps such as VS Code ignore it. If app activation, input restoration, or
-paste-command creation fails, VoiceInk++ copies the transcription to the clipboard and shows an
-error instead of pasting into an unintended field or reporting a false success.
+The targeted Return exception is deliberately narrow. A disposable two-window Codex probe proved
+that ordinary PID posting is ignored until Electron receives the activation-state sequence, while
+the verified sequence changed only the saved composer, submitted it, left the comparison composer
+unchanged, and never made Codex frontmost. Never generalize that result into raw process-targeted
+Command–V/Return or infer success from an event return code alone. `AXConfirm` is still not a generic
+editor Return.
 
-For ordinary destinations, auto-send uses a foreground HID Return with a real key-down/key-up
-interval; plain Enter retains its bounded redundant retry. The OpenAI ChatGPT/Codex Electron composer
-gets a stricter route because live tests proved that it can ignore both process-targeted Return and
-an instantaneous foreground event while macOS reports success. VoiceInk++ first presses the nearby
-accessibility **Send** control when that exact composer exposes one. If the control is absent (for
-example, while a response is already running), it asks System Events to issue script key code 36,
-then tries one human-timed HID Return only if the editor text remains unchanged. If both routes leave
-the pasted transcript untouched, VoiceInk++ keeps the text in the editor and shows a visible
-“transcription pasted, but Return could not be sent” error.
-
-VoiceInk++ deliberately does not use process-targeted Return or `AXConfirm`: Electron can ignore
-either even when macOS accepts the request. Every fallback immediately rechecks that the saved app is
-still frontmost, so Ethan using the Mac during delivery cannot make Return drift into another app.
+When only a recording-start application fallback exists, or when the target app is already
+frontmost, VoiceInk++ retains the foreground route: activate/verify the saved application and input,
+send ordinary Command–V, perform the bounded semantic/System Events/humanized-HID auto-send, and
+restore the displaced workspace after the complete delivery. If Ethan moves focus during that
+sequence, the verification gates prevent Return from drifting into another app.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.
@@ -173,7 +170,7 @@ identity, activation timing, and final focus verification. Recent routing events
 ```sh
 log show --last 10m --info --style compact \
   --predicate 'process == "VoiceInkPlusPlus"' | \
-  grep -E 'Recording shortcut|Next Track|Captured focused input|Focused input restore|paste: BEGIN'
+  grep -E 'Recording shortcut|Next Track|Captured focused input|paste: BEGIN|background exact|auto-send finished'
 ```
 
 The important destination values are:
@@ -188,5 +185,6 @@ The important destination values are:
 - `VoiceInk/Shortcuts/RecordingShortcutManager.swift` selects the stop destination.
 - `VoiceInk/Transcription/Engine/VoiceInkEngine.swift` captures the start or stop input.
 - `VoiceInk/Transcription/Engine/RecordingSession.swift` owns the target for that recording.
-- `VoiceInk/Modes/FocusLockService.swift` captures, activates, restores, and verifies exact inputs.
-- `VoiceInk/Transcription/Engine/TranscriptionDelivery.swift` restores the target before paste.
+- `VoiceInk/Modes/FocusLockService.swift` captures, re-resolves, internally focuses, and verifies exact inputs.
+- `VoiceInk/Paste/CursorPaster.swift` implements bounded targeted Unicode/key events and foreground fallbacks.
+- `VoiceInk/Transcription/Engine/TranscriptionDelivery.swift` selects and verifies background-exact or foreground delivery.

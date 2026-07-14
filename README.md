@@ -78,10 +78,10 @@ All three Next-button routes work with agent inputs. The important distinction i
 
 | Agent surface | What VoiceInk++ locks | Auto-send route |
 | --- | --- | --- |
-| **Codex desktop** | The exact Codex composer | Verified Codex Send/System Events/humanized-Return fallbacks |
-| **Codex CLI** | The exact terminal or editor input hosting the CLI | That host app's foreground paste and Return behavior |
-| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | That host app's foreground paste and Return behavior |
-| **Claude desktop** | The exact Claude composer | Standard verified foreground paste and Return behavior |
+| **Codex desktop** | The exact Codex composer | Verified background exact-input typing/submit, with bounded foreground fallbacks |
+| **Codex CLI** | The exact terminal or editor input hosting the CLI | Verified exact-input delivery when supported; safe foreground fallback otherwise |
+| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | Verified exact-input delivery when supported; safe foreground fallback otherwise |
+| **Claude desktop** | The exact Claude composer | Verified exact-input delivery with safe failure behavior |
 
 For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app, enable Return only where automatic submission is safe, and use the Next button exactly as you would in Codex desktop. No Codex or Claude plugin, shell hook, or process-name detection is required.
 
@@ -90,9 +90,10 @@ For a CLI agent, the recorder intentionally shows the **host app icon**—for ex
 The compact recorder panel appears on every connected monitor and keeps its information spatially consistent:
 
 ```text
-[ Mode ] [ waveform ] [ current focused app ] [ locked destination ]
+[ version ] [ Stop ] [ Mode ] [ waveform ] [ current focused app ] [ locked destination ]
 ```
 
+- The visible `v<version>.<build>` identifier changes with every installed native release.
 - Routine “Recording” text stays out of the way; visible text is reserved for real warnings and errors.
 - The current app and locked destination are separate, so you can see both what you are doing and where the transcript will land.
 - The destination remains visible through transcription and updates immediately after a successful second-chance retarget.
@@ -102,8 +103,8 @@ The compact recorder panel appears on every connected monitor and keeps its info
 
 - Record a new thought while earlier recordings are still transcribing.
 - Keep each recording's Mode, input, auto-send key, and delivery state isolated.
-- Paste and auto-send through a verified foreground destination, including bounded ChatGPT/Codex fallbacks.
-- Restore the workspace you moved to after delivery finishes.
+- Type and auto-send into a verified exact background input without interrupting the workspace you moved to.
+- Fall back to verified foreground delivery only when the target is app-level or already frontmost.
 - Cancel a recording instantly with Escape or the recorder's cancel control.
 - Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
 - Pause and resume supported media without blindly toggling playback state.

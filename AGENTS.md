@@ -43,9 +43,10 @@ The saved input and its target app's `autoSendKey` are one atomic, per-session d
 
 ## Delivery safety
 
-- Never use process-targeted Command-V or Return for this flow. macOS can accept those events while Electron/VS Code ignores them.
+- Never use process-targeted Command-V. macOS can accept it while Electron/VS Code ignores it.
+- Process-targeted Return is allowed only inside the proven background exact-input route: a saved exact window/input must be uniquely re-resolved, Electron activation state must be prepared, insertion must be observed in that exact input, the macOS frontmost PID must remain unchanged, and submission must be verified from the input/window contents. Raw PID posting without those checks remains forbidden.
 - Never treat `AXConfirm` as generic editor Return.
-- Restore and verify the saved app/input, paste in the foreground, perform/verify auto-send, then restore the displaced app.
+- Prefer verified background delivery for an exact saved input when another app is frontmost. If only an application fallback exists or the target is already frontmost, restore and verify it in the foreground, paste/auto-send, then restore the displaced app.
 - ChatGPT/Codex submission retains its bounded semantic Send-button/System Events/humanized-HID fallbacks and visible failure notification.
 - If capture, activation, focus verification, paste creation, or auto-send fails, surface the error; do not silently claim success.
 - Ethan may be actively using the Mac. Prefer read-only logs and treat his live focus changes as real input, not contradictory test results.
@@ -58,6 +59,8 @@ At minimum, preserve the regression test named `secondChanceRetargetCarriesAutoS
 
 - `paste retarget: ... destination=focusedDuringTranscription targetCaptured=true`
 - `pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTranscription`
-- `paste: foreground auto-send finished success=true`
+- either `paste: background auto-send finished success=true` for an exact background target or `paste: foreground auto-send finished success=true` for the safe foreground route
 
 Build only on the Mac Mini. A source fix is not complete until the signed build is installed at `/Applications/VoiceInkPlusPlus.app`, the user receives the real five-second restart notification, the new PID/CDHash/signature are verified, and `/Applications/VoiceInk.app` remains untouched.
+
+Every native VoiceInk++ release must increment `CURRENT_PROJECT_VERSION` before building. The recorder bar displays `v<marketing-version>.<build-number>` immediately left of Stop so the running release can be identified at a glance. Never reuse a build number for a different installed binary, and never describe native source changes as shipped until that numbered, signed build is installed and running.

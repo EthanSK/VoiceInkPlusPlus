@@ -46,6 +46,11 @@ The fork's important behavioral patches are:
   recording-start input if stop-time capture or verification fails. See the canonical
   [Mouse terminology](TERMINOLOGY.md) and [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.
+- **Verified exact-background delivery.** When a session owns an exact input in a background app,
+  VoiceInk++ uniquely re-resolves its window/editor, prepares Electron's internal activation state,
+  types bounded Unicode, performs the narrowly scoped targeted Return when needed, and verifies the
+  exact insertion/submission plus an unchanged macOS frontmost PID. Background Command-V and raw
+  unverified PID posting remain forbidden. App-only targets retain the verified foreground route.
 
 The active-window service's `start()` is wired once at app launch in `VoiceInk.swift` (right after
 `ActiveWindowService.shared`).
@@ -77,6 +82,11 @@ The built bundle is **`VoiceInkPlusPlus.app`** (output: `~/Downloads/VoiceInkPlu
 A VoiceInk++ code fix is not complete when the source builds: install that exact build into
 `/Applications/VoiceInkPlusPlus.app` and relaunch it so Ethan is testing the corrected binary. Never
 replace or stop `/Applications/VoiceInk.app`, which is the separate official app.
+
+Before every native release, increment `CURRENT_PROJECT_VERSION` in both main-app build configurations.
+The recorder bar renders `v<MARKETING_VERSION>.<CURRENT_PROJECT_VERSION>` immediately left of Stop,
+so each installed binary must have a unique build number. Do not reuse a build number after changing
+native source, and do not call source-only work released or installed.
 
 Before every update that quits or replaces the running VoiceInk++ app, warn Ethan and give him a real
 five-second recovery window:

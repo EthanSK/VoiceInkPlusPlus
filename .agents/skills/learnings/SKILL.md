@@ -44,6 +44,8 @@ Keep these three routes distinct:
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still loading | Second chance: replace that pending session's input and auto-send atomically (`focusedDuringTranscription`) |
 
+For delivery, never use process-targeted Command-V. A targeted Return is permitted only inside the proven exact-background session that uniquely resolves the saved window/editor, prepares Electron activation state, verifies the exact insertion, keeps the macOS frontmost PID unchanged, and verifies submission from Accessibility contents. Otherwise use the verified foreground route or fail visibly to the clipboard; never treat AX/event acceptance alone as success.
+
 ## Record only durable verified findings
 
 Record a learning when evidence establishes something likely to affect future work, including a corrected semantic, reproducible failure and root cause, environment constraint, safety boundary, accepted terminology, or reliable validation signal.
@@ -54,7 +56,7 @@ Keep each field concise but specific enough to prevent rediscovery. Name the sym
 
 ## Finish the learning loop
 
-1. Verify the affected behavior with the strongest safe evidence. Follow the Mac Mini build, signed-install, five-second restart warning, and live-trace contract in `AGENTS.md` for native destination changes.
+1. Verify the affected behavior with the strongest safe evidence. For every native release, increment `CURRENT_PROJECT_VERSION`, then follow the Mac Mini build, signed-install, five-second restart warning, visible recorder-version label, and live-trace contract in `AGENTS.md`. A source edit is not a shipped VoiceInk++ change until that uniquely numbered signed build is installed and running.
 2. Land the implementation commit before recording its SHA.
 3. Add the newest entry with:
 
