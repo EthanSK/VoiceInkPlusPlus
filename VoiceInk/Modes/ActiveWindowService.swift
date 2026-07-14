@@ -21,6 +21,15 @@ class ActiveWindowService: ObservableObject {
 
     private init() {}
 
+    @MainActor
+    func updateCurrentApplicationForDisplay(_ application: NSRunningApplication) {
+        guard application.bundleIdentifier != Bundle.main.bundleIdentifier,
+              !application.isTerminated else {
+            return
+        }
+        currentApplication = application
+    }
+
     // MARK: - Follow-the-frontmost-app support (issue #785)
     //
     // The bug: VoiceInk resolved the active Mode ONLY at record-start, from the
@@ -69,6 +78,16 @@ class ActiveWindowService: ObservableObject {
     private func handleFrontmostAppActivation(_ app: NSRunningApplication) {
         guard let bundleIdentifier = app.bundleIdentifier else { return }
 
+        // Ignore activations of VoiceInk itself — when the user clicks back into our
+        // own window (e.g. settings, or the recorder if it ever takes focus) we must
+        // NOT replace the last real target app shown in the recorder or clobber its Mode.
+        if bundleIdentifier == Bundle.main.bundleIdentifier { return }
+
+        // The recorder now shows the genuinely current app separately from the
+        // per-session locked paste destination. Keep this visual signal current even
+        // when a focus lock suppresses Mode re-resolution below.
+        updateCurrentApplicationForDisplay(app)
+
         // Feature A (focus lock): if a long-press focus lock is active, the user has
         // DELIBERATELY pinned delivery to the field they started in. Suppress the
         // #785 frontmost-follow for this session — otherwise clicking into another
@@ -76,13 +95,6 @@ class ActiveWindowService: ObservableObject {
         // which is exactly the behavior the lock is meant to override. The locked
         // session keeps whatever Mode was resolved at record-start.
         if FocusLockService.shared.isLockActive { return }
-
-        // Ignore activations of VoiceInk itself — when the user clicks back into our
-        // own window (e.g. settings, or the recorder if it ever takes focus) we must
-        // NOT clobber the Mode resolved for their real target app.
-        if bundleIdentifier == Bundle.main.bundleIdentifier { return }
-
-        currentApplication = app
 
         // Same resolution order used at record-start. resolveAndApplyConfiguration
         // also handles the neutral-nil fallback (issue #784) and the async

@@ -24,6 +24,67 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-13T22:31:45Z
+**Trigger:** Ethan clarified—again—that normal stop followed by Next Track during transcription is a separate second-chance workflow, not the recording-start Next Track stop route
+**Symptom:** A pending session could correctly replace its input with `destination=focusedDuringTranscription`, yet paste-time Return could still disappear after Ethan moved to another app. This made the destination icon look latched while auto-send behaved as though it belonged to whichever app was current when the network response finished.
+**Root cause:** Commit `cba45ba` correctly made `RecordingSession.pasteTarget` mutable until delivery, but the target stored only the Accessibility input. `TranscriptionPipeline` continued resolving `OutputRuntimeConfiguration.autoSendKey` from the global live Mode later. Therefore the input belonged to the retargeted app while Return could belong to a subsequent app—two halves of one user decision were sourced from different moments.
+**Fix:** `RecordingPasteTarget` now owns the destination app's resolved `autoSendKey` alongside its focused input. All three selection routes capture that pair: normal stop, recording-start Next Track stop, and the distinct post-stop Next Track retarget. Immediately before delivery, the pipeline atomically resolves the latest per-session target and replaces the live global auto-send value with the target-owned value; one-shot raw/skip still forcibly disables auto-send. Moving elsewhere after the second-chance press can no longer remove the selected input's Return behavior.
+**Commit:** `1eabb1b` (`Fix second-chance transcription retarget auto-send`)
+**Live validation:** On the installed PID `8961`, two separate post-stop retargets at 2026-07-13 23:43:29 and 23:43:43 logged `destination=focusedDuringTranscription`, later resolved `targetAutoSend=enter`, changed the OpenAI composer after System Events Return, and ended with `foreground auto-send finished success=true`. Ethan then repeated “This is a test” three times and confirmed the workflow works.
+**Guard:** The canonical second-chance scenario is: stop normally → transcription begins → focus a new editable input → press Next Track once → optionally move to another app → finished text pastes and uses the newly selected input's configured auto-send. This is not a toggle and not the recording-start route. `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` asserts that `.enter` travels with the retargeted target. Future agents must read this entry, root `AGENTS.md`, and `RECORDING_DESTINATIONS.md` before changing Next Track behavior.
+---
+
+---
+**Date:** 2026-07-13T21:56:37Z
+**Trigger:** Ethan reported that auto-Enter worked in Terminal but not in ChatGPT/Codex, then clarified that he may be actively using the Mac while focus diagnostics run
+**Symptom:** The retargeted Codex composer received the transcript and the mode correctly selected `autoSendKey: enter`, but the text remained unsent. The live route restored Codex, failed to restore VS Code with `NSRunningApplication.activate`, then logged `AXConfirm result=0` as success even though the composer did nothing. Earlier, an instantaneous foreground CGEvent pair had also been ignored by the same Electron editor while Terminal accepted it.
+**Root cause:** macOS accepting an Accessibility action or synthetic event is not proof that an Electron editor handled it. `AXConfirm` is not a generic text-area Return, and back-to-back private-state key-down/up events were not sufficiently physical for this composer. Workspace restoration also relied on a single activation call whose `false` result was only logged. Separately, focus can legitimately change during inspection because Ethan is using the computer; treat that as the first hypothesis rather than declaring contradictory app behavior.
+**Fix:** Removed the background `AXConfirm` route. Delivery keeps the locked destination verified and frontmost through paste and auto-send, then restores the prior app through a shared, awaited `NSWorkspace.openApplication` fallback. For `com.openai.codex` / `com.openai.chat`, plain Enter first presses a tightly scoped nearby **Send** button, otherwise uses System Events `key code 36`, then tries one HID-state CGEvent with a 30 ms down/up interval only when the exact composer text remains unchanged. If the text is still identical, VoiceInk++ leaves it in place and shows the existing auto-send error. Other apps use the humanized foreground HID route and retain the bounded redundant plain-Enter retry.
+**Commit:** pending (`codex/recording-destination-routing`, unstaged)
+**Guard:** Never treat `AXConfirm == success`, event posting, or activation acceptance as delivery proof. Keep OpenAI composer verification bounded to its saved editor, recheck the expected frontmost PID before each key route, and restore the prior app only after Return finishes. Ethan may be concurrently using the Mac: preserve focus if he moves it, prefer logs over invasive UI probes, and announce any unavoidable focus-changing test. This concurrent-use rule is also persisted in `~/.codex/AGENTS.md`.
+---
+
+---
+**Date:** 2026-07-13T21:05:28Z
+**Trigger:** Ethan reproduced normal stop → Next Track during transcription → move to another app before delivery; the retargeted Codex input received the paste but did not submit, and VoiceInk++ dragged Codex front and left it there
+**Symptom:** The locked target and Mode were both correct (`destination=focusedDuringTranscription`, `autoSend=enter`). The live log showed the exact Codex `AXTextArea` restored, Codex made frontmost, and two ordinary Return events posted, yet Codex handled neither event. The user's current app was displaced even though submission still failed.
+**Root cause:** The prior foreground fix treated `NSWorkspace.frontmostApplication == targetPID` plus a matching system-wide Accessibility element as proof that a raw keyboard event would be handled. The 22:05:28 trace disproved that assumption: Electron can accept activation/focus restoration while its editor still ignores synthetic global Return. Keeping the destination frontmost for the 500 ms settle delay therefore added disruption without making delivery reliable.
+**Fix:** This attempted `AXConfirm` route was installed for the 22:26 test, which disproved it: Codex ignored the action even though AX returned success. Superseded by the verified OpenAI-composer/System Events route in the newer entry above.
+**Commit:** pending (`codex/recording-destination-routing`, unstaged)
+**Guard:** Do not use PID-targeted Command-V/Return for Electron, and do not treat `AXConfirm` as a generic editor Return. The live build must be installed after the five-second warning, signed with the stable VoiceInk++ identity, and its next real retarget trace must show which OpenAI composer route ran.
+---
+
+---
+**Date:** 2026-07-13T20:51:40Z
+**Trigger:** Ethan asked for the recorder to distinguish the app focused now from the per-session app owned by Next Track, and to communicate transcription retargeting through the icon instead of a success toast
+**Symptom:** The right-hand Mode icon consumed the slot needed for current-focus feedback. The single destination icon showed only the saved/locked target, so it was impossible to compare current focus with where Next Track would deliver. Pressing Next Track during transcription did update the published target, but also displayed a redundant “Pending transcription target…” text notification.
+**Root cause:** Recorder layout exposed Mode and one paste-target icon but no independent current-app signal. `VoiceInkEngine.retargetMostRecentPendingTranscriptionToFocusedInput` explicitly called the informational notification even though `RecordingSession.pasteTarget` was already `@Published` and drove the icon transition.
+**Fix:** Mode moved immediately left of the waveform. The right side now shows two distinct app icons in order: current keyboard/frontmost app, then the per-session locked/Next Track paste destination. `ActiveWindowService.currentApplication` updates even while Mode-follow is suppressed by a focus lock, and AX input capture updates it for non-activating panels such as ChatGPT. A successful transcription-time Next Track retarget now communicates solely by switching the locked destination icon; failure to capture an editable input still shows warning text.
+**Commit:** pending (`codex/recording-destination-routing`, unstaged)
+**Guard:** Do not merge the two icons: current focus and owned paste destination answer different questions. Keep successful retarget feedback visual and quiet; keep error/warning text visible. Both mini and notch recorder layouts—and every mirrored monitor panel—must preserve the same left-to-right order.
+---
+
+---
+**Date:** 2026-07-13T20:34:20Z
+**Trigger:** Ethan live-tested Next Track after the foreground-paste routing fix; the transcript reached the saved Codex input but the configured Return did not submit it
+**Symptom:** Paste succeeded and the saved mode was configured with `autoSendKey: enter`, but no Return was handled. The delivery code still logged `targeted auto-send posted`, falsely implying success.
+**Root cause:** Commit `744c2ce` changed delayed auto-send from an ordinary foreground `CGEvent` to `CGEvent.postToPid` because that version of delivery restored the user's previous app before the 500 ms auto-send delay. Current delivery intentionally keeps the saved destination frontmost, so the process-targeted workaround was no longer needed. More importantly, PID-targeted Return has the same Electron/VS Code false-success behavior as PID-targeted Command-V: macOS accepts the post without guaranteeing that the app handles it.
+**Fix:** Before auto-send, `TranscriptionDelivery` verified that the saved destination was frontmost and called the same awaited `FocusLockService.restoreFocus` again if it was not. `CursorPaster.performAutoSend` required the expected foreground PID and posted ordinary global Return events. This removed PID-targeted delivery, but the later 22:05 live trace proved that foreground/raw Return could still be ignored and that leaving the destination frontmost was disruptive. Superseded by the semantic-background fix above.
+**Commit:** pending (`codex/recording-destination-routing`, unstaged)
+**Guard:** Never use `CGEvent.postToPid` for transcript paste or auto-send in Electron/VS Code workflows. “Posted” is not proof of delivery. A completed VoiceInk++ code fix is not complete until the new build is installed and running at `/Applications/VoiceInkPlusPlus.app`; before every restart/replacement, show the macOS notification “VoiceInk++ will restart in 5 seconds” and wait the full five seconds. Never replace `/Applications/VoiceInk.app`.
+---
+
+---
+**Date:** 2026-07-13T20:24:34Z
+**Trigger:** Ethan live-tested the recording-start Next Track route and the transcription-time retarget route on 2026-07-13; both pasted into the intended inputs
+**Symptom:** Next Track correctly stopped recording and the capsule showed the saved app icon, but the icon disappeared as soon as transcription began and the transcript sometimes never reached the saved input. Logs falsely ended with `commandPosted`, making the failed delivery look successful.
+**Root cause:** The accepted one-click behavior was commit `cba45ba` (`Allow paste retargeting during transcription`). The later toggle experiment `671b4c7` was exactly reverted by `bed22b7`; the regression was introduced afterward by `b694eac`, which replaced verified foreground activation plus ordinary Command-V with `CGEvent.postToPid` background paste. macOS can accept posting the event without VS Code/Electron accepting the paste. Separately, Mini/Notch UI explicitly gated the destination icon on `recordingState == .recording`, even though the target remained owned by `RecordingSession`, so the UI misleadingly hid it at `.transcribing`.
+**Fix:** Restored the exact routing contract: normal stop selects the input focused at stop; Next Track while recording stops once and selects the recording-start input; Next Track while the newest result is loading replaces that pending session's destination with the input focused then; there is no toggle. `TranscriptionDelivery.paste` now always calls `FocusLockService.restoreFocus`, waits for the saved app to become genuinely frontmost, restores/verifies the target, then calls the ordinary no-PID `CursorPaster.startPasteAtCursor`. Auto-send also uses verified foreground delivery after the follow-up live test recorded above. The per-session destination icon now stays visible through transcription/delivery, follows a transcription-time retarget, and remains on compact background chips. Recorder panels are mirrored on every `NSScreen`; routine recording-success text is removed; capture/transcription/focus/paste failures remain visible. Built and signed on the Mac Mini, installed as VoiceInk++ only, and live-confirmed by Ethan with both paste routes.
+**Commit:** pending (`codex/recording-destination-routing`, unstaged)
+**Guard:** `CursorPaster.startPasteAtCursor` no longer accepts a target PID, so transcript paste cannot silently drift back to the false-success background path. Inline comments name the VS Code repro; `RECORDING_DESTINATIONS.md` records the three routes and foreground-paste invariant; `pendingPasteTargetCanChangeUntilDeliveryResolvesIt` passed on the Mac Mini. Neither Command-V nor Return may use process-targeted delivery; the newer entry above owns the current auto-send route.
+---
+
+---
 **Date:** 2026-07-11T19:29:32Z
 **Trigger:** Ethan 2026-07-11: 'double-hit Escape works but the slider/timer going down doesnt stop / doesnt disappear instantly'
 **Symptom:** Cancelling a dictation via Escape: double-hitting Escape cancels the recording, but the recorder overlay's countdown 'slider/timer' keeps going down / lingers on screen instead of disappearing instantly. Also required a double-tap to cancel at all.
@@ -241,4 +302,3 @@ Each entry looks like:
 **Commit:** 570a6fa
 **Guard:** Thorough comments at start()/handleFrontmostAppActivation/resolveAndApplyConfiguration; ignores own bundle id + nil bundle id; [weak self] in observer + async hop to avoid retain cycle / actor violation
 ---
-

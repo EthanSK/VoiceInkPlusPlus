@@ -3,10 +3,14 @@ import AppKit
 
 @MainActor
 class NotchWindowManager {
-    private var windowController: NSWindowController?
-    private var panel: NotchRecorderPanel?
+    private struct WindowEntry {
+        let panel: NotchRecorderPanel
+        let windowController: NSWindowController
+    }
 
-    private let makeView: () -> AnyView
+    private var windows: [WindowEntry] = []
+
+    private let makeView: (_ notchWidth: CGFloat, _ notchHeight: CGFloat) -> AnyView
 
     init(
         engine: VoiceInkEngine,
@@ -22,7 +26,7 @@ class NotchWindowManager {
         // (record-while-transcribing stack). Routed to engine.cancelSession(id:).
         onCancelSession: @escaping (UUID) -> Void
     ) {
-        self.makeView = {
+        self.makeView = { notchWidth, notchHeight in
             AnyView(
                 // Host the STACK container: the active session is the notch pill, background
                 // transcribing sessions render as chips stacked beneath it.
@@ -30,6 +34,8 @@ class NotchWindowManager {
                     engine: engine,
                     recorder: recorder,
                     assistantSession: assistantSession,
+                    notchWidth: notchWidth,
+                    notchHeight: notchHeight,
                     onRecordButtonTapped: onRecordButtonTapped,
                     onCloseTapped: onCloseTapped,
                     onCancelTapped: onCancelTapped,
@@ -41,34 +47,38 @@ class NotchWindowManager {
     }
 
     func show() {
-        if panel == nil { initializeWindow() }
-        panel?.show()
+        initializeWindows()
     }
 
     func hide() {
-        panel?.orderOut(nil)
+        windows.forEach { $0.panel.orderOut(nil) }
     }
 
     func destroyWindow() {
-        deinitializeWindow()
+        deinitializeWindows()
     }
 
-    private func initializeWindow() {
-        deinitializeWindow()
-        let metrics = NotchRecorderPanel.calculateWindowMetrics()
-        let newPanel = NotchRecorderPanel(contentRect: metrics.frame)
-        let view = makeView()
-        let hostingController = NotchRecorderHostingController(rootView: view)
-        newPanel.contentView = hostingController.view
-        panel = newPanel
-        windowController = NSWindowController(window: newPanel)
+    private func initializeWindows() {
+        deinitializeWindows()
+
+        for screen in NSScreen.screens {
+            let metrics = NotchRecorderPanel.calculateWindowMetrics(for: screen)
+            let panel = NotchRecorderPanel(contentRect: metrics.frame)
+            let view = makeView(metrics.notchWidth, metrics.notchHeight)
+            let hostingController = NotchRecorderHostingController(rootView: view)
+            panel.contentView = hostingController.view
+            let windowController = NSWindowController(window: panel)
+            windows.append(WindowEntry(panel: panel, windowController: windowController))
+            panel.show(on: screen)
+        }
     }
 
-    private func deinitializeWindow() {
-        panel?.orderOut(nil)
-        windowController?.close()
-        windowController = nil
-        panel = nil
+    private func deinitializeWindows() {
+        windows.forEach {
+            $0.panel.orderOut(nil)
+            $0.windowController.close()
+        }
+        windows.removeAll()
     }
 
 }

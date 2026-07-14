@@ -3,8 +3,12 @@ import AppKit
 
 @MainActor
 class MiniWindowManager {
-    private var windowController: NSWindowController?
-    private var panel: MiniRecorderPanel?
+    private struct WindowEntry {
+        let panel: MiniRecorderPanel
+        let windowController: NSWindowController
+    }
+
+    private var windows: [WindowEntry] = []
 
     private let makeView: () -> AnyView
 
@@ -42,33 +46,39 @@ class MiniWindowManager {
     }
 
     func show() {
-        if panel == nil { initializeWindow() }
-        panel?.show()
+        initializeWindows()
     }
 
     func hide() {
-        panel?.orderOut(nil)
+        windows.forEach { $0.panel.orderOut(nil) }
     }
 
     func destroyWindow() {
-        deinitializeWindow()
+        deinitializeWindows()
     }
 
-    private func initializeWindow() {
-        deinitializeWindow()
-        let metrics = MiniRecorderPanel.calculateWindowMetrics()
-        let newPanel = MiniRecorderPanel(contentRect: metrics)
-        let view = makeView()
-        let hostingController = NSHostingController(rootView: view)
-        newPanel.contentView = hostingController.view
-        panel = newPanel
-        windowController = NSWindowController(window: newPanel)
+    private func initializeWindows() {
+        deinitializeWindows()
+
+        // Mirror the recorder on every connected display. Each panel hosts its own
+        // SwiftUI view hierarchy, but all of them observe the same engine/session
+        // objects, so waveform, transcription state, and controls stay synchronized.
+        for screen in NSScreen.screens {
+            let metrics = MiniRecorderPanel.calculateWindowMetrics(for: screen)
+            let panel = MiniRecorderPanel(contentRect: metrics)
+            let hostingController = NSHostingController(rootView: makeView())
+            panel.contentView = hostingController.view
+            let windowController = NSWindowController(window: panel)
+            windows.append(WindowEntry(panel: panel, windowController: windowController))
+            panel.show(on: screen)
+        }
     }
 
-    private func deinitializeWindow() {
-        panel?.orderOut(nil)
-        windowController?.close()
-        windowController = nil
-        panel = nil
+    private func deinitializeWindows() {
+        windows.forEach {
+            $0.panel.orderOut(nil)
+            $0.windowController.close()
+        }
+        windows.removeAll()
     }
 }

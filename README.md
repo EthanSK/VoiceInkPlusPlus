@@ -1,107 +1,130 @@
 <div align="center">
-  <img src="VoiceInk/Assets.xcassets/AppIcon.appiconset/256-mac.png" width="180" height="180" />
-  <h1>VoiceInk</h1>
-  <p>Voice to text app for macOS to transcribe what you say to text almost instantly</p>
+  <img src="VoiceInk/Assets.xcassets/AppIcon.appiconset/256-mac.png" width="156" height="156" alt="VoiceInk++ app icon">
 
-  [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-  ![Platform](https://img.shields.io/badge/platform-macOS%2014.0%2B-brightgreen)
-  [![GitHub release (latest by date)](https://img.shields.io/github/v/release/Beingpax/VoiceInk)](https://github.com/Beingpax/VoiceInk/releases)
-  ![GitHub all releases](https://img.shields.io/github/downloads/Beingpax/VoiceInk/total)
-  ![GitHub stars](https://img.shields.io/github/stars/Beingpax/VoiceInk?style=social)
-  <p>
-    <a href="https://tryvoiceink.com">Website</a> •
-    <a href="https://www.youtube.com/@tryvoiceink">YouTube</a>
-  </p>
+  # VoiceInk++
 
-  <a href="https://tryvoiceink.com">
-    <img src="https://img.shields.io/badge/Download%20Now-Latest%20Version-blue?style=for-the-badge&logo=apple" alt="Download VoiceInk" width="250"/>
-  </a>
+  ### Become Jarvis. Keep it moving. Not a second of waiting around.
+
+  **Either you or the agent is running.**
+
+  [Website](https://ethansk.github.io/VoiceInkPlusPlus/) · [Build guide](BUILDING.md) · [Destination guide](RECORDING_DESTINATIONS.md) · [Issues](https://github.com/EthanSK/VoiceInkPlusPlus/issues)
+
+  [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-50e3bf.svg)](LICENSE)
+  ![Platform: macOS 14.4+](https://img.shields.io/badge/macOS-14.4%2B-7aa7ff.svg)
+  ![Swift](https://img.shields.io/badge/Swift-native-ffbc6b.svg)
+  [![GitHub stars](https://img.shields.io/github/stars/EthanSK/VoiceInkPlusPlus?style=social)](https://github.com/EthanSK/VoiceInkPlusPlus/stargazers)
 </div>
 
----
+VoiceInk++ is Ethan Sarif-Kattan's opinionated macOS voice-to-text workflow. Speak instead of reaching for the keyboard, decide exactly which input receives every transcript, and carry on in another app while transcription, paste, and auto-send finish behind you.
 
-VoiceInk is a native macOS application that transcribes what you say to text almost instantly. You can find all the information and download the app from [here](https://tryvoiceink.com). 
+It is built for people who use AI agents, terminals, chats, and editors all day—and do not want to spend even an awkward second staring at a transcription spinner.
 
-![VoiceInk Mac App](https://github.com/user-attachments/assets/12367379-83e7-48a6-b52c-4488a6a04bba)
+## The reason VoiceInk++ exists
 
-After dedicating the past 5 months to developing this app, I've decided to open source it for the greater good. 
+Most dictation tools bind a recording to wherever you happen to be when the result arrives. VoiceInk++ gives two mouse buttons three deliberate routes:
 
-My goal is to make it **the most efficient and privacy-focused voice-to-text solution for macOS** that is a joy to use. While the source code is now open for experienced developers to build and contribute, purchasing a license helps support continued development and gives you access to automatic updates, priority support, and upcoming features.
+| What you do | Where the transcript goes |
+| --- | --- |
+| Stop with the normal recording button | The exact editable input focused when you stop |
+| Press **Next Track** while recording | The input captured when recording started |
+| Stop normally, then press **Next Track** while transcription is loading | A second chance: replace the pending destination with the exact input focused now |
 
-## Features
+The third route is the workflow-defining one:
 
-- 🎙️ **Accurate Transcription**: Local AI models that transcribe your voice to text with 99% accuracy, almost instantly
-- 🔒 **Privacy First**: 100% offline processing ensures your data never leaves your device
-- ⚡ **Modes**: Intelligent app detection automatically applies your perfect pre-configured settings based on the app/ URL you're on
-- 🧠 **Context Aware**: Smart AI that understands your screen content and adapts to the context
-- 🎯 **Global Shortcuts**: Configurable keyboard shortcuts for quick recording and push-to-talk functionality
-- 📝 **Personal Dictionary**: Train the AI to understand your unique terminology with custom words, industry terms, and smart text replacements
-- 🔄 **Smart Modes**: Instantly switch between AI-powered modes optimized for different writing styles and contexts
-- 🤖 **AI Assistant**: Built-in voice assistant mode for a quick chatGPT like conversational assistant
+> Normal stop → transcription begins → focus a new input → press Next Track once → move on → VoiceInk++ returns to that input, pastes, uses that app's auto-send setting, and restores your later workspace.
 
-## Get Started
+The target belongs to the individual recording. Starting another recording or focusing another app does not release it.
 
-### Download
-Get the latest version with a free trial from [tryvoiceink.com](https://tryvoiceink.com). Your purchase helps me work on VoiceInk full-time and continuously improve it with new features and updates.
+## Ethan's recommended setup
 
-#### Homebrew
-Alternatively, you can install VoiceInk via `brew`:
+This is the setup Ethan actually uses—not an exhaustive menu of possibilities.
 
-```shell
-brew install --cask voiceink
+### 1. Put two controls under your thumb
+
+Use a mouse with at least two programmable buttons. Ethan uses a **Logitech G502 X LIGHTSPEED** because it is light, comfortable, smooth over its USB receiver, and highly configurable.
+
+In **Logitech G HUB**:
+
+- Map one side button to your normal VoiceInk++ toggle shortcut.
+- Map a second side button to the standard macOS **Next Track** media action.
+
+VoiceInk++ intercepts Next Track only while it can stop or retarget a recording. When idle, the media key continues to work normally.
+
+### 2. Copy the fast VoiceInk++ stack
+
+Ethan's current configuration is:
+
+- **Transcription:** Deepgram Nova-3 Tuned (Local Proxy)
+- **AI provider/model:** OpenAI · gpt-5.5
+- **Fast direct-paste Modes:** AI enhancement off
+- **Language:** Automatic
+- **Paste method:** Default
+- **Audio input:** the best available microphone (Ethan currently uses Digital Mic)
+- **Auto-send:** Return in Codex, Terminal, Claude, ChatGPT, and Producer Player; deliberately off in Chrome
+
+Ethan's local Deepgram proxy is personal infrastructure and is not included in this repository. Use your own compatible Deepgram setup or another supported transcription model, and provide your own provider credentials. Copy the pattern—especially the safe per-app auto-send choices—rather than blindly enabling Return everywhere.
+
+### 3. Learn the two-button rhythm
+
+- **Finish here:** stop normally to use the input focused now.
+- **Send it back:** press Next Track while recording to use the input where recording began.
+- **Second chance:** after a normal stop, focus another input and press Next Track while the result is still loading. Then keep working elsewhere.
+
+That is the whole idea: stay in the flow. Something is always happening.
+
+## What the recorder shows
+
+The compact recorder panel appears on every connected monitor and keeps its information spatially consistent:
+
+```text
+[ Mode ] [ waveform ] [ current focused app ] [ locked destination ]
 ```
 
-### Build from Source
-As an open-source project, you can build VoiceInk yourself by following the instructions in [BUILDING.md](BUILDING.md). However, the compiled version includes additional benefits like automatic updates, priority support via Discord and email, and helps fund ongoing development.
+- Routine “Recording” text stays out of the way; visible text is reserved for real warnings and errors.
+- The current app and locked destination are separate, so you can see both what you are doing and where the transcript will land.
+- The destination remains visible through transcription and updates immediately after a successful second-chance retarget.
+- Delivery errors are surfaced instead of being silently reported as success.
 
-## Requirements
+## More flow-first features
 
-- macOS 14.4 or later
+- Record a new thought while earlier recordings are still transcribing.
+- Keep each recording's Mode, input, auto-send key, and delivery state isolated.
+- Paste and auto-send through a verified foreground destination, including bounded ChatGPT/Codex fallbacks.
+- Restore the workspace you moved to after delivery finishes.
+- Cancel a recording instantly with Escape or the recorder's cancel control.
+- Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
+- Pause and resume supported media without blindly toggling playback state.
+- Keep the recording waveform visible across every connected display.
+
+## Build it
+
+VoiceInk++ currently ships as source rather than a notarized public binary. You need **macOS 14.4 or later**, Xcode, Git, Microphone permission, and Accessibility permission.
+
+```sh
+git clone https://github.com/EthanSK/VoiceInkPlusPlus.git
+cd VoiceInkPlusPlus
+make local
+open ~/Downloads/VoiceInkPlusPlus.app
+```
+
+`make local` creates an ad-hoc signed standalone app without requiring a paid Apple Developer account. Read [BUILDING.md](BUILDING.md) for prerequisites, build targets, and troubleshooting.
 
 ## Documentation
 
-- [Building from Source](BUILDING.md) - Detailed instructions for building the project
-- [Contributing Guidelines](CONTRIBUTING.md) - How to contribute to VoiceInk
-- [Code of Conduct](CODE_OF_CONDUCT.md) - Our community standards
+- [Build VoiceInk++](BUILDING.md)
+- [Understand recording destinations and Next Track](RECORDING_DESTINATIONS.md)
+- [Read the accepted implementation learnings](LEARNINGS.md)
+- [Review update guidance](UPDATING.md)
+- [Report a VoiceInk++ issue](https://github.com/EthanSK/VoiceInkPlusPlus/issues)
 
-## Contributing
+## Project status
 
-This project is **not accepting pull requests** at this time. You're welcome to fork and modify VoiceInk for your own use.
+VoiceInk++ is a personal, opinionated fork being shared in public. The destination workflows are intentionally specific and regression-protected; changes to them should preserve all three routes rather than collapsing them into one toggle.
 
-You can still contribute by:
-- Reporting bugs via [issues](https://github.com/Beingpax/VoiceInk/issues)
-- Suggesting features or enhancements
-- Improving documentation via issues
+There is no VoiceInk++ Homebrew cask or public binary release at present. The upstream `voiceink` cask and downloads install the upstream product, not this fork.
 
-For more details, see our [Contributing Guidelines](CONTRIBUTING.md). For build instructions, see our [Building Guide](BUILDING.md).
+## Origin and license
 
-## License
+VoiceInk++ is built on [VoiceInk](https://github.com/Beingpax/VoiceInk) by [Pax/Beingpax](https://github.com/Beingpax). The native macOS foundation, model integrations, and much of the broader application come from that project; VoiceInk++ adds Ethan's opinionated agent workflow, destination routing, overlapping-session behavior, recorder UI, and delivery hardening.
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-If you encounter any issues or have questions, please:
-1. Check the existing issues in the GitHub repository
-2. Create a new issue if your problem isn't already reported
-3. Provide as much detail as possible about your environment and the problem
-
-## Acknowledgments
-
-### Core Technology
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - High-performance inference of OpenAI's Whisper model
-- [FluidAudio](https://github.com/FluidInference/FluidAudio) - Used for Parakeet model implementation
-
-### Essential Dependencies
-- [Sparkle](https://github.com/sparkle-project/Sparkle) - Keeping VoiceInk up to date
-- [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) - User-customizable keyboard shortcuts
-- [LaunchAtLogin](https://github.com/sindresorhus/LaunchAtLogin) - Launch at login functionality
-- [MediaRemoteAdapter](https://github.com/ejbills/mediaremote-adapter) - Media playback control during recording
-- [Zip](https://github.com/marmelroy/Zip) - File compression and decompression utilities
-- [SelectedTextKit](https://github.com/tisfeng/SelectedTextKit) - A modern macOS library for getting selected text
-- [Swift Atomics](https://github.com/apple/swift-atomics) - Low-level atomic operations for thread-safe concurrent programming
-
-
----
-
-Made with ❤️ by Pax
+This repository is licensed under the [GNU General Public License v3.0](LICENSE). VoiceInk and related names belong to their respective owners; VoiceInk++ is Ethan's independent fork.

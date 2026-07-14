@@ -1,0 +1,16 @@
+{
+  "name": "VoiceInk++",
+  "short_name": "VoiceInk++",
+  "description": "Opinionated macOS voice-to-text for staying in the flow.",
+  "start_url": "/VoiceInkPlusPlus/",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/512-mac.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

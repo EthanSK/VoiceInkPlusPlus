@@ -17,6 +17,20 @@ class CursorPaster {
         }
     }
 
+    enum AutoSendResult: Equatable {
+        case commandPosted
+        case commandNotPosted
+
+        var didPostAutoSendCommand: Bool {
+            self == .commandPosted
+        }
+    }
+
+    enum AutoSendMethod {
+        case systemEvents
+        case cgEvent
+    }
+
     private static let prePasteDelay: TimeInterval = 0.10
     private static let pasteShortcutEventDelay: TimeInterval = 0.01
     private static let minimumClipboardRestoreDelay: TimeInterval = 0.25
@@ -149,6 +163,9 @@ class CursorPaster {
 
     private static let pasteScriptKeystroke = makeScript("tell application \"System Events\" to keystroke \"v\" using command down")
     private static let pasteScriptKeyCode   = makeScript("tell application \"System Events\" to key code 9 using command down")
+    private static let enterScript = makeScript("tell application \"System Events\" to key code 36")
+    private static let shiftEnterScript = makeScript("tell application \"System Events\" to key code 36 using shift down")
+    private static let commandEnterScript = makeScript("tell application \"System Events\" to key code 36 using command down")
 
     @MainActor
     private static var layoutSwitchesToQWERTYOnCommand: Bool {
@@ -241,51 +258,140 @@ class CursorPaster {
     // sluggish. ~600ms total keeps it imperceptible-to-snappy in practice.
     private static let doubleEnterMaxDelay: TimeInterval = 0.60     // 600ms
 
-    // `transcriptLength` is the character count of the text just pasted; it scales
-    // the redundant-Enter delay (see constants above). Defaults to 0 for callers
-    // that don't have it (then the second Enter fires after just the base delay).
-    static func performAutoSend(_ key: AutoSendKey, transcriptLength: Int = 0) {
-        guard key.isEnabled else { return }
-        guard AXIsProcessTrusted() else { return }
-
-        let source = CGEventSource(stateID: .privateState)
-        let enterDown = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: true)
-        let enterUp   = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: false)
-
-        switch key {
-        case .none: return
-        case .enter: break
-        case .shiftEnter:
-            enterDown?.flags = .maskShift
-            enterUp?.flags   = .maskShift
-        case .commandEnter:
-            enterDown?.flags = .maskCommand
-            enterUp?.flags   = .maskCommand
+    // `transcriptLength` scales the optional redundant Enter delay. The caller
+    // chooses System Events for OpenAI's Electron composer because a real live trace
+    // showed it ignoring zero-duration CGEvents while Terminal accepted them. Both
+    // routes remain foreground-only so a Return can never drift into another app.
+    @MainActor
+    static func performAutoSend(
+        _ key: AutoSendKey,
+        transcriptLength: Int = 0,
+        expectedFrontmostPID: pid_t,
+        method: AutoSendMethod = .cgEvent,
+        sendRedundantEnter: Bool = true
+    ) async -> AutoSendResult {
+        guard key.isEnabled else {
+            logger.error("Refused to auto-send a disabled key")
+            return .commandNotPosted
+        }
+        guard AXIsProcessTrusted() else {
+            logger.error("Accessibility permission is required to auto-send Return")
+            return .commandNotPosted
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedFrontmostPID else {
+            logger.error("Refused to auto-send Return because the saved destination is not frontmost expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            return .commandNotPosted
         }
 
-        // First Return — posted immediately (in-process CGEvent, key code 36/0x24).
-        enterDown?.post(tap: .cghidEventTap)
-        enterUp?.post(tap: .cghidEventTap)
+        let firstResult = await issueAutoSendKey(key, method: method)
+        guard firstResult.didPostAutoSendCommand else { return firstResult }
 
         // Feature B: schedule a SECOND Return ONLY for plain Enter, after a
         // length-scaled delay, to survive a lag-dropped first keystroke.
-        guard key == .enter else { return }
+        guard sendRedundantEnter, key == .enter else { return .commandPosted }
 
         let scaledDelay = min(
             doubleEnterBaseDelay + Double(max(transcriptLength, 0)) * doubleEnterPerCharDelay,
             doubleEnterMaxDelay
         )
 
-        // Build a fresh pair of events for the redundant press (CGEvents are
-        // single-use once posted). Same key code 36, no modifiers (plain Enter).
-        DispatchQueue.main.asyncAfter(deadline: .now() + scaledDelay) {
-            // Re-check Accessibility in case it was revoked between the two posts.
-            guard AXIsProcessTrusted() else { return }
-            let retrySource = CGEventSource(stateID: .privateState)
-            let retryDown = CGEvent(keyboardEventSource: retrySource, virtualKey: 0x24, keyDown: true)
-            let retryUp   = CGEvent(keyboardEventSource: retrySource, virtualKey: 0x24, keyDown: false)
-            retryDown?.post(tap: .cghidEventTap)
-            retryUp?.post(tap: .cghidEventTap)
+        await wait(scaledDelay)
+
+        // The primary Return was posted successfully, so a failed safety retry is
+        // logged but does not turn the whole delivery into a visible false failure.
+        // Most importantly, never let the redundant Return land in another app.
+        guard AXIsProcessTrusted() else {
+            logger.error("Skipped redundant auto-send Return because Accessibility permission was revoked")
+            return .commandPosted
         }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedFrontmostPID else {
+            logger.notice("Skipped redundant auto-send Return because focus moved expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            return .commandPosted
+        }
+
+        let retryResult = await issueAutoSendKey(.enter, method: method)
+        if !retryResult.didPostAutoSendCommand {
+            logger.error("Failed to issue redundant auto-send Return")
+        }
+
+        return .commandPosted
+    }
+
+    @MainActor
+    private static func issueAutoSendKey(
+        _ key: AutoSendKey,
+        method: AutoSendMethod
+    ) async -> AutoSendResult {
+        switch method {
+        case .systemEvents:
+            return issueAutoSendUsingSystemEvents(key)
+        case .cgEvent:
+            return await issueAutoSendUsingCGEvent(key)
+        }
+    }
+
+    @MainActor
+    private static func issueAutoSendUsingSystemEvents(_ key: AutoSendKey) -> AutoSendResult {
+        let script: NSAppleScript?
+        switch key {
+        case .none:
+            logger.error("Refused to auto-send .none")
+            return .commandNotPosted
+        case .enter:
+            script = enterScript
+        case .shiftEnter:
+            script = shiftEnterScript
+        case .commandEnter:
+            script = commandEnterScript
+        }
+
+        guard let script else {
+            logger.error("System Events auto-send script is unavailable")
+            return .commandNotPosted
+        }
+
+        var error: NSDictionary?
+        script.executeAndReturnError(&error)
+        if let error {
+            logger.error("System Events auto-send failed key=\(key.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            return .commandNotPosted
+        }
+
+        logger.info("Issued foreground auto-send through System Events key=\(key.rawValue, privacy: .public)")
+        return .commandPosted
+    }
+
+    @MainActor
+    private static func issueAutoSendUsingCGEvent(_ key: AutoSendKey) async -> AutoSendResult {
+        // HID system state plus a real down/up interval more closely resembles a
+        // physical key press than the old back-to-back private-state events. The old
+        // pair worked in Terminal but was ignored by the OpenAI Electron composer.
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let enterDown = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: true),
+              let enterUp = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: false) else {
+            logger.error("Failed to create auto-send Return keyboard events")
+            return .commandNotPosted
+        }
+
+        switch key {
+        case .none:
+            logger.error("Refused to auto-send .none")
+            return .commandNotPosted
+        case .enter:
+            enterDown.flags = []
+            enterUp.flags = []
+        case .shiftEnter:
+            enterDown.flags = .maskShift
+            enterUp.flags = .maskShift
+        case .commandEnter:
+            enterDown.flags = .maskCommand
+            enterUp.flags = .maskCommand
+        }
+
+        enterDown.post(tap: .cghidEventTap)
+        await wait(0.03)
+        enterUp.post(tap: .cghidEventTap)
+        logger.info("Issued humanized foreground CGEvent auto-send key=\(key.rawValue, privacy: .public)")
+        return .commandPosted
     }
 }

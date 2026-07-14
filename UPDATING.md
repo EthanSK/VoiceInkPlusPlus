@@ -6,7 +6,7 @@ patches live only here and must be **merged** with each upstream release.
 
 ## Our patches (preserve these through every merge)
 
-All in `VoiceInk/Modes/ActiveWindowService.swift` + a one-line wiring call in `VoiceInk/VoiceInk.swift`:
+The fork's important behavioral patches are:
 
 - **#785 — Mode follows the current app (the load-bearing fix).** Adds an
   `NSWorkspace.didActivateApplicationNotification` observer in `ActiveWindowService.start()` so the
@@ -27,8 +27,26 @@ All in `VoiceInk/Modes/ActiveWindowService.swift` + a one-line wiring call in `V
   focused element DOES follow into the panel, so we read its owning pid → bundle id. Safe/additive:
   for ordinary windows the AX-focused app == frontmost app. Falls back when AX is untrusted, exposes
   no focused element, or the focus is VoiceInk's own (also non-activating) recorder panel.
+- **Per-recording destination control — choose the start or stop input at the end.** The normal
+  recording shortcut stops into the exact input focused at stop. The macOS Next Track media key is
+  intercepted only while actively recording and stops into the exact Accessibility input captured
+  at recording start. When Electron/Chromium exposes only `AXWebArea` during the shortcut, it falls
+  back to the recording-start application; outside recording Next Track continues to control media
+  normally. Each
+  `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
+  background transcriptions from mixing destinations. While the newest transcription is still
+  loading, Next Track can replace its target with the input focused at that moment; the pipeline
+  resolves the session's target only immediately before delivery. Delivery waits for cross-app activation,
+  restores and verifies the exact element, and copies to the clipboard rather than pasting into an
+  unintended field if verification fails. The post-stop Next Track action is a distinct second-chance
+  route: while the newest result is loading it atomically replaces both the pending exact input and
+  that target app's auto-send key, so moving to another app before delivery cannot remove Return.
+  This is never a toggle and must not be confused with Next Track while recording, which stops into
+  the recording-start input. See [Recording Destination Controls](RECORDING_DESTINATIONS.md)
+  for user examples, setup, failure behavior, logs, and the implementation map.
 
-`start()` is wired once at app launch in `VoiceInk.swift` (right after `ActiveWindowService.shared`).
+The active-window service's `start()` is wired once at app launch in `VoiceInk.swift` (right after
+`ActiveWindowService.shared`).
 
 ## Build (MUST be on the Mac Mini — never the MBP)
 
@@ -51,6 +69,24 @@ on first launch.
 The built bundle is **`VoiceInkPlusPlus.app`** (output: `~/Downloads/VoiceInkPlusPlus.app`) — the
 `PRODUCT_NAME` is the build-path-safe `VoiceInkPlusPlus`; the user-visible name is **VoiceInk++** via
 `CFBundleDisplayName`.
+
+### Install completed fixes into the running app (mandatory)
+
+A VoiceInk++ code fix is not complete when the source builds: install that exact build into
+`/Applications/VoiceInkPlusPlus.app` and relaunch it so Ethan is testing the corrected binary. Never
+replace or stop `/Applications/VoiceInk.app`, which is the separate official app.
+
+Before every update that quits or replaces the running VoiceInk++ app, warn Ethan and give him a real
+five-second recovery window:
+
+```sh
+osascript -e 'display notification "VoiceInk++ will restart in 5 seconds" with title "VoiceInk++ update"'
+sleep 5
+```
+
+Only after that delay: quit VoiceInk++, preserve a timestamped rollback bundle, replace the app,
+relaunch it, and verify the new PID plus the strict/deep code signature and stable designated
+requirement. Do not claim a live fix while an older PID/build remains running.
 
 ## Standalone-fork identity — VoiceInk++ (separate app from the official VoiceInk)
 

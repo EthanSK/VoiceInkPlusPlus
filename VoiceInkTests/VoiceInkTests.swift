@@ -6,12 +6,25 @@
 //
 
 import Testing
-@testable import VoiceInk
+@testable import VoiceInkPlusPlus
 
 struct VoiceInkTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+    @MainActor
+    @Test func secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt() {
+        let session = RecordingSession()
+        let retargeted = RecordingPasteTarget(
+            destination: .focusedDuringTranscription,
+            focusedInput: nil,
+            autoSendKey: .enter
+        )
+
+        #expect(session.retargetPaste(to: retargeted))
+        let resolvedTarget = session.resolvePasteTargetForDelivery()
+        #expect(resolvedTarget.destination == .focusedDuringTranscription)
+        #expect(resolvedTarget.autoSendKey == .enter)
+        #expect(!session.retargetPaste(to: RecordingPasteTarget(destination: .recordingStart, focusedInput: nil)))
+        #expect(session.pasteTarget.destination == .focusedDuringTranscription)
     }
 
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Icon Toggle Button
 
@@ -466,54 +467,104 @@ struct LiveTranscriptView: View {
     }
 }
 
-// MARK: - Focus Lock Indicator
-//
-// Small, unobtrusive caption shown ABOVE the waveform in the recorder UI to tell
-// Ethan that the CURRENT recording is in the long-press "lock the start field"
-// capture mode (Feature A — see FocusLockService). When that mode is NOT active
-// (an ordinary short-press recording) the view collapses to nothing, so a normal
-// recording shows no label at all.
-//
-// Reactivity: observes FocusLockService.shared (an ObservableObject). The
-// service's @Published `isLockActive` flips true when promoteToLock() arms the
-// lock at record-start and false when clearLock() releases it at delivery/end —
-// so this caption appears/disappears live alongside the lock, including clearing
-// itself before any subsequent short-press recording.
-struct FocusLockIndicator: View {
-    // shared singleton; @ObservedObject so SwiftUI re-renders when isLockActive flips.
-    @ObservedObject private var focusLock = FocusLockService.shared
+// MARK: - Current App + Paste Destination
+
+struct CurrentFocusApplicationIndicator: View {
+    @ObservedObject private var activeWindowService = ActiveWindowService.shared
+    private let iconSize: CGFloat = 20
+
+    private var application: NSRunningApplication? {
+        if let currentApplication = activeWindowService.currentApplication,
+           !currentApplication.isTerminated {
+            return currentApplication
+        }
+
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+              frontmostApplication.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return nil
+        }
+        return frontmostApplication
+    }
+
+    private var helpText: String {
+        if let application {
+            return "Currently focused: \(application.localizedName ?? application.bundleIdentifier ?? String(localized: "Unknown app"))"
+        }
+        return String(localized: "Currently focused app unavailable")
+    }
 
     var body: some View {
         Group {
-            if focusLock.isLockActive {
-                // VIPP (2026-06-21): made the indicator VISIBLY DISTINCT for the new
-                // STOP-hold focus-lock path. Ethan's stop-hold gesture (⇧⌃⌥ held on
-                // stop) is subtle and easy to second-guess, so he asked for a clear
-                // at-a-glance signal that the long-hold registered and the special
-                // "lock to start field" mode is engaged. We now prepend a LOCK GLYPH
-                // ("lock.fill") to the caption + tint the whole row a warm accent so it
-                // pops against the recorder's black background — not just the quiet grey
-                // footnote it was before. The lock engages the instant promoteToLock()
-                // flips isLockActive (whether via the STOP-hold timer or the START-hold
-                // path) and clears the moment clearLock() flips it false at delivery/end.
-                HStack(spacing: 4) {
-                    // Lock glyph — the unmistakable "you are in locked mode" cue.
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 9, weight: .bold))
-                    // Caption. The exact string is intentional — do not reword.
-                    Text("Using input from voice start")
-                        .font(.system(size: 10, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
-                // Warm amber accent so the locked state reads as a distinct, deliberate
-                // mode at a glance (vs the neutral grey of a normal recording's UI).
-                .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.35))
-                .transition(.opacity)
-                .accessibilityLabel(Text("Locked: using input from voice start"))
+            if let application, let applicationIcon = application.icon {
+                Image(nsImage: applicationIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            } else {
+                Image(systemName: "app.dashed")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(width: iconSize, height: iconSize)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: focusLock.isLockActive)
+        .frame(width: iconSize, height: iconSize)
+        .help(helpText)
+        .accessibilityLabel(Text(helpText))
+    }
+}
+
+struct PasteDestinationIndicator: View {
+    enum Context: Equatable {
+        case nextTrackStop
+        case pendingPaste
+    }
+
+    let target: FocusLockService.Target?
+    let context: Context
+    private let iconSize: CGFloat = 20
+
+    private var helpText: String {
+        guard let target else {
+            return context == .nextTrackStop
+                ? String(localized: "Next Track has no recording-start input — focus an editable input before starting")
+                : String(localized: "Pending transcription has no valid paste input")
+        }
+        switch context {
+        case .nextTrackStop:
+            return "Next Track → \(target.displayInfo.applicationName) — \(target.displayInfo.inputName)"
+        case .pendingPaste:
+            return "Pending paste → \(target.displayInfo.applicationName) — \(target.displayInfo.inputName)"
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let target, let applicationIcon = target.displayInfo.applicationIcon {
+                Image(nsImage: applicationIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            } else if target != nil {
+                Image(systemName: "app.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: iconSize, height: iconSize)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            } else {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(AppTheme.Status.warningStrong)
+                    .frame(width: iconSize, height: iconSize)
+                    .background(AppTheme.Status.warningStrong.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: iconSize * 0.22, style: .continuous))
+            }
+        }
+        .frame(width: iconSize, height: iconSize)
+        .help(helpText)
+        .accessibilityLabel(Text(helpText))
     }
 }
 

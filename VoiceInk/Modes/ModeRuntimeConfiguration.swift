@@ -137,6 +137,21 @@ enum ModeRuntimeResolver {
         )
     }
 
+    /// Resolve the auto-send behavior owned by a saved paste destination, without
+    /// consulting whichever unrelated app happens to be current at delivery time.
+    /// This intentionally uses the app mapping (then the enabled default, then
+    /// neutral `.none`) so a transcription-time Next Track retarget remains stable
+    /// after Ethan immediately moves on to another app.
+    static func autoSendKey(forPasteTargetBundleIdentifier bundleIdentifier: String?) -> AutoSendKey {
+        guard let bundleIdentifier else {
+            return .none
+        }
+
+        let mode = ModeManager.shared.getConfigurationForApp(bundleIdentifier)
+            ?? ModeManager.shared.getDefaultConfiguration()
+        return mode?.autoSendKey ?? .none
+    }
+
     private static func resolvedModel(
         named modelName: String?,
         transcriptionModelManager: TranscriptionModelManager

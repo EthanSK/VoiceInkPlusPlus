@@ -11,10 +11,8 @@ class NotchRecorderPanel: KeyablePanel {
     override var canBecomeMain: Bool { true }
 
     init(contentRect: NSRect) {
-        let metrics = NotchRecorderPanel.calculateWindowMetrics()
-
         super.init(
-            contentRect: metrics.frame,
+            contentRect: contentRect,
             styleMask: [.nonactivatingPanel, .fullSizeContentView, .hudWindow],
             backing: .buffered,
             defer: false
@@ -36,16 +34,10 @@ class NotchRecorderPanel: KeyablePanel {
         self.standardWindowButton(.closeButton)?.isHidden = true
         self.isMovable = false
 
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleScreenParametersChange),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
     }
 
-    static func calculateWindowMetrics() -> (frame: NSRect, notchWidth: CGFloat, notchHeight: CGFloat) {
-        guard let screen = NSScreen.main else {
+    static func calculateWindowMetrics(for screen: NSScreen? = NSScreen.main) -> (frame: NSRect, notchWidth: CGFloat, notchHeight: CGFloat) {
+        guard let screen else {
             return (NSRect(x: 0, y: 0, width: 280, height: 24), 280, 24)
         }
 
@@ -77,22 +69,10 @@ class NotchRecorderPanel: KeyablePanel {
         return (frame, notchWidth, notchHeight)
     }
 
-    func show() {
-        let metrics = NotchRecorderPanel.calculateWindowMetrics()
+    func show(on screen: NSScreen) {
+        let metrics = NotchRecorderPanel.calculateWindowMetrics(for: screen)
         setFrame(metrics.frame, display: true)
         orderFrontRegardless()
-    }
-
-    @objc private func handleScreenParametersChange() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self else { return }
-            let metrics = NotchRecorderPanel.calculateWindowMetrics()
-            self.setFrame(metrics.frame, display: true)
-        }
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
     }
 }
 

@@ -20,6 +20,21 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
 
+    private var shouldShowPasteDestinationIndicator: Bool {
+        switch stateProvider.recordingState {
+        case .starting, .recording, .transcribing, .enhancing:
+            return true
+        case .idle, .busy:
+            return false
+        }
+    }
+
+    private var capsuleWidth: CGFloat {
+        if hasAssistantResponse { return assistantWidth }
+        if hasLiveTranscript { return expandedWidth }
+        return shouldShowPasteDestinationIndicator ? 236 : compactWidth // Active layout has mode + waveform plus current-app and locked-destination icons without squeezing any control.
+    }
+
     // true when live transcript is streaming in during recording
     private var hasLiveTranscript: Bool {
         stateProvider.recordingState == .recording
@@ -104,17 +119,33 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
             Spacer(minLength: 0)
 
-            RecorderStatusDisplay(
-                currentState: stateProvider.recordingState,
-                audioMeter: recorder.audioMeter
-            )
+            HStack(spacing: 6) {
+                // Mode belongs immediately to the LEFT of the waveform. The slot it
+                // previously occupied on the right now shows the currently focused app.
+                RecorderModeButton(
+                    buttonSize: 22,
+                    padding: EdgeInsets()
+                )
+
+                RecorderStatusDisplay(
+                    currentState: stateProvider.recordingState,
+                    audioMeter: recorder.audioMeter
+                )
+            }
 
             Spacer(minLength: 0)
 
-            RecorderModeButton(
-                buttonSize: 22,
-                padding: EdgeInsets()
-            )
+            HStack(spacing: 6) {
+                CurrentFocusApplicationIndicator()
+
+                if shouldShowPasteDestinationIndicator {
+                    PasteDestinationIndicator(
+                        target: stateProvider.pasteDestinationIndicatorTarget,
+                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste
+                    ) // Do not hide this at stop: the same per-session icon confirms VoiceInk still owns the target while transcription is loading, and updates if Next Track retargets it.
+                        .transition(.opacity)
+                }
+            }
             .padding(.trailing, 12)
         }
         .frame(height: controlBarHeight)
@@ -141,18 +172,9 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             } else {
                 transcriptSection
             }
-            // Capture-mode indicator sits directly ABOVE the control bar (which
-            // contains the live waveform / AudioVisualizer via RecorderStatusDisplay).
-            // Only renders when the long-press focus lock is active for this
-            // recording; otherwise it's an empty/zero-height view so a normal
-            // short-press recording shows nothing here. Centered to line up over
-            // the waveform, which is centered in the control bar.
-            FocusLockIndicator()
-                .frame(maxWidth: .infinity)
-                .padding(.top, hasLiveTranscript || hasAssistantResponse ? 4 : 6)
             controlBar
         }
-        .frame(width: hasAssistantResponse ? assistantWidth : (hasLiveTranscript ? expandedWidth : compactWidth))
+        .frame(width: capsuleWidth)
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: hasLiveTranscript || hasAssistantResponse ? expandedCornerRadius : compactCornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.3), value: hasLiveTranscript)

@@ -48,6 +48,12 @@ import os
 // requirements) as @Published members below, so the extension's conformance is satisfied.
 @MainActor
 class VoiceInkEngine: NSObject, ObservableObject {
+    enum PendingPasteRetargetResult {
+        case noPendingTranscription
+        case noFocusedInput
+        case retargeted
+    }
+
 
     // ── Session collection (drives the UI stack) ──
     // Ordered oldest→newest (creation order). The base/active recording card renders from
@@ -74,6 +80,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // Live partial of the ACTIVE recording session (only the recording session streams partials).
     @Published var partialTranscript: String = ""
+
+    var pasteDestinationIndicatorTarget: FocusLockService.Target? {
+        activeRecordingSession?.pasteDestinationIndicatorTarget
+    }
 
     // VIPP (skip-mode-processing feature): RecorderStateProvider now requires a settable
     // `skipPostProcessing`. The REAL per-session flag lives on each RecordingSession (that's
@@ -191,6 +201,41 @@ class VoiceInkEngine: NSObject, ObservableObject {
         sessions.last { $0.phase == .transcribing || $0.phase == .delivering }
     }
 
+    func retargetMostRecentPendingTranscriptionToFocusedInput() -> PendingPasteRetargetResult {
+        guard let session = sessions.last(where: {
+            ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteRetargeting
+        }) else {
+            vippLog.info("paste retarget: no pending transcription still accepts destination changes")
+            return .noPendingTranscription
+        }
+
+        guard let focusedInput = FocusLockService.shared.captureFocusedInput() else {
+            FocusLockService.shared.showPendingPasteInputUnavailable()
+            vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) kept existing destination because no editable input is focused")
+            return .noFocusedInput
+        }
+
+        let didRetarget = session.retargetPaste(
+            to: RecordingPasteTarget(
+                destination: .focusedDuringTranscription,
+                focusedInput: focusedInput,
+                autoSendKey: ModeRuntimeResolver.autoSendKey(
+                    forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
+                )
+            )
+        )
+        guard didRetarget else {
+            vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) reached delivery before its destination could change")
+            return .noPendingTranscription
+        }
+
+        // Success is communicated by the published per-session destination icon
+        // switching in place. Keep text reserved for failures; a toast here made the
+        // compact recorder noisy and duplicated the much clearer icon transition.
+        vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
+        return .retargeted
+    }
+
     /// Recompute the DERIVED compat `recordingState` + `partialTranscript` from the active
     /// recording session. See the big comment on `recordingState` for why we deliberately
     /// fall back to `.idle` (NOT a transcribing session's state) when nothing is recording.
@@ -224,7 +269,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
     //     started session (re-press during the brief start window).
     //   • Otherwise (idle OR only background transcriptions running) → START a fresh
     //     active session.
-    func toggleRecord(modeId: UUID? = nil, isAssistantFollowUp: Bool = false) async {
+    func toggleRecord(
+        modeId: UUID? = nil,
+        isAssistantFollowUp: Bool = false,
+        stopPasteDestination: RecordingPasteDestination = .focusedAtStop
+    ) async {
         // Mid-start re-press: the active session is still starting → cancel it.
         if let active = activeRecordingSession, active.liveRecordingState == .starting {
             await cancelSession(active)
@@ -239,7 +288,30 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // that inline await is exactly what blocked the next start in the old engine.
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
-            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing (shouldCancel=\(active.shouldCancel, privacy: .public))")
+            switch stopPasteDestination {
+            case .recordingStart:
+                let focusedInput = active.recordingStartFocusedInput
+                active.pasteTarget = RecordingPasteTarget(
+                    destination: .recordingStart,
+                    focusedInput: focusedInput,
+                    autoSendKey: ModeRuntimeResolver.autoSendKey(
+                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
+                    )
+                )
+            case .focusedAtStop:
+                let focusedInput = FocusLockService.shared.captureFocusedInput()
+                active.pasteTarget = RecordingPasteTarget(
+                    destination: .focusedAtStop,
+                    focusedInput: focusedInput,
+                    autoSendKey: ModeRuntimeResolver.autoSendKey(
+                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
+                    )
+                )
+            case .focusedDuringTranscription:
+                preconditionFailure("A transcription-time target can only be selected after recording has stopped")
+            }
+
+            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
@@ -280,6 +352,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // No file captured (e.g. start failed). Just tear the session down.
                 if !active.shouldCancel {
                     logger.error("❌ No recorded file found after stopping recording")
+                    NotificationManager.shared.showNotification(
+                        title: String(localized: "Recording failed: no audio file was captured"),
+                        type: .error
+                    )
                 }
                 active.transcriptionSession?.cancel()
                 removeSession(active)
@@ -299,10 +375,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 assistantSession.reset()
             }
 
+            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Capture before asynchronous setup. Electron may expose only AXWebArea while the shortcut is down, so preserve the owning app for Next Track.
+
             requestRecordPermission { [self] granted in
                 if granted {
                     Task { @MainActor [self] in
-                        await self.startNewSession(modeId: modeId, useCase: useCase)
+                        await self.startNewSession(
+                            modeId: modeId,
+                            useCase: useCase,
+                            recordingStartFocusedInput: recordingStartFocusedInput
+                        )
                     }
                 } else {
                     logger.error("Recording permission denied")
@@ -316,9 +398,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // Creates a brand-new RecordingSession, drives the same start handshake the old engine
     // used (permission already granted, recorder.startRecording, mode config apply, streaming
     // session prepare, model preload), and appends it to `sessions` with phase .recording.
-    private func startNewSession(modeId: UUID?, useCase: RecordingSession.UseCase) async {
+    private func startNewSession(
+        modeId: UUID?,
+        useCase: RecordingSession.UseCase,
+        recordingStartFocusedInput: FocusLockService.Target?
+    ) async {
         let startID = UUID()
-        let session = RecordingSession(phase: .recording, useCase: useCase, startID: startID)
+        let session = RecordingSession(
+            phase: .recording,
+            useCase: useCase,
+            startID: startID,
+            recordingStartFocusedInput: recordingStartFocusedInput
+        )
         // Born .recording but we drive it through .starting → .recording during the handshake.
         session.liveRecordingState = .starting
 
@@ -368,6 +459,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.liveRecordingState = .recording
             session.phase = .recording
             recomputeDerivedState()
+            if session.recordingStartFocusedInput == nil {
+                session.recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Retry only if even the owning application could not be captured during the shortcut event.
+            }
+            FocusLockService.shared.showRecordingStartInput(session.recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
 
             await activeModeTask.value
 
@@ -515,11 +610,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             transcription.text = String(localized: "Transcription Failed: No model selected")
             transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
             try? modelContext.save()
+            NotificationManager.shared.showNotification(title: String(localized: "Transcription failed: no model selected"), type: .error)
             removeSession(session)
             return
         }
 
         guard let audioURL = session.audioURL else {
+            NotificationManager.shared.showNotification(title: String(localized: "Transcription failed: recorded audio is unavailable"), type: .error)
             removeSession(session)
             return
         }
@@ -566,6 +663,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 await MainActor.run {
                     session?.contextStore?.snapshot
                 }
+            },
+            pasteTarget: { [weak session] in
+                guard let session else {
+                    preconditionFailure("The recording session must exist until its delivery target is resolved")
+                }
+                return session.resolvePasteTargetForDelivery()
             },
             outputConfiguration: { [weak session] in
                 let resolved = ModeRuntimeResolver.outputConfiguration()

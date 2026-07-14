@@ -1,139 +1,145 @@
-# Building VoiceInk
+# Build VoiceInk++
 
-This guide provides detailed instructions for building VoiceInk from source.
+VoiceInk++ is currently distributed as source. The local build path creates a standalone, ad-hoc signed `VoiceInkPlusPlus.app` without requiring a paid Apple Developer account.
 
-## Prerequisites
+## Requirements
 
-Before you begin, ensure you have:
 - macOS 14.4 or later
-- Xcode (latest version recommended)
-- Swift (latest version recommended)
-- Git (for cloning repositories)
+- A recent full installation of Xcode
+- Xcode Command Line Tools
+- Git and Swift (both are included with the normal Xcode toolchain)
+- Internet access on the first build for Swift packages and `whisper.cpp`
 
-## Quick Start with Makefile (Recommended)
+Confirm the command-line prerequisites:
 
-The easiest way to build VoiceInk is using the included Makefile, which automates the entire build process including building and linking the whisper framework.
-
-### Simple Build Commands
-
-```bash
-# Clone the repository
-git clone https://github.com/Beingpax/VoiceInk.git
-cd VoiceInk
-
-# Build everything (recommended for first-time setup)
-make all
-
-# Or for development (build and run)
-make dev
+```sh
+xcode-select -p
+git --version
+swift --version
 ```
 
-### Available Makefile Commands
+If `xcode-select` points at Command Line Tools instead of the full Xcode app, switch it before building:
 
-- `make check` or `make healthcheck` - Verify all required tools are installed
-- `make whisper` - Clone and build whisper.cpp XCFramework automatically
-- `make setup` - Prepare the whisper framework for linking
-- `make build` - Build the VoiceInk Xcode project
-- `make local` - Build for local use (no Apple Developer certificate needed)
-- `make run` - Launch the built VoiceInk app
-- `make dev` - Build and run (ideal for development workflow)
-- `make all` - Complete build process (default)
-- `make clean` - Remove build artifacts and dependencies
-- `make help` - Show all available commands
+```sh
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+```
 
-### How the Makefile Helps
+## Quick start
 
-The Makefile automatically:
-1. **Manages Dependencies**: Creates a dedicated `~/VoiceInk-Dependencies` directory for all external frameworks
-2. **Builds Whisper Framework**: Clones whisper.cpp and builds the XCFramework with the correct configuration
-3. **Handles Framework Linking**: Sets up the whisper.xcframework in the proper location for Xcode to find
-4. **Verifies Prerequisites**: Checks that git, xcodebuild, and swift are installed before building
-5. **Streamlines Development**: Provides convenient shortcuts for common development tasks
-
-This approach ensures consistent builds across different machines and eliminates manual framework setup errors.
-
----
-
-## Building for Local Use (No Apple Developer Certificate)
-
-If you don't have an Apple Developer certificate, use `make local`:
-
-```bash
-git clone https://github.com/Beingpax/VoiceInk.git
-cd VoiceInk
+```sh
+git clone https://github.com/EthanSK/VoiceInkPlusPlus.git
+cd VoiceInkPlusPlus
 make local
-open ~/Downloads/VoiceInkPlusPlus.app   # standalone-fork bundle (user-visible name: VoiceInk++)
+open ~/Downloads/VoiceInkPlusPlus.app
 ```
 
-This builds VoiceInk with ad-hoc signing using a separate build configuration (`LocalBuild.xcconfig`) that requires no Apple Developer account.
+The first build takes longer because the Makefile prepares `whisper.xcframework` under `~/VoiceInk-Dependencies` and resolves the Swift package graph. Later builds reuse that dependency directory.
 
-### How It Works
+When the build succeeds, the standalone app is copied to:
 
-The `make local` command uses:
-- `LocalBuild.xcconfig` to override signing and entitlements settings
-- `VoiceInk.local.entitlements` (stripped-down, no CloudKit/keychain groups)
-- `LOCAL_BUILD` Swift compilation flag for conditional code paths
-
-Your normal `make all` / `make build` commands are completely unaffected.
-
----
-
-## Manual Build Process (Alternative)
-
-If you prefer to build manually or need more control over the build process, follow these steps:
-
-### Building whisper.cpp Framework
-
-1. Clone and build whisper.cpp:
-```bash
-git clone https://github.com/ggerganov/whisper.cpp.git
-cd whisper.cpp
-./build-xcframework.sh
-```
-This will create the XCFramework at `build-apple/whisper.xcframework`.
-
-### Building VoiceInk
-
-1. Clone the VoiceInk repository:
-```bash
-git clone https://github.com/Beingpax/VoiceInk.git
-cd VoiceInk
+```text
+~/Downloads/VoiceInkPlusPlus.app
 ```
 
-2. Add the whisper.xcframework to your project:
-   - Drag and drop `../whisper.cpp/build-apple/whisper.xcframework` into the project navigator, or
-   - Add it manually in the "Frameworks, Libraries, and Embedded Content" section of project settings
+The bundle is named `VoiceInkPlusPlus.app`; macOS shows the user-facing name **VoiceInk++**.
 
-3. Build and Run
-   - Build the project using Cmd+B or Product > Build
-   - Run the project using Cmd+R or Product > Run
+## First launch
 
-## Development Setup
+VoiceInk++ needs two macOS permissions for its core workflow:
 
-1. **Xcode Configuration**
-   - Ensure you have the latest Xcode version
-   - Install any required Xcode Command Line Tools
+1. **Microphone** — records your voice.
+2. **Accessibility** — captures, restores, pastes into, and verifies the editable destination you chose.
 
-2. **Dependencies**
-   - The project uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for transcription
-   - Ensure the whisper.xcframework is properly linked in your Xcode project
-   - Test the whisper.cpp installation independently before proceeding
+Follow the in-app permission prompts. You can review the grants later in **System Settings → Privacy & Security**.
 
-3. **Building for Development**
-   - Use the Debug configuration for development
-   - Enable relevant debugging options in Xcode
+An ad-hoc local build is separate from the upstream VoiceInk app. It uses the bundle identifier `com.ethansk.VoiceInkPlusPlus`, so it does not replace `/Applications/VoiceInk.app`.
 
-4. **Testing**
-   - Run the test suite before making changes
-   - Ensure all tests pass after your modifications
+## Recommended mouse setup
+
+After the app launches:
+
+1. Configure the normal VoiceInk++ recording shortcut in toggle mode.
+2. In your mouse software, assign one button to that shortcut.
+3. Assign a second button to the standard macOS **Next Track** media action.
+4. Read [RECORDING_DESTINATIONS.md](RECORDING_DESTINATIONS.md) for the three destination routes.
+
+Ethan uses a Logitech G502 X LIGHTSPEED with Logitech G HUB, but any programmable mouse that can emit the configured shortcut and Next Track can reproduce the workflow.
+
+## Make targets
+
+| Command | Purpose |
+| --- | --- |
+| `make check` | Verify Git, Xcode's build tools, and Swift |
+| `make whisper` | Prepare `whisper.xcframework` in `~/VoiceInk-Dependencies` |
+| `make setup` | Confirm the Whisper framework is available |
+| `make local` | Build and copy the standalone VoiceInk++ app to `~/Downloads` |
+| `make build` | Build the normal Debug configuration |
+| `make run` | Open the available VoiceInk++ build |
+| `make dev` | Build and run for development |
+| `make clean` | Remove the shared dependency directory |
+| `make help` | List the available targets |
+
+## Local-build limitations
+
+The ad-hoc local configuration intentionally omits capabilities that require Ethan's Apple signing setup:
+
+- No iCloud dictionary sync
+- No automatic update channel; pull the latest source and rebuild instead
+
+Transcription providers may require your own API credentials. Ethan's personal Deepgram local proxy is not part of this repository.
+
+## Run tests
+
+Open `VoiceInk.xcodeproj` in Xcode and use **Product → Test**, or run the test scheme from Terminal:
+
+```sh
+xcodebuild \
+  -project VoiceInk.xcodeproj \
+  -scheme VoiceInk \
+  -destination 'platform=macOS' \
+  test
+```
+
+Destination-routing changes must preserve the regression test named `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` and the contract in [AGENTS.md](AGENTS.md).
 
 ## Troubleshooting
 
-If you encounter any build issues:
-1. Clean the build folder (Cmd+Shift+K)
-2. Clean the build cache (Cmd+Shift+K twice)
-3. Check Xcode and macOS versions
-4. Verify all dependencies are properly installed
-5. Make sure whisper.xcframework is properly built and linked
+### Xcode license or first-launch error
 
-For more help, please check the [issues](https://github.com/Beingpax/VoiceInk/issues) section or create a new issue. 
+Open Xcode once and finish its component installation, then run:
+
+```sh
+sudo xcodebuild -license accept
+```
+
+### Swift packages do not resolve
+
+Check the network connection, open the project in Xcode, and use **File → Packages → Reset Package Caches** before retrying `make local`.
+
+### The app cannot record or paste
+
+Verify both Microphone and Accessibility access in System Settings. After rebuilding, macOS may treat the new ad-hoc signature as a fresh app and ask for permission again.
+
+### The first build cannot find Whisper
+
+Run the dependency step directly, then retry:
+
+```sh
+make whisper
+make local
+```
+
+### Still blocked
+
+Search the [VoiceInk++ issues](https://github.com/EthanSK/VoiceInkPlusPlus/issues) and open a new one with:
+
+- macOS and Xcode versions
+- the command you ran
+- the first relevant build error
+- whether this was a first build or an update
+
+Do not include API keys, tokens, private proxy URLs, or other credentials in issue logs.
+
+## Upstream project
+
+VoiceInk++ is an independent fork of [VoiceInk by Beingpax](https://github.com/Beingpax/VoiceInk). Upstream build and download instructions install VoiceInk, not this VoiceInk++ fork.

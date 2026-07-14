@@ -136,24 +136,14 @@ class RecordingShortcutManager: ObservableObject {
             recordingState: {
                 engine.recordingState
             },
-            toggleRecorderPanel: { modeId in
-                await recorderUIManager.toggleRecorderPanel(modeId: modeId)
+            toggleRecorderPanel: { modeId, stopPasteDestination in
+                await recorderUIManager.toggleRecorderPanel(
+                    modeId: modeId,
+                    stopPasteDestination: stopPasteDestination
+                )
             },
             cancelRecording: {
                 await recorderUIManager.cancelRecording()
-            },
-            // Feature A (2026-06-21): lets the handler look up the ACTIVE Shortcut for a
-            // given action so it can tell whether the shortcut is MODIFIER-ONLY (⇧⌃⌥) and
-            // read its required modifier mask. The handler needs this to robustly decide a
-            // STOP-hold focus-lock for modifier-only shortcuts, whose key-up fires at
-            // ~0.1s and can't be timed (see RecordingShortcutModeHandler for the full why).
-            shortcutForAction: { action in
-                switch action {
-                case .primaryRecording, .secondaryRecording:
-                    return ShortcutStore.shortcut(for: action)
-                default:
-                    return nil
-                }
             }
         )
 
@@ -311,6 +301,7 @@ class RecordingShortcutManager: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     guard let mode = self.recordingMode(for: action) else { return }
+                    self.logger.info("Recording shortcut key-down action=\(String(describing: action), privacy: .public) mode=\(mode.rawValue, privacy: .public) recordingState=\(String(describing: self.engine.recordingState), privacy: .public) route=focusedAtStop")
                     await self.shortcutModeHandler.handleKeyDown(
                         action: action,
                         eventTime: eventTime,
@@ -336,6 +327,34 @@ class RecordingShortcutManager: ObservableObject {
                 Task { @MainActor in
                     guard let self, self.recordingMode(for: action) != nil else { return }
                     await self.shortcutModeHandler.handleInterruption(action: action)
+                }
+            },
+            onNextTrackKeyDown: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return false }
+
+                    if self.engine.recordingState == .recording,
+                       self.recorderUIManager.isRecorderPanelVisible {
+                        self.logger.info("Next Track key-down consumed recordingState=recording route=recordingStart")
+                        Task { @MainActor [weak self] in
+                            await self?.recorderUIManager.toggleRecorderPanel(
+                                stopPasteDestination: .recordingStart
+                            )
+                        }
+                        return true // Consume the entire press so the recording-start stop never also advances media.
+                    }
+
+                    switch self.engine.retargetMostRecentPendingTranscriptionToFocusedInput() {
+                    case .retargeted:
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=retargeted")
+                        return true
+                    case .noFocusedInput:
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
+                        return true
+                    case .noPendingTranscription:
+                        self.logger.info("Next Track key-down passed through because no recording or retargetable transcription is active")
+                        return false
+                    }
                 }
             }
         )
@@ -428,7 +447,7 @@ final class RecordingShortcutModeHandler {
     private let canHandleShortcutAction: @MainActor () -> Bool
     private let isRecorderVisible: @MainActor () -> Bool
     private let recordingState: @MainActor () -> RecordingState
-    private let toggleRecorderPanel: @MainActor (UUID?) async -> Void
+    private let toggleRecorderPanel: @MainActor (UUID?, RecordingPasteDestination) async -> Void
     private let cancelRecording: @MainActor () async -> Void
     // Feature A (2026-06-21): resolve the active Shortcut for an action so we can read
     // whether it's modifier-only + its required modifier mask. See the STOP-hold logic.
@@ -505,9 +524,9 @@ final class RecordingShortcutModeHandler {
         canHandleShortcutAction: @escaping @MainActor () -> Bool,
         isRecorderVisible: @escaping @MainActor () -> Bool,
         recordingState: @escaping @MainActor () -> RecordingState,
-        toggleRecorderPanel: @escaping @MainActor (UUID?) async -> Void,
+        toggleRecorderPanel: @escaping @MainActor (UUID?, RecordingPasteDestination) async -> Void,
         cancelRecording: @escaping @MainActor () async -> Void,
-        shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut?
+        shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut? = { _ in nil }
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
         self.isRecorderVisible = isRecorderVisible
@@ -527,7 +546,6 @@ final class RecordingShortcutModeHandler {
         currentPressStartedRecording = false
         currentStopIsModifierOnly = false
         currentStopRequiredModifiers = []
-
         // Feature A (focus lock): a full reset (monitor restart, accidental-start
         // cancel) must tear down any pending stop-hold timer AND any captured/locked
         // focus so a stale lock can't leak into the next recording.
@@ -560,6 +578,21 @@ final class RecordingShortcutModeHandler {
         activeShortcutCanCancelAccidentalStart = canCurrentShortcutPressCancelAccidentalStart
         lastShortcutPressTime = Date()
         shortcutPressStartTime = eventTime
+
+        if mode == .toggle {
+            if isHandsFreeRecording {
+                isHandsFreeRecording = false
+                guard canHandleShortcutAction() else { return }
+                await toggleRecorderPanel(modeId, .focusedAtStop)
+                return
+            }
+
+            if !isRecorderVisible() {
+                guard canHandleShortcutAction() else { return }
+                await toggleRecorderPanel(modeId, .focusedAtStop)
+            }
+            return
+        }
 
         // Feature A (focus lock): does THIS key-down START a fresh recording?
         // Only a key-down that begins recording (recorder not currently visible,
@@ -712,19 +745,19 @@ final class RecordingShortcutModeHandler {
             if isHandsFreeRecording {
                 isHandsFreeRecording = false
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId)
+                await toggleRecorderPanel(modeId, .focusedAtStop)
                 return
             }
 
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId)
+                await toggleRecorderPanel(modeId, .focusedAtStop)
             }
 
         case .pushToTalk:
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId)
+                await toggleRecorderPanel(modeId, .focusedAtStop)
             }
         }
     }
@@ -739,6 +772,12 @@ final class RecordingShortcutModeHandler {
         isShortcutPressed = false
         activeRecordingShortcutAction = nil
         activeShortcutCanCancelAccidentalStart = false
+
+        if mode == .toggle {
+            shortcutPressStartTime = nil
+            isHandsFreeRecording = true
+            return
+        }
 
         // Feature A (new START→STOP model): the press has ended — but which press?
         //
@@ -809,14 +848,14 @@ final class RecordingShortcutModeHandler {
         case .pushToTalk:
             if isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId)
+                await toggleRecorderPanel(modeId, .focusedAtStop)
             }
 
         case .hybrid:
             let pressDuration = shortcutPressStartTime.map { eventTime - $0 } ?? 0
             if pressDuration >= hybridPressThreshold && recordingState() == .recording {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId)
+                await toggleRecorderPanel(modeId, .focusedAtStop)
             } else {
                 isHandsFreeRecording = true
             }
