@@ -31,7 +31,10 @@ Improve this skill as part of using it. Whenever use, debugging, feature work, d
 - Unqualified **toggle** means the primary button's start/stop lifecycle and corresponding shortcut mode. Never reinterpret it as a Next-button destination toggle. Commit `671b4c7` tried that and was deliberately reverted by `bed22b7`.
 - **Second chance** names only the post-primary-stop, still-transcribing retarget route. **Latch** means preserve/replace one session's destination; it never means toggle the destination off.
 - If Ethan says “input on start of transcription” while contrasting the two buttons, use the corrected meaning **recording-start input**. Recording precedes transcription.
+- Ethan's verified G502 X LIGHTSPEED `Desktop: Default` mapping uses the upper side thumb control's `speech to text` Shift-Control-Option macro for the primary button and a different control explicitly labeled `Next Track` for the Next button. G HUB's `Mouse Button 4` and `Mouse Button 5` are separate controls; never infer that the spoken alias “forward button” means raw Mouse Button 5.
 - When wording remains ambiguous, restate the physical control, timing, and destination value before changing behavior. Never invent a route from an alias.
+
+For a G HUB sanity check, confirm the live active profile, onboard/software mode, resolved assignment diagram, and VoiceInk++'s stored shortcut. Raw profile card IDs or historical G-numbers alone are insufficient to identify the physical control.
 
 Keep these three routes distinct:
 

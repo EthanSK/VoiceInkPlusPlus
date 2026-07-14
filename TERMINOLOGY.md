@@ -13,6 +13,16 @@ In this repository, **toggle** without another qualifier means the primary butto
 
 When dictation renders the product name as “Voice Ink,” “Voice Inc,” “Voice sync,” “voicing,” or a similar phrase, treat it as **VoiceInk++** only when the repository and surrounding context make that clear.
 
+## Ethan's verified Logitech G HUB mapping
+
+A read-only check of the live **Desktop: Default** software profile on Ethan's G502 X LIGHTSPEED on 2026-07-14 confirmed the physical distinction:
+
+- The upper side thumb control is assigned the custom `speech to text` macro. It taps Left Shift + Left Control + Left Option in 50 ms steps, exactly matching VoiceInk++'s saved modifier-only primary shortcut (`Shift + Control + Option`) and `.toggle` recording mode. This is the **primary button**.
+- A different control in G HUB's top view is explicitly labeled **Next Track**. This is the **Next button**.
+- G HUB separately labels two side controls **Mouse Button 4** and **Mouse Button 5**. Neither label names the Next button in this setup. In particular, never mechanically translate Ethan's spoken alias “forward button” into raw Mouse Button 5; the relevant invariant is the separate control that emits the macOS Next Track media event.
+
+When diagnosing the hardware mapping, verify G HUB's active profile and resolved assignment diagram as well as VoiceInk++'s stored shortcut. Do not infer the physical control from a historical G-number, a raw card ID, or the English word “forward” alone.
+
 ## Timing defines the route
 
 | State before the press | Control pressed | Result | Destination value |

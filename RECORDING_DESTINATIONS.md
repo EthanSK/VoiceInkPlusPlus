@@ -95,6 +95,12 @@ Keep the ordinary mouse button assigned to the existing VoiceInk++ recording sho
 alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button while recording or while a
 pending transcription can still be retargeted.
 
+Ethan's verified G502 X LIGHTSPEED setup uses an upper side thumb control with a `speech to text`
+Shift-Control-Option macro for the primary button and a different control explicitly labeled **Next Track**
+for the Next button. G HUB's separate **Mouse Button 4** and **Mouse Button 5** controls are unrelated to
+that Next Track route. The spoken alias “forward button” must therefore not be treated as a request to
+listen for raw Mouse Button 5.
+
 ## Codex and Claude Code destinations
 
 Codex desktop owns its composer directly, so VoiceInk++ can restore that exact input and use its bounded verified Send fallbacks. Codex CLI and Claude Code do not own separate macOS windows: their terminal or editor host owns the editable input. VoiceInk++ therefore saves the exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input and uses that host app's configured `autoSendKey`.

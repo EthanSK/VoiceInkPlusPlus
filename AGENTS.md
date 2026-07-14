@@ -15,6 +15,8 @@ Read `TERMINOLOGY.md` before interpreting button names. The **primary button** i
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
+Ethan's live G502 X LIGHTSPEED `Desktop: Default` profile was sanity-checked on 2026-07-14: the upper side thumb control runs the `speech to text` Shift-Control-Option macro and is the primary button; a different control is explicitly labeled `Next Track` and is the Next button. G HUB's separately labeled `Mouse Button 4` and `Mouse Button 5` are not aliases for that Next control. Never infer “forward button” means raw Mouse Button 5.
+
 ## Non-negotiable Next button contract
 
 Use **Next button** as the preferred user-facing term. **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases for the same physical control or its macOS event. They do not create additional routes. Use **second chance** only for route 3 below, and never describe it as a toggle.
