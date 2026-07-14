@@ -3,10 +3,42 @@ import AppKit
 
 // MARK: - App Version
 
-/// A deliberately compact release identifier for the recorder bar. The build
-/// number is included because it increments for every installed VoiceInk++
-/// release, while the marketing version changes only for product milestones.
-/// This lets Ethan confirm the exact running build without opening Settings.
+/// The two-line release identifier shown immediately before Stop. Keeping its
+/// presentation separate from Bundle lookup makes the exact split testable:
+/// `v2.0` is the product version and `.206` is the uniquely released build.
+struct RecorderVersionPresentation: Equatable {
+    let topLine: String
+    let bottomLine: String?
+    let accessibilityLabel: String
+
+    init(marketingVersion: String?, buildNumber: String?) {
+        let marketing = marketingVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let build = buildNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch (marketing, build) {
+        case let (marketing?, build?) where !marketing.isEmpty && !build.isEmpty:
+            topLine = "v\(marketing)"
+            bottomLine = ".\(build)"
+            accessibilityLabel = "VoiceInk++ version \(marketing), build \(build)"
+        case let (marketing?, _) where !marketing.isEmpty:
+            topLine = "v\(marketing)"
+            bottomLine = nil
+            accessibilityLabel = "VoiceInk++ version \(marketing)"
+        case let (_, build?) where !build.isEmpty:
+            topLine = "v?"
+            bottomLine = ".\(build)"
+            accessibilityLabel = "VoiceInk++ build \(build)"
+        default:
+            topLine = "v?"
+            bottomLine = nil
+            accessibilityLabel = "VoiceInk++ version unavailable"
+        }
+    }
+}
+
+/// The build number increments for every installed VoiceInk++ release, while
+/// the marketing version changes only for product milestones. The two rows use
+/// the recorder's otherwise unused vertical space to stay legible at a glance.
 struct RecorderVersionLabel: View {
     private static let marketingVersion = Bundle.main.object(
         forInfoDictionaryKey: "CFBundleShortVersionString"
@@ -15,36 +47,28 @@ struct RecorderVersionLabel: View {
         forInfoDictionaryKey: "CFBundleVersion"
     ) as? String
 
-    private static var compactVersion: String {
-        switch (marketingVersion, buildNumber) {
-        case let (marketing?, build?) where !marketing.isEmpty && !build.isEmpty:
-            return "v\(marketing).\(build)"
-        case let (marketing?, _) where !marketing.isEmpty:
-            return "v\(marketing)"
-        case let (_, build?) where !build.isEmpty:
-            return "v\(build)"
-        default:
-            return "v?"
-        }
-    }
-
-    private static var accessibilityVersion: String {
-        switch (marketingVersion, buildNumber) {
-        case let (marketing?, build?) where !marketing.isEmpty && !build.isEmpty:
-            return "VoiceInk++ version \(marketing), build \(build)"
-        default:
-            return "VoiceInk++ version unavailable"
-        }
-    }
+    private static let presentation = RecorderVersionPresentation(
+        marketingVersion: marketingVersion,
+        buildNumber: buildNumber
+    )
 
     var body: some View {
-        Text(Self.compactVersion)
-            .font(.system(size: 8, weight: .medium, design: .monospaced))
+        VStack(spacing: -2) {
+            Text(Self.presentation.topLine)
+
+            if let bottomLine = Self.presentation.bottomLine {
+                Text(bottomLine)
+            }
+        }
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
             .foregroundStyle(Color.white.opacity(0.48))
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .help(Self.accessibilityVersion)
-            .accessibilityLabel(Text(Self.accessibilityVersion))
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: true, vertical: true)
+            .frame(minWidth: 28, alignment: .center)
+            .help(Self.presentation.accessibilityLabel)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(Self.presentation.accessibilityLabel))
     }
 }
 

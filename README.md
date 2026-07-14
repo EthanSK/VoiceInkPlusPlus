@@ -90,10 +90,11 @@ For a CLI agent, the recorder intentionally shows the **host app icon**—for ex
 The compact recorder panel appears on every connected monitor and keeps its information spatially consistent:
 
 ```text
-[ version ] [ Stop ] [ Mode ] [ waveform ] [ current focused app ] [ locked destination ]
+[ v<version> ]
+[  .<build>  ] [ Stop ] [ Mode ] [ waveform ] [ current focused app ] [ locked destination ]
 ```
 
-- The visible `v<version>.<build>` identifier changes with every installed native release.
+- The two-row `v<version>` / `.<build>` identifier changes with every installed native release.
 - Routine “Recording” text stays out of the way; visible text is reserved for real warnings and errors.
 - The current app and locked destination are separate, so you can see both what you are doing and where the transcript will land.
 - The destination remains visible through transcription and updates immediately after a successful second-chance retarget.

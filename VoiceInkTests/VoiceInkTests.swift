@@ -10,6 +10,17 @@ import Testing
 
 struct VoiceInkTests {
 
+    @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
+        let presentation = RecorderVersionPresentation(
+            marketingVersion: "2.0",
+            buildNumber: "206"
+        )
+
+        #expect(presentation.topLine == "v2.0")
+        #expect(presentation.bottomLine == ".206")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 206")
+    }
+
     @MainActor
     @Test func secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt() {
         let session = RecordingSession()

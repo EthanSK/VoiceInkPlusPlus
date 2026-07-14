@@ -84,9 +84,10 @@ A VoiceInk++ code fix is not complete when the source builds: install that exact
 replace or stop `/Applications/VoiceInk.app`, which is the separate official app.
 
 Before every native release, increment `CURRENT_PROJECT_VERSION` in both main-app build configurations.
-The recorder bar renders `v<MARKETING_VERSION>.<CURRENT_PROJECT_VERSION>` immediately left of Stop,
-so each installed binary must have a unique build number. Do not reuse a build number after changing
-native source, and do not call source-only work released or installed.
+The recorder bar renders `v<MARKETING_VERSION>` on its first row and
+`.<CURRENT_PROJECT_VERSION>` on its second row immediately left of Stop, so each installed binary must
+have a unique build number. Do not reuse a build number after changing native source, and do not call
+source-only work released or installed.
 
 Before every update that quits or replaces the running VoiceInk++ app, warn Ethan and give him a real
 five-second recovery window:
