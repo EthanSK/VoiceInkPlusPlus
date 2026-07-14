@@ -1,0 +1,4 @@
+interface:
+  display_name: "Learnings"
+  short_description: "Preserve verified VoiceInk++ lessons"
+  default_prompt: "Use $learnings to check prior project evidence and preserve every durable verified lesson from this task."

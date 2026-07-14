@@ -2,7 +2,7 @@
 
 Per-repo institutional memory for fixes. Every entry below is a real bug we hit + how we solved it. Check this file BEFORE attempting a same-looking fix.
 
-Maintained by the `learnings` skill — see `~/.claude/skills/learnings/skill.md`.
+Maintained by the public, self-improving `learnings` skill at `.agents/skills/learnings/SKILL.md`. Codex discovers that canonical folder directly; Claude Code follows `.claude/skills/learnings` to the same skill.
 
 ## Format
 
@@ -14,7 +14,8 @@ Each entry looks like:
 **Trigger:** <voice N / message snippet / null>
 **Symptom:** <what was visible>
 **Root cause:** <what we actually found>
-**Fix:** <file:line + short prose + commit SHA>
+**Fix:** <file:line + short prose>
+**Commit:** <implementation SHA>
 **Guard:** <test / lint / watchdog / comment that prevents regression — or 'none'>
 ---
 ```

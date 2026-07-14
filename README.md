@@ -21,17 +21,17 @@ It is built for people who use AI agents, terminals, chats, and editors all day�
 
 ## The reason VoiceInk++ exists
 
-Most dictation tools bind a recording to wherever you happen to be when the result arrives. VoiceInk++ gives two mouse buttons three deliberate routes:
+Most dictation tools bind a recording to wherever you happen to be when the result arrives. VoiceInk++ gives two mouse buttons three deliberate routes. In this documentation, **Next button** means the programmable mouse button mapped to the standard macOS **Next Track** media action.
 
 | What you do | Where the transcript goes |
 | --- | --- |
 | Stop with the normal recording button | The exact editable input focused when you stop |
-| Press **Next Track** while recording | The input captured when recording started |
-| Stop normally, then press **Next Track** while transcription is loading | A second chance: replace the pending destination with the exact input focused now |
+| Press the **Next button** while recording | The input captured when recording started |
+| Stop normally, then press the **Next button** while transcription is loading | A second chance: replace the pending destination with the exact input focused now |
 
 The third route is the workflow-defining one:
 
-> Normal stop → transcription begins → focus a new input → press Next Track once → move on → VoiceInk++ returns to that input, pastes, uses that app's auto-send setting, and restores your later workspace.
+> Normal stop → transcription begins → focus a new input → press the Next button once → move on → VoiceInk++ returns to that input, pastes, uses that app's auto-send setting, and restores your later workspace.
 
 The target belongs to the individual recording. Starting another recording or focusing another app does not release it.
 
@@ -46,9 +46,9 @@ Use a mouse with at least two programmable buttons. Ethan uses a **Logitech G502
 In **Logitech G HUB**:
 
 - Map one side button to your normal VoiceInk++ toggle shortcut.
-- Map a second side button to the standard macOS **Next Track** media action.
+- Map a second side button—your **Next button**—to the standard macOS **Next Track** media action.
 
-VoiceInk++ intercepts Next Track only while it can stop or retarget a recording. When idle, the media key continues to work normally.
+VoiceInk++ intercepts that Next Track event only while it can stop or retarget a recording. When idle, the media key continues to work normally.
 
 ### 2. Copy the fast VoiceInk++ stack
 
@@ -60,17 +60,30 @@ Ethan's current configuration is:
 - **Language:** Automatic
 - **Paste method:** Default
 - **Audio input:** the best available microphone (Ethan currently uses Digital Mic)
-- **Auto-send:** Return in Codex, Terminal, Claude, ChatGPT, and Producer Player; deliberately off in Chrome
+- **Auto-send:** Return in the Codex app, Claude desktop, ChatGPT, and the terminal/editor hosts used by Codex CLI or Claude Code; deliberately off in Chrome
 
 Ethan's local Deepgram proxy is personal infrastructure and is not included in this repository. Use your own compatible Deepgram setup or another supported transcription model, and provide your own provider credentials. Copy the pattern—especially the safe per-app auto-send choices—rather than blindly enabling Return everywhere.
 
 ### 3. Learn the two-button rhythm
 
 - **Finish here:** stop normally to use the input focused now.
-- **Send it back:** press Next Track while recording to use the input where recording began.
-- **Second chance:** after a normal stop, focus another input and press Next Track while the result is still loading. Then keep working elsewhere.
+- **Send it back:** press the Next button while recording to use the input where recording began.
+- **Second chance:** after a normal stop, focus another input and press the Next button while the result is still loading. Then keep working elsewhere.
 
 That is the whole idea: stay in the flow. Something is always happening.
+
+## Codex and Claude Code support
+
+All three Next-button routes work with agent inputs. The important distinction is who owns the editable macOS input:
+
+| Agent surface | What VoiceInk++ locks | Auto-send route |
+| --- | --- | --- |
+| **Codex desktop** | The exact Codex composer | Verified Codex Send/System Events/humanized-Return fallbacks |
+| **Codex CLI** | The exact terminal or editor input hosting the CLI | That host app's foreground paste and Return behavior |
+| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | That host app's foreground paste and Return behavior |
+| **Claude desktop** | The exact Claude composer | Standard verified foreground paste and Return behavior |
+
+For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app, enable Return only where automatic submission is safe, and use the Next button exactly as you would in Codex desktop. No Codex or Claude plugin, shell hook, or process-name detection is required.
 
 ## What the recorder shows
 
@@ -112,8 +125,9 @@ open ~/Downloads/VoiceInkPlusPlus.app
 ## Documentation
 
 - [Build VoiceInk++](BUILDING.md)
-- [Understand recording destinations and Next Track](RECORDING_DESTINATIONS.md)
+- [Understand the Next button and recording destinations](RECORDING_DESTINATIONS.md)
 - [Read the accepted implementation learnings](LEARNINGS.md)
+- [Use the self-improving Codex/Claude Code learnings skill](.agents/skills/learnings/SKILL.md)
 - [Review update guidance](UPDATING.md)
 - [Report a VoiceInk++ issue](https://github.com/EthanSK/VoiceInkPlusPlus/issues)
 

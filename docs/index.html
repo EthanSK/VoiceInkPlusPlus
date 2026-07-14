@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0d12">
-  <meta name="description" content="VoiceInk++ is Ethan's opinionated macOS voice-to-text workflow: speak, choose the exact destination, and keep working while transcription finishes.">
+  <meta name="description" content="VoiceInk++ is Ethan's opinionated macOS voice-to-text workflow for Codex and Claude Code: speak, choose the exact destination, and keep moving.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="VoiceInk++ — Become Jarvis">
-  <meta property="og:description" content="Keep it moving. Not a second of waiting around. Either you or the agent is running.">
+  <meta property="og:description" content="Voice directly into Codex or Claude Code. Keep it moving. Not a second of waiting around.">
   <meta property="og:url" content="https://ethansk.github.io/VoiceInkPlusPlus/">
   <meta property="og:image" content="https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/1024-mac.png">
   <meta name="twitter:card" content="summary">
@@ -32,6 +32,7 @@
     <nav id="site-nav" class="site-nav" aria-label="Primary" data-nav>
       <a href="#setup">Ethan's setup</a>
       <a href="#routing">Three routes</a>
+      <a href="#agents">Agents</a>
       <a href="#features">What changed</a>
       <a href="#build">Build it</a>
       <a class="nav-github" href="https://github.com/EthanSK/VoiceInkPlusPlus">GitHub <span aria-hidden="true">↗</span></a>
@@ -133,12 +134,12 @@
           <p>Get a mouse with at least two programmable buttons. Ethan uses the <strong>Logitech G502 X LIGHTSPEED</strong>: light, comfortable, smooth over its USB receiver, and deeply configurable in <strong>Logitech G HUB</strong>.</p>
           <ul class="setting-list">
             <li><span>Primary side button</span><strong>VoiceInk++ toggle shortcut</strong></li>
-            <li><span>Secondary side button</span><strong>macOS Next Track</strong></li>
+            <li><span>Next button</span><strong>macOS Next Track action</strong></li>
           </ul>
           <details class="detail-drawer">
             <summary>Why this mouse and mapping?</summary>
             <div>
-              <p>G HUB is the configuration app; G502 X LIGHTSPEED is the mouse. Assign your existing VoiceInk++ shortcut to one button and the standard media action <em>Next Track</em> to the other. VoiceInk++ only intercepts Next Track when it has a destination job to do, so the key still controls media while idle.</p>
+              <p>G HUB is the configuration app; G502 X LIGHTSPEED is the mouse. Assign your existing VoiceInk++ shortcut to one button and the standard media action <em>Next Track</em> to your <strong>Next button</strong>. VoiceInk++ only intercepts that event when it has a destination job to do, so the button still controls media while idle.</p>
             </div>
           </details>
         </article>
@@ -174,7 +175,7 @@
             <div class="second-chance"><kbd>NEXT</kbd><span>latch a new input while loading</span></div>
           </div>
           <h3>Two buttons. Three deliberate destinations.</h3>
-          <p>Finish in the current input, send the result back to where you started, or use Next Track after stopping to latch a new input while transcription runs. Then leave again. VoiceInk++ remembers the exact field and its auto-send choice.</p>
+          <p>Finish in the current input, send the result back to where you started, or use the Next button after stopping to latch a new input while transcription runs. Then leave again. VoiceInk++ remembers the exact field and its auto-send choice.</p>
           <a class="text-link" href="#routing">See every route <span aria-hidden="true">↓</span></a>
         </article>
       </div>
@@ -195,10 +196,10 @@
             <span>01</span><strong>Finish here</strong><small>Normal stop</small>
           </button>
           <button type="button" id="route-tab-return" role="tab" aria-selected="false" aria-controls="route-panel" tabindex="-1" data-route="return">
-            <span>02</span><strong>Send it back</strong><small>Next Track while recording</small>
+            <span>02</span><strong>Send it back</strong><small>Next button while recording</small>
           </button>
           <button type="button" id="route-tab-retarget" role="tab" aria-selected="false" aria-controls="route-panel" tabindex="-1" data-route="retarget">
-            <span>03</span><strong>Second chance</strong><small>Next Track while transcribing</small>
+            <span>03</span><strong>Second chance</strong><small>Next button while transcribing</small>
           </button>
         </div>
 
@@ -232,6 +233,60 @@
             </ol>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="agent-support section" id="agents" aria-labelledby="agents-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Agent destinations, explicitly supported</p>
+          <h2 id="agents-title">Talk straight into Codex or Claude Code.</h2>
+        </div>
+        <p>The Next button works the same across desktop composers, terminals, and editor-hosted CLIs. VoiceInk++ locks the real editable input—not a guessed process name.</p>
+      </div>
+
+      <div class="agent-matrix-shell reveal">
+        <div class="agent-matrix-header">
+          <span>DESTINATION COMPATIBILITY</span>
+          <strong><i></i> NO PLUGIN REQUIRED</strong>
+        </div>
+        <div class="agent-matrix-scroll">
+          <table class="agent-matrix">
+            <thead>
+              <tr>
+                <th scope="col">Agent surface</th>
+                <th scope="col">VoiceInk++ locks</th>
+                <th scope="col">Auto-send path</th>
+                <th scope="col">Locked icon</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge codex-badge">C</span><strong>Codex desktop</strong></span></th>
+                <td data-label="Locks">Exact Codex composer</td>
+                <td data-label="Send path">Verified Send + Return fallbacks</td>
+                <td data-label="Icon"><span class="host-chip">Codex</span></td>
+              </tr>
+              <tr>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">›_</span><strong>Codex CLI</strong></span></th>
+                <td data-label="Locks">Exact terminal or editor input</td>
+                <td data-label="Send path">Host app's paste + Return</td>
+                <td data-label="Icon"><span class="host-chip">Host app</span></td>
+              </tr>
+              <tr>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge claude-badge">A</span><strong>Claude Code</strong></span></th>
+                <td data-label="Locks">Exact terminal or editor input</td>
+                <td data-label="Send path">Host app's paste + Return</td>
+                <td data-label="Icon"><span class="host-chip">Host app</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <aside class="host-rule">
+          <span>THE HOST RULE</span>
+          <p><strong>A CLI has no separate macOS input.</strong> If Claude Code is running in Terminal, the locked icon says Terminal. If Codex CLI is in VS Code, it says VS Code. Configure Return for that host app, then use all three destination routes normally.</p>
+          <code>[ MODE ] [ WAVEFORM ] [ CURRENT HOST ] [ LOCKED HOST ]</code>
+        </aside>
       </div>
     </section>
 
@@ -334,6 +389,7 @@
     <nav aria-label="Footer">
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus">GitHub</a>
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/RECORDING_DESTINATIONS.md">Destination guide</a>
+      <a href="https://github.com/EthanSK/VoiceInkPlusPlus/tree/main/.agents/skills/learnings">Learnings skill</a>
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/LICENSE">GPL‑3.0</a>
     </nav>
     <p class="footer-credit">Built for flow by <a href="https://github.com/EthanSK">Ethan</a>.</p>

@@ -69,26 +69,26 @@
       speech: "“ship the idea…”"
     },
     return: {
-      kicker: "Next Track during recording · recording start",
+      kicker: "Next button during recording · recording start",
       title: "Send it back to where you began.",
-      copy: "Move anywhere while dictating, then stop with Next Track. VoiceInk++ restores the input captured at recording start, delivers there, and returns you to the workspace you were using.",
+      copy: "Move anywhere while dictating, then stop with the Next button. VoiceInk++ restores the input captured at recording start, delivers there, and returns you to the workspace you were using.",
       steps: [
         "Start recording in the Codex composer.",
         "Keep working in VS Code while you speak.",
-        "Press Next Track. The result returns to Codex."
+        "Press the Next button. The result returns to Codex."
       ],
       start: { icon: "C", label: "RECORDING START", app: "Codex input" },
       target: { icon: "V", label: "CURRENTLY FOCUSED", app: "VS Code", result: "WORKSPACE RESTORED" },
-      action: "NEXT TRACK",
+      action: "NEXT BUTTON",
       speech: "“send this back…”"
     },
     retarget: {
-      kicker: "Next Track while transcribing · second chance",
+      kicker: "Next button while transcribing · second chance",
       title: "Latch a new input, then leave again.",
-      copy: "If you stopped normally but changed your mind while transcription is loading, focus a new editable input and press Next Track once. That field and its app-specific auto-send become the pending destination.",
+      copy: "If you stopped normally but changed your mind while transcription is loading, focus a new editable input and press the Next button once. That field and its app-specific auto-send become the pending destination.",
       steps: [
         "Stop normally and let transcription begin.",
-        "Focus a new ChatGPT or agent input; press Next Track.",
+        "Focus a new ChatGPT or agent input; press the Next button.",
         "Move on. VoiceInk++ pastes, sends, and restores you later."
       ],
       start: { icon: "›_", label: "OLD STOP TARGET", app: "Terminal input" },

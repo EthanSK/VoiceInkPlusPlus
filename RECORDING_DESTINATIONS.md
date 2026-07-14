@@ -4,14 +4,18 @@ VoiceInk++ lets the stop action decide which text input receives a recording. Th
 you start dictating in one app, move elsewhere while speaking, and only decide at the end where the
 transcript belongs.
 
+## Terminology
+
+**Next button** is the preferred user-facing name for the programmable mouse button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” “Secondary mouse button,” “latch button,” and “retarget button” are conversational aliases for that same control. They do not name separate modes. “Second chance” refers only to a Next-button retarget after a normal stop while transcription is still loading.
+
 ## Controls
 
 | Stop action | Paste destination |
 | --- | --- |
 | Normal configured recording shortcut | The exact text input focused when you stop recording |
-| macOS **Next Track** media key | The exact text input focused when you started recording, or that application when macOS hides the editor element |
-| **Next Track** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
-| **Next Track** with no recording or retargetable transcription | Passed through normally to Spotify, Music, and other media apps |
+| **Next button** while recording | The exact text input focused when you started recording, or that application when macOS hides the editor element |
+| **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
+| **Next button** with no recording or retargetable transcription | Its Next Track event passes through normally to Spotify, Music, and other media apps |
 
 The Mode emoji/symbol sits immediately left of the waveform. Two app icons sit to its right: the
 first is the app focused now; the second is the saved destination owned by that recording. While
@@ -41,19 +45,19 @@ transcription phase that starts after recording stops.
 
 1. Focus an input in Codex and start recording with the normal recording shortcut.
 2. Move to a VS Code editor while speaking.
-3. Stop with the **Next Track** media key.
+3. Stop with the **Next button**.
 4. VoiceInk++ reactivates Codex, restores that exact original input, verifies it, and pastes there.
 
 ### Keep normal media controls outside recording
 
-1. With VoiceInk++ idle and no transcription still loading, press **Next Track**.
+1. With VoiceInk++ idle and no transcription still loading, press the **Next button**.
 2. VoiceInk++ does not consume the key, so the current media app advances normally.
 
 ### Change your mind while transcription is loading
 
 1. Stop a recording normally and let transcription begin with its stop-time destination saved.
 2. While it is still transcribing or enhancing, focus a different text input.
-3. Press **Next Track**.
+3. Press the **Next button**.
 4. The locked destination icon switches to that app. VoiceInk++ replaces both the exact input and
    its configured auto-send key for the newest not-yet-delivered transcription.
 5. You may immediately move to another app. When the result finishes, VoiceInk++ returns to the
@@ -82,8 +86,14 @@ event through its existing vendor software, such as Logitech G HUB. No VoiceInk-
 macro and no Karabiner configuration are required.
 
 Keep the ordinary mouse button assigned to the existing VoiceInk++ recording shortcut. Assign the
-alternative button to **Next Track**. VoiceInk++ intercepts that button while recording or while a
+alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button while recording or while a
 pending transcription can still be retargeted.
+
+## Codex and Claude Code destinations
+
+Codex desktop owns its composer directly, so VoiceInk++ can restore that exact input and use its bounded verified Send fallbacks. Codex CLI and Claude Code do not own separate macOS windows: their terminal or editor host owns the editable input. VoiceInk++ therefore saves the exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input and uses that host app's configured `autoSendKey`.
+
+The current and locked recorder icons show the host application for CLI agents by design. Configure a Mode for the host app and enable Return only where automatic submission is safe. The normal-stop, recording-start, and second-chance routes remain identical; no agent-specific toggle, shell hook, or plugin is involved.
 
 ## How Next Track is consumed
 
