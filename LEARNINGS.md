@@ -25,6 +25,60 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-15T15:52:35Z
+**Trigger:** Ethan made reliable exact-input background paste and Enter the primary objective and required compatibility tracking for his main apps.
+**Symptom:** Exact saved-input paste could work while Return was inconsistent or unsafe across Codex, ChatGPT quick window, Terminal/iTerm, Telegram, Chrome, Notion, and same-app different-input cases.
+**Root cause:** Saved AX wrappers can be replaced or reused across windows, tabs, chats, and editors; global Mode can drift after focus changes; process-targeted Command-V or Return is not reliable submission proof; and a generic unlabelled button or whole rich-editor AXValue mutation can target the wrong control or damage content.
+**Fix:** v2.0.207 freezes the exact destination plus complete Mode before post-processing, serializes delivery, re-resolves and verifies exact inputs without activating background targets, uses surface-specific one-shot submit verification, binds Terminal/iTerm text plus Return to one native window/session identity, fails Telegram on unreadable chat context, and never replaces a generic rich-editor AXValue.
+**Commit:** 86b50c2
+**Guard:** All 27 unit tests passed through direct xctest and the recovered canonical Xcode runner; the signed build 207 is installed. BACKGROUND_DELIVERY_TEST_MATRIX.md marks every unavailable live surface not tested until a disposable trace proves exact insertion, verified submission where supported, and no focus theft.
+---
+
+
+---
+**Date:** 2026-07-15T15:52:35Z
+**Trigger:** Ethan asked whether his custom voice model was passing vocabulary correctly to its API provider.
+**Symptom:** VoiceInk++ Vocabulary terms were not reaching Ethan's custom Deepgram Nova-3 model even though built-in cloud providers received them.
+**Root cause:** CloudTranscriptionService returned early for custom models before loading dictionary terms, and an OpenAI-compatible custom endpoint has no standard vocabulary field beyond the prompt carrier.
+**Fix:** Custom models now receive the dictionary terms. OpenAICompatibleTranscriptionService appends a bounded, deduplicated, injection-safe VOICEINK_CUSTOM_VOCABULARY prompt block; the local adapter extracts only that final block into repeated Deepgram keyterm parameters, and provider error bodies are redacted.
+**Commit:** 86b50c2
+**Guard:** Unit tests prove vocabulary carriage, marker neutralization, cap/dedup behavior, and response-body redaction; a sanitized proxy probe proved marker parsing without logging terms. Live provider recognition quality remains not tested.
+---
+
+
+---
+**Date:** 2026-07-15T15:52:35Z
+**Trigger:** The v2.0.207 release audit exposed an entitlement-stripping re-sign and a stalled test launcher.
+**Symptom:** The Mac Mini post-build signing helper could produce a deep/strict-valid app that had lost Automation, and the normal Xcode test launcher stalled before executing tests.
+**Root cause:** Replacing the outer signature without explicitly reapplying VoiceInk/VoiceInk.local.entitlements strips com.apple.security.automation.apple-events; separately, TestManager can wedge even though the built Swift Testing bundle itself is runnable.
+**Fix:** The signed v2.0.207 artifact was re-signed with VoiceInk/VoiceInk.local.entitlements and verified before installation. AGENTS.md, BUILDING.md, UPDATING.md, and the learnings skill now require outer-entitlement inspection and document direct xcrun xctest as a bounded fallback while retaining the normal Xcode runner as canonical.
+**Commit:** 86b50c2
+**Guard:** Require codesign deep/strict success plus outer Automation=true; require named per-test output, never the zero-test preamble; retry the canonical runner after TestManager recovery and never enable Developer Mode without Ethan direction.
+---
+
+
+---
+**Date:** 2026-07-15T15:52:35Z
+**Trigger:** Ethan requested a full upstream sweep and feature-by-feature approval instead of changes that could break VoiceInk++.
+**Symptom:** A whole upstream update would collide with the exact destination and delivery implementation, while some upstream prompt changes would remove the new vocabulary carrier.
+**Root cause:** At the 2026-07-15 audit the fork and upstream had diverged substantially from merge base eda0786; a trial merge produced 17 conflicts across recorder, destination, pipeline, delivery, cloud, project, and test files.
+**Fix:** UPDATING.md now forbids wholesale merges, keeps the legacy Mini merge LaunchAgent disabled, and lists the approved manual-port candidates and explicit rejections. No upstream code was merged.
+**Commit:** 86b50c2
+**Guard:** Audit every candidate in a disposable clone or worktree, obtain Ethan approval for one feature, manually preserve destination/delivery/vocabulary guards, and run the full release matrix before publication.
+---
+
+
+---
+**Date:** 2026-07-15T04:45:00Z
+**Trigger:** Ethan asked to preserve the currently installed v2.0.206 Accessibility behavior as a rollback point because it is pasting into the right saved location.
+**Symptom:** Later auto-send work risks obscuring which installed build already has the essential exact-destination paste behavior. Ethan confirmed that the running v2.0.206 reaches the intended saved input, while separately reporting that background Return remains incomplete on surfaces such as Terminal.
+**Root cause:** Exact-input targeting/paste and app-specific auto-send are separate capabilities. Treating an Enter failure as proof that destination capture/paste is also broken would throw away a known-good Accessibility baseline during a rollback.
+**Fix:** Preserve source commit `96e494e` plus installed `VoiceInkPlusPlus.app` build 206 as the rollback floor for the confirmed exact-location paste behavior. Its recorded installed identity is bundle `com.ethansk.VoiceInkPlusPlus`, marketing version `2.0`, build `206`, designated local-signing identity `VoiceInk Local Signing`, and CDHash `a88d4bbe7ab463ba5a1f62509757b349d98d7f97`. This baseline does not claim that background Enter or every app in the compatibility matrix works.
+**Commit:** 96e494e
+**Guard:** Keep destination capture/insertion tests and auto-send tests separate. If v2.0.207 delivery regresses before it is accepted, restore the preserved signed build-206 bundle rather than reconstructing its behavior, and verify version, CDHash, PID, exact-input paste, and that `/Applications/VoiceInk.app` remains untouched.
+---
+
+---
 **Date:** 2026-07-14T20:31:21Z
 **Trigger:** Ethan requested the version number split over two lines with larger text to use the recorder bar's top and bottom whitespace.
 **Symptom:** The recorder's one-line v2.0.205 label was cramped at 8 pt and left unused vertical space, making the exact running release hard to read.
