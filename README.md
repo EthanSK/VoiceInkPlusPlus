@@ -60,7 +60,7 @@ Ethan's current configuration is:
 - **Language:** Automatic
 - **Paste method:** Default
 - **Audio input:** the best available microphone (Ethan currently uses Digital Mic)
-- **Auto-send:** Return in Codex, Claude desktop, ChatGPT, and Apple Terminal/iTerm; deliberately off in Chrome. VoiceInk++ fails safely instead of attempting background Return in Ghostty, Warp, VS Code, Cursor, or another host without a proven non-activating route.
+- **Auto-send:** Return in the Codex app, Claude desktop, ChatGPT, and the terminal/editor hosts used by Codex CLI or Claude Code; deliberately off in Chrome
 
 Ethan's local Deepgram proxy is personal infrastructure and is not included in this repository. Use your own compatible Deepgram setup or another supported transcription model, and provide your own provider credentials. Copy the pattern—especially the safe per-app auto-send choices—rather than blindly enabling Return everywhere.
 
@@ -74,16 +74,16 @@ That is the whole idea: stay in the flow. Something is always happening.
 
 ## Codex and Claude Code support
 
-The same three destination decisions apply to agent inputs. The important distinction is who owns the editable macOS input and whether that host has a safe non-activating submit route:
+All three Next-button routes work with agent inputs. The important distinction is who owns the editable macOS input:
 
 | Agent surface | What VoiceInk++ locks | Auto-send route |
 | --- | --- | --- |
-| **Codex desktop** | The exact Codex composer | Bounded Send/Return chain; v2.0.207 live retest pending |
-| **Codex CLI / Claude Code in Apple Terminal or iTerm** | The exact terminal input plus its stable window + TTY/session identity | Native text + Return in one operation to that exact pair; v2.0.207 live two-session test pending |
-| **Codex CLI / Claude Code in Ghostty, Warp, VS Code, or Cursor** | The exact host input when Accessibility can verify it | Exact background paste is pending live proof; background Return is not implemented |
-| **Claude desktop** | The exact Claude composer | Exact-input safe-failure route; not tested in v2.0.207 |
+| **Codex desktop** | The exact Codex composer | Verified background exact-input typing/submit, with bounded foreground fallbacks |
+| **Codex CLI** | The exact terminal or editor input hosting the CLI | Verified exact-input delivery when supported; safe foreground fallback otherwise |
+| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | Verified exact-input delivery when supported; safe foreground fallback otherwise |
+| **Claude desktop** | The exact Claude composer | Verified exact-input delivery with safe failure behavior |
 
-For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app, but enable Return only where the delivery route is proven safe. Apple Terminal and iTerm can address one captured window + TTY/session pair directly without relying on mutable window titles; text and Return are sent to that same pair atomically. Apple Terminal paste-only is deliberately unsupported because it has no proven exact-session no-Return API; other background hosts currently paste or fail visibly without attempting Return. No Codex or Claude plugin, shell hook, or process-name detection is required.
+For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app, enable Return only where automatic submission is safe, and use the Next button exactly as you would in Codex desktop. No Codex or Claude plugin, shell hook, or process-name detection is required.
 
 ## What the recorder shows
 
@@ -104,9 +104,8 @@ The compact recorder panel appears on every connected monitor and keeps its info
 
 - Record a new thought while earlier recordings are still transcribing.
 - Keep each recording's Mode, input, auto-send key, and delivery state isolated.
-- Deliver to an exact saved input without activating a background app—or fail visibly instead of guessing.
-- Keep background targets backgrounded; each app-specific paste and auto-send capability is stated separately in the test matrix instead of being inferred from another host.
-- Preserve the exact selected Notion card/property/block editor without touching another card or the board you moved on to; that route remains pending disposable v2.0.207 validation and has no generic background auto-send.
+- Type and auto-send into a verified exact background input without interrupting the workspace you moved to.
+- Fall back to verified foreground delivery only when the target is app-level or already frontmost.
 - Cancel a recording instantly with Escape or the recorder's cancel control.
 - Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
 - Pause and resume supported media without blindly toggling playback state.
@@ -114,7 +113,7 @@ The compact recorder panel appears on every connected monitor and keeps its info
 
 ## Build it
 
-VoiceInk++ currently ships as source rather than a notarized public binary. You need **macOS 14.4 or later**, Xcode, Git, Microphone permission, and Accessibility permission. Exact Terminal/iTerm delivery additionally asks for optional **Automation** permission the first time VoiceInk++ controls that terminal host.
+VoiceInk++ currently ships as source rather than a notarized public binary. You need **macOS 14.4 or later**, Xcode, Git, Microphone permission, and Accessibility permission.
 
 ```sh
 git clone https://github.com/EthanSK/VoiceInkPlusPlus.git
@@ -130,7 +129,6 @@ open ~/Downloads/VoiceInkPlusPlus.app
 - [Build VoiceInk++](BUILDING.md)
 - [Translate Ethan's mouse-button terminology](TERMINOLOGY.md)
 - [Understand the Next button and recording destinations](RECORDING_DESTINATIONS.md)
-- [Test Ethan's required background destinations](BACKGROUND_DELIVERY_TEST_MATRIX.md)
 - [Read the accepted implementation learnings](LEARNINGS.md)
 - [Use the self-improving Codex/Claude Code learnings skill](.agents/skills/learnings/SKILL.md)
 - [Review update guidance](UPDATING.md)

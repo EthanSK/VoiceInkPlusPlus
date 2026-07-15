@@ -239,8 +239,8 @@
     <section class="agent-support section" id="agents" aria-labelledby="agents-title">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Required compatibility targets</p>
-          <h2 id="agents-title">Talk straight into Codex, Claude Code, and your chats.</h2>
+          <p class="eyebrow">Agent destinations, explicitly supported</p>
+          <h2 id="agents-title">Talk straight into Codex or Claude Code.</h2>
         </div>
         <p>The Next button works the same across desktop composers, terminals, and editor-hosted CLIs. VoiceInk++ locks the real editable input—not a guessed process name.</p>
       </div>
@@ -264,51 +264,27 @@
               <tr>
                 <th scope="row"><span class="agent-surface"><span class="agent-badge codex-badge">C</span><strong>Codex desktop</strong></span></th>
                 <td data-label="Locks">Exact Codex composer</td>
-                <td data-label="Send path">Bounded Send + Return · v207 retest pending</td>
+                <td data-label="Send path">Verified Send + Return fallbacks</td>
                 <td data-label="Icon"><span class="host-chip">Codex</span></td>
               </tr>
               <tr>
                 <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">›_</span><strong>Codex CLI</strong></span></th>
                 <td data-label="Locks">Exact terminal or editor input</td>
-                <td data-label="Send path">Native text + Return to one exact window + TTY/session pair · v207 test pending</td>
+                <td data-label="Send path">Host app's paste + Return</td>
                 <td data-label="Icon"><span class="host-chip">Host app</span></td>
               </tr>
               <tr>
                 <th scope="row"><span class="agent-surface"><span class="agent-badge claude-badge">A</span><strong>Claude Code</strong></span></th>
                 <td data-label="Locks">Exact terminal or editor input</td>
-                <td data-label="Send path">Terminal/iTerm atomic native text + Return; other hosts paste only</td>
+                <td data-label="Send path">Host app's paste + Return</td>
                 <td data-label="Icon"><span class="host-chip">Host app</span></td>
-              </tr>
-              <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge codex-badge">G</span><strong>ChatGPT quick window</strong></span></th>
-                <td data-label="Locks">Exact Option-Space composer</td>
-                <td data-label="Send path">Return + safe retry · v207 test pending</td>
-                <td data-label="Icon"><span class="host-chip">ChatGPT</span></td>
-              </tr>
-              <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">T</span><strong>Telegram</strong></span></th>
-                <td data-label="Locks">Exact message field</td>
-                <td data-label="Send path">Native AX + labelled Send/Return · v207 retest pending</td>
-                <td data-label="Icon"><span class="host-chip">Telegram</span></td>
-              </tr>
-              <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">◎</span><strong>Chrome</strong></span></th>
-                <td data-label="Locks">Exact web input + tab context</td>
-                <td data-label="Send path">Exact paste; v207 test pending</td>
-                <td data-label="Icon"><span class="host-chip">Chrome</span></td>
-              </tr>
-              <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">N</span><strong>Notion card</strong></span></th>
-                <td data-label="Locks">Exact card, property, or block editor</td>
-                <td data-label="Send path">Exact paste only · disposable v207 test pending</td>
-                <td data-label="Icon"><span class="host-chip">Notion</span></td>
               </tr>
             </tbody>
           </table>
         </div>
         <aside class="host-rule">
           <span>THE HOST RULE</span>
-          <p><strong>A CLI has no separate macOS input.</strong> If Claude Code is running in Terminal, the locked icon says Terminal. If Codex CLI is in VS Code, it says VS Code. Apple Terminal/iTerm bind text and Return to one captured window + TTY/session pair in a single native operation without relying on mutable titles. Apple Terminal paste-only is deliberately unsupported; other background hosts currently paste or fail visibly without attempting Return.</p>
+          <p><strong>A CLI has no separate macOS input.</strong> If Claude Code is running in Terminal, the locked icon says Terminal. If Codex CLI is in VS Code, it says VS Code. Configure Return for that host app, then use all three destination routes normally.</p>
           <code>[ MODE ] [ WAVEFORM ] [ CURRENT HOST ] [ LOCKED HOST ]</code>
         </aside>
       </div>
@@ -360,8 +336,8 @@
         <article class="feature reveal">
           <div class="feature-visual safety-visual" aria-hidden="true"><span>⌘V</span><i>✓</i><span>↵</span></div>
           <p class="feature-number">04 / TRUST IT</p>
-          <h3>Exact paste and app-specific auto-send.</h3>
-          <p>VoiceInk++ verifies the saved input, keeps a background target backgrounded, and sends only through a route proven safe for that surface. Unsupported background Enter fails visibly instead of taking over your workspace.</p>
+          <h3>Foreground paste and verified auto-send.</h3>
+          <p>VoiceInk++ restores and verifies the saved input, pastes in the foreground, sends when that app's Mode asks it to, then restores your later workspace.</p>
         </article>
         <article class="feature reveal">
           <div class="feature-visual control-visual" aria-hidden="true"><span>×</span><span>ϟ̸</span><span>▶︎</span></div>
@@ -376,11 +352,11 @@
       <div class="build-copy">
         <p class="eyebrow">Public, open source, deliberately personal</p>
         <h2 id="build-title">Build Ethan's workflow on your Mac.</h2>
-        <p>VoiceInk++ currently ships as source, not a notarized public download. You need macOS 14.4 or later, Xcode, and a few minutes to grant Microphone and Accessibility permission. Exact Terminal/iTerm delivery also requests optional Automation access on first use.</p>
+        <p>VoiceInk++ currently ships as source, not a notarized public download. You need macOS 14.4 or later, Xcode, and a few minutes to grant Microphone and Accessibility permission.</p>
         <ol class="build-steps">
           <li><span>1</span><p><strong>Clone the fork.</strong><br>Use Ethan's VoiceInkPlusPlus repository—not the upstream VoiceInk download.</p></li>
           <li><span>2</span><p><strong>Build the local app.</strong><br>The Makefile creates an ad-hoc signed VoiceInk++ app without requiring a paid developer account.</p></li>
-          <li><span>3</span><p><strong>Grant permission and configure.</strong><br>Allow Microphone and Accessibility; allow optional Automation for Terminal/iTerm; pick your model, then create per-app Modes.</p></li>
+          <li><span>3</span><p><strong>Grant permission and configure.</strong><br>Allow Microphone and Accessibility, pick your model, then create per-app Modes.</p></li>
         </ol>
         <div class="build-actions">
           <a class="button button-primary" href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/BUILDING.md">Read the build guide <span aria-hidden="true">↗</span></a>

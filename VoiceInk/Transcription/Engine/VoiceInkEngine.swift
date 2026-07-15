@@ -89,13 +89,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // recording UI observes RecordingSession, which owns the per-action pulse.
     var iconActionPulse: RecorderIconActionPulse? { nil }
 
-    // Assistant-only fallback cards have no live RecordingSession destination.
-    // They may therefore present the global Mode; real recorder cards override this
-    // with the exact session-owned `pasteTarget.mode` above.
-    var recorderDisplayMode: ModeConfig? {
-        ModeManager.shared.currentEffectiveConfiguration
-    }
-
     // VIPP (skip-mode-processing feature): RecorderStateProvider now requires a settable
     // `skipPostProcessing`. The REAL per-session flag lives on each RecordingSession (that's
     // what the live recorder card binds to). The engine only conforms to RecorderStateProvider
@@ -209,34 +202,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// The most-recent in-flight transcribing/delivering session (the "top card"). Used as
     /// the cancel target when no session is actively recording.
     private var topInFlightSession: RecordingSession? {
-        Self.newestPendingTranscription(in: sessions)
-    }
-
-    static func newestPendingTranscription(
-        in sessions: [RecordingSession]
-    ) -> RecordingSession? {
         sessions.last { $0.phase == .transcribing || $0.phase == .delivering }
     }
 
-    var hasRetargetablePendingTranscription: Bool {
-        // Next belongs only to the newest pending result represented by the top card.
-        // Never skip an ineligible newer session and silently reach back into an older
-        // primary-stopped result; that would retarget a different dictation than Ethan
-        // can reasonably see or intend.
-        Self.newestPendingTranscription(in: sessions)?
-            .acceptsSecondChancePasteRetargeting == true
-    }
-
-    func retargetMostRecentPendingTranscription(
-        to focusedInput: FocusLockService.Target?
-    ) -> PendingPasteRetargetResult {
-        guard let session = Self.newestPendingTranscription(in: sessions),
-              session.acceptsSecondChancePasteRetargeting else {
-            vippLog.info("paste retarget: newest pending transcription does not accept a second-chance destination change")
+    func retargetMostRecentPendingTranscriptionToFocusedInput() -> PendingPasteRetargetResult {
+        guard let session = sessions.last(where: {
+            ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteRetargeting
+        }) else {
+            vippLog.info("paste retarget: no pending transcription still accepts destination changes")
             return .noPendingTranscription
         }
 
-        guard let focusedInput else {
+        guard let focusedInput = FocusLockService.shared.captureFocusedInput() else {
             FocusLockService.shared.showPendingPasteInputUnavailable()
             vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) kept existing destination because no editable input is focused")
             return .noFocusedInput
@@ -260,90 +237,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // switching in place. Keep text reserved for failures; a toast here made the
         // compact recorder noisy and duplicated the much clearer icon transition.
         vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
-        beginTerminalPasteTargetEnrichment(
-            for: session,
-            captured: focusedInput
-        )
-        beginBrowserModePasteTargetEnrichment(
-            for: session,
-            captured: focusedInput
-        )
         return .retargeted
-    }
-
-    private func beginTerminalPasteTargetEnrichment(
-        for session: RecordingSession,
-        captured: FocusLockService.Target
-    ) {
-        guard FocusLockService.shared.requiresNativeTerminalSessionBinding(
-            for: captured
-        ) else {
-            return
-        }
-        let task = Task { @MainActor in
-            await FocusLockService.shared
-                .completingTerminalAutomationTarget(for: captured)
-        }
-        // Native Terminal identity is enrichment of this accepted decision, not a
-        // new route. RecordingSession preserves destination + Mode and guards the
-        // late result by capture ID, including when second chance supersedes stop.
-        session.beginPasteTargetEnrichment(
-            captured: captured,
-            task: task
-        )
-    }
-
-    private func browserModeEnrichmentTask(
-        for captured: FocusLockService.Target
-    ) -> Task<ModeConfig?, Never>? {
-        guard captured.hasExactInput,
-              let bundleIdentifier = captured.bundleIdentifier,
-              let browser = BrowserType.allCases.first(where: {
-                  $0.bundleIdentifier == bundleIdentifier
-              }) else {
-            return nil
-        }
-
-        let appOrDefaultMode = ModeRuntimeResolver.modeSnapshot(
-            forPasteTargetBundleIdentifier: bundleIdentifier
-        )
-        return Task { @MainActor in
-            let matchedBefore = FocusLockService.shared
-                .targetIsCurrentKeyboardInput(captured)
-            guard matchedBefore else { return appOrDefaultMode }
-
-            let urlMode: ModeConfig?
-            do {
-                let url = try await BrowserURLService.shared.getCurrentURL(from: browser)
-                urlMode = ModeManager.shared.getConfigurationForURL(url)
-            } catch is CancellationError {
-                return appOrDefaultMode
-            } catch {
-                // Browser scripting is best effort. Failure keeps the already-captured
-                // app/default Mode and never reaches for mutable global focus state.
-                urlMode = nil
-            }
-
-            let matchedAfter = FocusLockService.shared
-                .targetIsCurrentKeyboardInput(captured)
-            return ModeRuntimeResolver.targetBoundBrowserMode(
-                appOrDefaultMode: appOrDefaultMode,
-                urlSpecificMode: urlMode,
-                targetMatchedBeforeLookup: matchedBefore,
-                targetMatchedAfterLookup: matchedAfter
-            )
-        }
-    }
-
-    private func beginBrowserModePasteTargetEnrichment(
-        for session: RecordingSession,
-        captured: FocusLockService.Target
-    ) {
-        guard let task = browserModeEnrichmentTask(for: captured) else { return }
-        session.beginPasteTargetModeEnrichment(
-            captured: captured,
-            task: task
-        )
     }
 
     /// Recompute the DERIVED compat `recordingState` + `partialTranscript` from the active
@@ -404,19 +298,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .recordingStart,
                     focusedInput: focusedInput,
-                    // The recording-start session may already own a proven URL Mode
-                    // enrichment. Do not overwrite it with an app-only snapshot at
-                    // the Next-button stop boundary.
-                    mode: active.pasteTarget.mode
+                    mode: ModeRuntimeResolver.modeSnapshot(
+                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
+                    )
                 )
             case .focusedAtStop:
-                // Primary normal stop owns the exact stop-time input immediately. In
-                // Terminal/iTerm, stable native session identity requires a bounded
-                // script lookup; run that only as capture-ID-guarded enrichment so the
-                // microphone is released without waiting and a later second-chance
-                // destination can never be overwritten by this older decision.
-                active.discardPasteTargetEnrichment()
-                let focusedInput = FocusLockService.shared.captureFocusedInputSnapshot()
+                let focusedInput = FocusLockService.shared.captureFocusedInput()
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .focusedAtStop,
                     focusedInput: focusedInput,
@@ -424,16 +311,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
                     )
                 )
-                if let focusedInput {
-                    beginTerminalPasteTargetEnrichment(
-                        for: active,
-                        captured: focusedInput
-                    )
-                    beginBrowserModePasteTargetEnrichment(
-                        for: active,
-                        captured: focusedInput
-                    )
-                }
             case .focusedDuringTranscription:
                 preconditionFailure("A transcription-time target can only be selected after recording has stopped")
             }
@@ -507,22 +384,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 assistantSession.reset()
             }
 
-            // Snapshot the recording-start input before any permission/microphone
-            // await. Terminal identity enrichment runs concurrently so its bounded
-            // AppleScript lookup cannot delay microphone start and clip Ethan's first
-            // words. The session registers that same task below, so an unusually fast
-            // Next stop awaits its bounded result at delivery instead of discarding it.
-            let recordingStartFocusedInput = FocusLockService.shared
-                .captureFocusedInputSnapshot(allowApplicationFallback: true)
-            let recordingStartIdentityTask = recordingStartFocusedInput.map { target in
-                Task { @MainActor in
-                    await FocusLockService.shared
-                        .completingTerminalAutomationTarget(for: target)
-                }
-            }
-            let recordingStartModeTask = recordingStartFocusedInput.flatMap {
-                browserModeEnrichmentTask(for: $0)
-            }
+            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Capture before asynchronous setup. Electron may expose only AXWebArea while the shortcut is down, so preserve the owning app for Next Track.
 
             requestRecordPermission { [self] granted in
                 if granted {
@@ -530,9 +392,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         await self.startNewSession(
                             modeId: modeId,
                             useCase: useCase,
-                            recordingStartFocusedInput: recordingStartFocusedInput,
-                            recordingStartIdentityTask: recordingStartIdentityTask,
-                            recordingStartModeTask: recordingStartModeTask
+                            recordingStartFocusedInput: recordingStartFocusedInput
                         )
                     }
                 } else {
@@ -550,9 +410,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private func startNewSession(
         modeId: UUID?,
         useCase: RecordingSession.UseCase,
-        recordingStartFocusedInput: FocusLockService.Target?,
-        recordingStartIdentityTask: Task<FocusLockService.Target, Never>?,
-        recordingStartModeTask: Task<ModeConfig?, Never>?
+        recordingStartFocusedInput: FocusLockService.Target?
     ) async {
         let startID = UUID()
         let session = RecordingSession(
@@ -567,28 +425,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // Append to the collection so the card appears immediately (shows the .starting state).
         sessions.append(session)
         recomputeDerivedState()
-
-        if let recordingStartIdentityTask,
-           let recordingStartFocusedInput {
-            // Register the already-running bounded lookup with the session itself.
-            // If Next stops an unusually short Terminal/iTerm recording before this
-            // settles, delivery awaits the same capture-ID-guarded task instead of
-            // discarding it merely because phase changed to `.transcribing`.
-            session.beginPasteTargetEnrichment(
-                captured: recordingStartFocusedInput,
-                task: recordingStartIdentityTask
-            )
-        }
-        if let recordingStartModeTask,
-           let recordingStartFocusedInput {
-            // The task began at the same synchronous decision moment as the exact
-            // input capture. Register its value after session creation without
-            // restarting the lookup against whatever tab is focused now.
-            session.beginPasteTargetModeEnrichment(
-                captured: recordingStartFocusedInput,
-                task: recordingStartModeTask
-            )
-        }
 
         let activeModeTask = ActiveWindowService.shared.beginApplyingConfiguration(modeId: modeId) { [weak self, weak session] in
             guard let self, let session else { return false }
@@ -633,7 +469,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.phase = .recording
             recomputeDerivedState()
             if session.recordingStartFocusedInput == nil {
-                session.recordingStartFocusedInput = await FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Retry only if even the owning application could not be captured during the shortcut event.
+                session.recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Retry only if even the owning application could not be captured during the shortcut event.
             }
             FocusLockService.shared.showRecordingStartInput(session.recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
 
@@ -748,10 +584,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // MARK: - Recording Context
 
     private func startRecordingContextCapture(for session: RecordingSession) {
-        // This resets only AI-enhancement context. A recording-start Terminal/iTerm
-        // identity lookup may already be in flight and belongs to the paste target,
-        // so full `clearContext()` here would lose very short Next-button recordings.
-        session.clearRecordingContextCapture()
+        session.clearContext()
 
         let store = RecordingContextSnapshotStore()
         session.contextStore = store
@@ -851,7 +684,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 guard let session else {
                     preconditionFailure("The recording session must exist until its delivery target is resolved")
                 }
-                return await session.resolvePasteTargetForDelivery()
+                return session.resolvePasteTargetForDelivery()
             },
             outputConfiguration: { [weak session] in
                 let resolved = ModeRuntimeResolver.pasteTargetOutputConfiguration(

@@ -201,24 +201,6 @@ enum ModeRuntimeResolver {
             ?? ModeManager.shared.getDefaultConfiguration()
     }
 
-    /// Resolve a URL-specific browser Mode without ever trusting the global active
-    /// Mode. The synchronous app/default value is the safe fallback. A URL candidate
-    /// may replace it only when the exact captured input/tab context owned keyboard
-    /// focus both immediately before and immediately after the asynchronous lookup.
-    /// If either proof fails, a URL from another tab is never allowed into the target.
-    static func targetBoundBrowserMode(
-        appOrDefaultMode: ModeConfig?,
-        urlSpecificMode: ModeConfig?,
-        targetMatchedBeforeLookup: Bool,
-        targetMatchedAfterLookup: Bool
-    ) -> ModeConfig? {
-        guard targetMatchedBeforeLookup,
-              targetMatchedAfterLookup else {
-            return appOrDefaultMode
-        }
-        return urlSpecificMode ?? appOrDefaultMode
-    }
-
     static func autoSendKey(forPasteTargetBundleIdentifier bundleIdentifier: String?) -> AutoSendKey {
         modeSnapshot(forPasteTargetBundleIdentifier: bundleIdentifier)?.autoSendKey ?? .none
     }

@@ -54,7 +54,7 @@ transcription phase that starts after recording stops.
 1. Focus an input in Codex and start recording with the normal recording shortcut.
 2. Move to a VS Code editor while speaking.
 3. Stop with the **Next button**.
-4. If Codex is in the background, VoiceInk++ resolves and verifies that exact original composer internally, types there without making Codex frontmost, and uses the bounded verified submit chain. If no safe route exists, it keeps control in your current app and copies the transcript to the clipboard.
+4. If Codex is in the background, VoiceInk++ restores and verifies that exact original composer internally, types and submits there, and leaves the current app frontmost. An app-only fallback uses the verified foreground route.
 
 ### Keep normal media controls outside recording
 
@@ -64,7 +64,7 @@ transcription phase that starts after recording stops.
 ### Change your mind while transcription is loading
 
 1. Stop a recording normally and let transcription begin with its stop-time destination saved.
-2. While it is still transcribing and before destination-dependent formatting/enhancement begins, focus a different text input.
+2. While it is still transcribing or enhancing, focus a different text input.
 3. Press the **Next button**.
 4. The locked destination icon switches to that app. VoiceInk++ replaces both the exact input and
    its configured auto-send key for the newest not-yet-delivered transcription.
@@ -86,9 +86,8 @@ the trace recorded `focusedDuringTranscription`, `targetAutoSend=enter`, and ver
 OpenAI composer submission after Ethan moved between apps. Treat that commit and the root
 `AGENTS.md` contract as the regression baseline.
 
-The change is accepted until raw transcription finishes and VoiceInk++ freezes the target's complete
-Mode before formatting/enhancement. After that cutoff, or when no pending transcription exists, Next
-Track passes through to the media system. If
+The change is accepted until delivery resolves its target immediately before paste. After that
+cutoff, or when no pending transcription exists, Next Track passes through to the media system. If
 no editable text input is focused, VoiceInk++ consumes the intentional retarget press, keeps the
 existing destination, and asks you to focus an input and try again.
 
@@ -110,9 +109,9 @@ listen for raw Mouse Button 5.
 
 ## Codex and Claude Code destinations
 
-Codex desktop owns its composer directly, so VoiceInk++ can resolve that exact input and use its bounded verified Send fallbacks. Codex CLI and Claude Code do not own separate macOS windows: their terminal or editor host owns the editable input. VoiceInk++ therefore saves the exact Terminal, iTerm, Ghostty, Warp, VS Code, Cursor, or other host input together with that host app's configured `autoSendKey`.
+Codex desktop owns its composer directly, so VoiceInk++ can restore that exact input and use its bounded verified Send fallbacks. Codex CLI and Claude Code do not own separate macOS windows: their terminal or editor host owns the editable input. VoiceInk++ therefore saves the exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input and uses that host app's configured `autoSendKey`.
 
-The current and locked recorder icons show the host application for CLI agents by design. Configure a Mode for the host app and enable Return only where automatic submission is safe. Apple Terminal and iTerm capture a stable window-ID plus TTY/session-ID pair while the exact terminal input is focused, then bind the transcript and Return to that same pair in one native operation without selection or activation; mutable or duplicated titles are never routing identities. Apple Terminal does not expose a proven exact-session paste-only operation, so paste without Return fails safely there; iTerm can write to the exact session with `newline false`. Ghostty, Warp, VS Code, Cursor, and generic editors do not currently have a safe background Enter route; their exact background paste may still work, but VoiceInk++ must report that it could not auto-send instead of focusing the host or posting Return to its process. The normal-stop, recording-start, and second-chance routes remain identical; no agent-specific toggle, shell hook, or plugin is involved.
+The current and locked recorder icons show the host application for CLI agents by design. Configure a Mode for the host app and enable Return only where automatic submission is safe. The normal-stop, recording-start, and second-chance routes remain identical; no agent-specific toggle, shell hook, or plugin is involved.
 
 ## How Next Track is consumed
 
@@ -141,59 +140,33 @@ control cannot silently replace their destination.
 For an exact saved input whose app is currently backgrounded, VoiceInk++:
 
 1. Uniquely resolves the saved Accessibility window and editor. Structural identity plus nearby
-   content anchors fail closed if a stale wrapper could match a different document or tab. Telegram
-   may reuse one editor wrapper after a chat switch, so its original wrapper is retained only while
-   independently readable chat-context anchors still match and the app reports that exact structurally
-   identical editor/window as its own internal focus. Hidden, empty, or mismatched context fails closed.
-2. Opens one bounded internal activation-state session only when needed, restores the exact internal
-   window/editor, and proves from immediate pre/post Accessibility focus that it did not take control.
-   A non-activating panel that already owns the exact keyboard input skips synthetic activation.
-3. Uses native `AXSelectedText` insertion where live evidence supports it (currently Telegram), then
-   falls back to bounded targeted Unicode only when the exact readable value proves the AX setter was
-   a no-op. It never uses background Command–V.
-4. Verifies that the exact editor changed, the intended transcript appeared, and the target app did
-   not become frontmost. Ethan may keep moving among other apps; his foreground PID need not freeze.
-5. If auto-send is enabled, uses a surface-specific chain. A chat composer must clear/reset;
-   non-empty mutation is not submission. Apple Terminal/iTerm send text plus Return together through
-   the captured window-ID + TTY/session-ID pair and verify native contents before/after for both the
-   transcript and a prompt/buffer line transition. Generic
-   editors, Chrome, Notion, Ghostty, Warp, VS Code,
-   and Cursor have no generic background Enter route and are never retried. Only an unchanged OpenAI
-   composer that still owns exact system keyboard focus can receive one ordinary-HID Return retry.
-   Semantic Send requires a proven chat bundle, the nearest shared composer container, and an explicit
-   Send label. An unlabelled OpenAI square is never pressed because the same slot can become Stop while
-   an agent runs; exact wrapper/geometry does not prove its meaning. Submitted-message echo remains
-   optional telemetry.
+   content anchors fail closed if a stale wrapper could match a different document or tab.
+2. Reproduces Electron's inactive-to-active internal notification sequence without making the app
+   macOS-frontmost, restores the exact internal window/editor, and verifies both.
+3. Types Unicode directly into that process in bounded chunks. It never uses background Command–V.
+4. Verifies that the exact editor changed, the intended transcript appeared, and the app that Ethan
+   was using remained frontmost.
+5. If auto-send is enabled, uses a nearby semantic Send control when available or the narrowly scoped
+   targeted key route, then verifies editor clearing/value change and—for Codex/ChatGPT—the submitted
+   text appearing outside the composer.
 6. Restores the target app's previous internal window/editor state. A failure at any checkpoint copies
    the transcript to the clipboard and shows a visible error rather than guessing.
 
-Process-targeted Return is deliberately prohibited. Earlier disposable Codex probes showed both why
-plain PID posting is unreliable and why event acceptance is not proof that Electron submitted.
-VoiceInk++ now uses only a proven semantic Send action, an ordinary HID key while the exact saved
-input still owns system keyboard focus, or a host-native exact-session API such as Terminal/iTerm
-scripting. It never uses process-targeted Command–V/Return, and `AXConfirm` is not generic editor
-Return.
+The targeted Return exception is deliberately narrow. A disposable two-window Codex probe proved
+that ordinary PID posting is ignored until Electron receives the activation-state sequence, while
+the verified sequence changed only the saved composer, submitted it, left the comparison composer
+unchanged, and never made Codex frontmost. Never generalize that result into raw process-targeted
+Command–V/Return or infer success from an event return code alone. `AXConfirm` is still not a generic
+editor Return.
 
-If the target app is frontmost but Ethan is working in a different input in that same app,
-application PID is not treated as destination identity. VoiceInk++ keeps the exact saved-input route
-and may use only direct Accessibility insertion plus a proven semantic action. It never changes the
-app's internally focused editor just to make a key event work; if direct delivery is unavailable it
-fails visibly to the clipboard instead of stealing intra-app focus.
-
-When only a recording-start application fallback exists and the app is backgrounded, VoiceInk++
-uses that app's internally focused editable element only when it can verify one; it does not activate
-the app. VoiceInk++ retains the ordinary foreground route only when the exact saved input is also the
-current keyboard input. If the background app exposes no verifiable editable element, delivery fails
-visibly to the clipboard.
+When only a recording-start application fallback exists, or when the target app is already
+frontmost, VoiceInk++ retains the foreground route: activate/verify the saved application and input,
+send ordinary Command–V, perform the bounded semantic/System Events/humanized-HID auto-send, and
+restore the displaced workspace after the complete delivery. If Ethan moves focus during that
+sequence, the verification gates prevent Return from drifting into another app.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.
-
-The permanent required compatibility set and safe live scenarios are in
-[BACKGROUND_DELIVERY_TEST_MATRIX.md](BACKGROUND_DELIVERY_TEST_MATRIX.md): Codex desktop, ChatGPT's
-Option-Space window, Claude Code terminal/editor hosts, Telegram, Google Chrome, and a selected
-Notion card/property/block editor. Notion validation must use a disposable card/page, never Ethan's
-current to-do board.
 
 ## Diagnostic logs
 
