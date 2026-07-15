@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-15T22:28:08Z
+**Trigger:** Ethan rejected v2.0.208 and asked to revert everything after slow recorder start/stop, failed background ChatGPT Enter, and ChatGPT focus instability.
+**Symptom:** v2.0.208 inherited v2.0.207 recorder latency and could paste into the saved ChatGPT composer but failed to submit it in the background; repeated live activation-state probing then destabilized ChatGPT focus and the app restarted.
+**Root cause:** The v2.0.207 delivery rewrite added expensive exact-input/context work to recording decisions and removed the v2.0.206 process-targeted Return fallback. When a ChatGPT task is running, its exact composer exposes an explicit Stop control rather than a safe Send control, so the hardened route correctly had no semantic background submit action. Unit tests and AX return codes did not prove a real ChatGPT send.
+**Fix:** Commit b2aeaa2 reverted native source, tests, runtime docs, and public copy exactly to the v2.0.206 baseline; the preserved signed build 206 with CDHash a88d4bbe7ab463ba5a1f62509757b349d98d7f97 was reinstalled and launched. Keep later safety knowledge as investigation guidance, but do not claim universal background Enter.
+**Commit:** b2aeaa2
+**Guard:** Before another delivery release, measure recorder start/stop latency and live-test the exact /Applications/ChatGPT.app surface in a disposable target. Never bypass blocked Computer Use by repeatedly posting private activation-state events to Ethan live ChatGPT process; one app-owned bounded delivery session is the maximum, and an actual cleared composer trace is required.
+---
+
+
+---
 **Date:** 2026-07-15T15:52:35Z
 **Trigger:** Ethan made reliable exact-input background paste and Enter the primary objective and required compatibility tracking for his main apps.
 **Symptom:** Exact saved-input paste could work while Return was inconsistent or unsafe across Codex, ChatGPT quick window, Terminal/iTerm, Telegram, Chrome, Notion, and same-app different-input cases.

@@ -3,6 +3,8 @@
 This is the permanent compatibility matrix for Ethan's main destinations. Read it before changing
 exact-input capture, background insertion, auto-send, focus restoration, or verification.
 
+**Current rollback state (2026-07-15):** v2.0.207/v2.0.208 were rejected and native source plus the installed app were restored to the signed v2.0.206 baseline. The v2.0.207 rows below are preserved as failed/unavailable evidence and future acceptance gates, not as claims about the running release.
+
 ## Safety invariant
 
 When a saved target is not frontmost, VoiceInk++ must not activate it. Ethan may move between other
