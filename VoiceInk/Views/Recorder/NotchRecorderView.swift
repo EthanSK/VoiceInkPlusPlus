@@ -199,7 +199,11 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                         .transition(.opacity)
                 }
 
-                RecorderModeButton(buttonSize: 20, padding: EdgeInsets())
+                RecorderModeButton(
+                    displayedMode: stateProvider.recorderDisplayMode,
+                    buttonSize: 20,
+                    padding: EdgeInsets()
+                )
                 Spacer(minLength: 0)
             }
             .animation(.easeInOut(duration: 0.2), value: shouldShowCancelButton)

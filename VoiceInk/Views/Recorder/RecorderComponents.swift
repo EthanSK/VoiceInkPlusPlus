@@ -450,6 +450,10 @@ struct ProgressAnimation: View {
 
 struct RecorderModeButton: View {
     @ObservedObject private var modeManager = ModeManager.shared
+    /// A recorder card passes the complete Mode owned by its paste target. Keep this
+    /// value separate from `ModeManager.currentEffectiveConfiguration`: Ethan can
+    /// latch an input, move elsewhere, and still needs the icon to describe delivery.
+    let displayedMode: ModeConfig?
     let buttonSize: CGFloat
     let padding: EdgeInsets
 
@@ -458,7 +462,12 @@ struct RecorderModeButton: View {
     @State private var isHoveringPopover: Bool = false
     @State private var dismissWorkItem: DispatchWorkItem?
 
-    init(buttonSize: CGFloat = 28, padding: EdgeInsets = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 7)) {
+    init(
+        displayedMode: ModeConfig?,
+        buttonSize: CGFloat = 28,
+        padding: EdgeInsets = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 7)
+    ) {
+        self.displayedMode = displayedMode
         self.buttonSize = buttonSize
         self.padding = padding
     }
@@ -466,7 +475,9 @@ struct RecorderModeButton: View {
     var body: some View {
         RecorderToggleButton(
             isEnabled: !modeManager.enabledConfigurations.isEmpty,
-            icon: modeManager.enabledConfigurations.isEmpty ? "square.grid.2x2" : (modeManager.currentEffectiveConfiguration?.icon.value ?? "square.grid.2x2"),
+            icon: modeManager.enabledConfigurations.isEmpty
+                ? "square.grid.2x2"
+                : (displayedMode?.icon.value ?? "square.grid.2x2"),
             disabled: modeManager.enabledConfigurations.isEmpty
         ) {
             isPopoverPresented.toggle()

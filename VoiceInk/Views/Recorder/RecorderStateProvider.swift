@@ -7,6 +7,7 @@ protocol RecorderStateProvider: AnyObject {
     var partialTranscript: String { get }
     var pasteDestinationIndicatorTarget: FocusLockService.Target? { get } // While recording this previews the Next Track destination; after stop it follows the session's actual pending paste target until delivery finishes.
     var iconActionPulse: RecorderIconActionPulse? { get } // Primary normal stop flashes the left/current icon; either accepted Next-button route flashes the right/locked icon.
+    var recorderDisplayMode: ModeConfig? { get } // Real sessions expose their frozen destination Mode; only the assistant-only engine fallback may expose the global Mode.
 
     // VIPP (skip-mode-processing feature): the per-session, one-shot "skip post-processing
     // for THIS recording" flag. SETTABLE here so the recorder's toggle button (which is

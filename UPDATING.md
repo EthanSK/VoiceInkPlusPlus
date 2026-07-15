@@ -1,10 +1,11 @@
 # Updating this fork (EthanSK/VoiceInk) against upstream
 
-This is Ethan's personal GPL-3.0 fork of [Beingpax/VoiceInk](https://github.com/Beingpax/VoiceInk),
-carrying a small set of local patches on top of upstream. Upstream **does not accept PRs**, so our
-patches live only here and must be **merged** with each upstream release.
+This is Ethan's personal GPL-3.0 fork of [Beingpax/VoiceInk](https://github.com/Beingpax/VoiceInk).
+VoiceInk++ now deliberately diverges in destination routing, non-activating delivery, recorder UI,
+identity, and custom-model vocabulary handling. Treat upstream as a source of individual features,
+not as a branch to merge wholesale.
 
-## Our patches (preserve these through every merge)
+## Our patches (preserve these through every upstream port)
 
 The fork's important behavioral patches are:
 
@@ -35,10 +36,11 @@ The fork's important behavioral patches are:
   normally. Each
   `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
   background transcriptions from mixing destinations. While the newest transcription is still
-  loading, Next Track can replace its target with the input focused at that moment; the pipeline
-  resolves the session's target only immediately before delivery. Delivery waits for cross-app activation,
-  restores and verifies the exact element, and copies to the clipboard rather than pasting into an
-  unintended field if verification fails. The post-stop Next Track action is a distinct second-chance
+  running and before destination-dependent post-processing begins, Next Track can replace its target
+  with the input focused at that moment; the pipeline freezes input + complete Mode before formatting
+  or enhancement. Delivery re-resolves and verifies the
+  exact element without activating a background target, and copies to the clipboard rather than pasting
+  into an unintended field if verification fails. The post-stop Next Track action is a distinct second-chance
   route: while the newest result is loading it atomically replaces both the pending exact input and
   that target app's auto-send key, so moving to another app before delivery cannot remove Return.
   This is never a toggle and must not be confused with Next Track while recording, which stops into
@@ -46,11 +48,22 @@ The fork's important behavioral patches are:
   recording-start input if stop-time capture or verification fails. See the canonical
   [Mouse terminology](TERMINOLOGY.md) and [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.
-- **Verified exact-background delivery.** When a session owns an exact input in a background app,
-  VoiceInk++ uniquely re-resolves its window/editor, prepares Electron's internal activation state,
-  types bounded Unicode, performs the narrowly scoped targeted Return when needed, and verifies the
-  exact insertion/submission plus an unchanged macOS frontmost PID. Background Command-V and raw
-  unverified PID posting remain forbidden. App-only targets retain the verified foreground route.
+- **Exact non-activating delivery.** When a session owns an exact input in a background app,
+  VoiceInk++ uniquely re-resolves its window/editor, opens one internal activation-state session when
+  needed, and verifies immediate keyboard-focus safety plus exact insertion. The same route handles a
+  different input in the already-frontmost target app through direct Accessibility only, so it cannot
+  steal intra-app focus. Telegram alone has an allowlisted retained-element and retained labelled-Send
+  fallback, but only while independently readable chat-context anchors still match; hidden or mismatched
+  context fails closed. v2.0.207 live proof is still required. Chat verification requires a composer
+  reset. Apple Terminal/iTerm capture stable window-ID + TTY/session-ID pairs and send transcript text
+  plus Return to that exact pair in one native operation, verified through native contents and a prompt
+  transition; Apple Terminal paste-only fails closed while iTerm may use `newline false`; mutable titles are never identities;
+  Ghostty, Warp, VS Code, Cursor, Chrome, Notion, and generic editors have no safe generic background
+  Return. Only a proven unchanged OpenAI composer that still owns system keyboard focus may retry one
+  ordinary-HID Return. Semantic AX Send requires an explicit Send label; an unlabelled OpenAI square
+  can be Stop while an agent runs and is never pressed based on wrapper/geometry alone. Background
+  Command-V, process-targeted Return, and activating a
+  background target as a fallback remain forbidden. See `BACKGROUND_DELIVERY_TEST_MATRIX.md`.
 
 The active-window service's `start()` is wired once at app launch in `VoiceInk.swift` (right after
 `ActiveWindowService.shared`).
@@ -140,28 +153,47 @@ Mini to match `com.ethansk.VoiceInkPlusPlus`, and point any app-path references 
 fresh TCC grants (Mic / Accessibility / Screen Recording) because it's a brand-new identity to macOS —
 this is expected and is the whole point of the split.
 
-## Pull in upstream changes (merge workflow)
+The final outer-app signing step must also pass the checked-in
+`VoiceInk/VoiceInk.local.entitlements`. Replacing only the outer signature without that file can
+silently remove `com.apple.security.automation.apple-events`, even while nested frameworks and
+`codesign --verify --deep --strict` still pass. Treat the final entitlement dump as a separate release
+gate whenever exact Terminal/iTerm delivery is included.
 
-```sh
-git checkout main
-git fetch origin upstream
-git reset --hard origin/main       # origin/main is the source of truth for the fork
-git merge --no-edit upstream/main # preserve fork history; do not rebase origin/main
-# If conflicts: they'll likely be in ActiveWindowService.swift / VoiceInk.swift — keep BOTH
-# upstream's changes and our observer/start() additions, then commit the resolved merge.
-git push origin main
-```
-Then rebuild on the Mini (`make local`) and install the fresh `~/Downloads/VoiceInkPlusPlus.app` on the MBP.
+## Port upstream features one at a time
 
-Upstream auto-update (Sparkle) is disabled in local builds, so updating is this manual merge + Mini
-rebuild — or the automated job below.
+The 2026-07-15 audit found the fork 68 commits ahead and upstream 80 commits ahead of merge base
+`eda0786`. A trial whole-branch merge produced 17 conflicts, including the destination, recorder,
+pipeline, delivery, cloud-transcription, project, and test files. A whole upstream merge is therefore
+not a supported update procedure.
 
-## Automated rebuild (keeps the build current with our fixes)
+For each update:
 
-A scheduled job on the Mini (`~/.claude/scripts/voiceink-fork-update.sh` + a LaunchAgent) does the
-above on a cadence: fetch upstream → merge upstream/main into the fork → `make local` → notify, and the new `.app` is
-copied to the MBP. If a merge hits a conflict it stops and notifies (manual resolve) rather than
-producing a broken build. See that script for details.
+1. Fetch upstream and audit the candidate in a disposable clone or worktree.
+2. Ask Ethan to approve one user-visible feature.
+3. Manually port only that feature onto a dedicated branch, preserving VoiceInk++'s adjacent intent
+   comments, exact-destination contracts, marked vocabulary carrier, and error redaction.
+4. Run the complete unit suite and the relevant disposable live matrix, then follow the numbered
+   Mac Mini sign/install procedure above.
+5. Commit and publish only the reviewed port. Never reset `main` or merge `upstream/main` wholesale.
+
+The best candidates from that audit, in suggested order, are:
+
+- `3a96487` + `a1f0dc6`: AVAssetReader fallback for imported MP4/M4A/Teams audio (PR #807).
+- `d587497` + `d4dda90` + `9c24a8d` + `21e9322` + `23d7abc`: edit/test custom-model API keys and validate schemes, while retaining VoiceInk++ vocabulary and response redaction.
+- `4be8719`: per-request URLSession to avoid remote custom-endpoint HTTP/3/VPN upload hangs; retain the fork's timeouts.
+- `4c4b8fe` (merged as `eb76c75`): preferred-input-channel loopback exclusion.
+- `3c965ee`: keep mini/notch recorder panels visible when the app hides.
+
+Do not port `cde93d3` as written: it removes non-Whisper custom/cloud prompts and would delete the
+marked prompt block that carries VoiceInk++ vocabulary to the local Deepgram adapter. Also skip the
+large formatter-only `f20ac14`; it adds conflict without product behavior. Streaming, live-transcript,
+media-muting, window-recovery, provider-list, and licensing changes remain deferred until Ethan asks
+for those features and their local interaction tests are defined.
+
+Sparkle remains disabled for local builds. The legacy Mini script
+`~/.claude/scripts/voiceink-fork-update.sh` still exists, but its LaunchAgent is deliberately named
+`com.ethansk.voiceink-fork-autoupdate.plist.DISABLED`; keep it disabled because its wholesale-merge
+workflow is incompatible with the current fork.
 
 ## Settings / data
 

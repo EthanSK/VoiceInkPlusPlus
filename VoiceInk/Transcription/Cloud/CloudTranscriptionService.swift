@@ -52,7 +52,17 @@ class CloudTranscriptionService: TranscriptionService {
                 guard let customModel = model as? CustomCloudModel else {
                     throw CloudTranscriptionError.unsupportedProvider
                 }
-                return try await openAICompatibleService.transcribe(audioURL: audioURL, model: customModel, context: context)
+                // Custom models bypass `CloudProviderRegistry`, so they must receive the
+                // dictionary here rather than relying on the built-in-provider call below.
+                // Keep this at the routing boundary: otherwise Ethan's OpenAI-compatible
+                // Deepgram proxy gets language/prompt/audio but silently loses every word
+                // saved in VoiceInk++'s Vocabulary screen.
+                return try await openAICompatibleService.transcribe(
+                    audioURL: audioURL,
+                    model: customModel,
+                    context: context,
+                    customVocabulary: getCustomDictionaryTerms()
+                )
             }
 
             guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider) else {

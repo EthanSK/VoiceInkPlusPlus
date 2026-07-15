@@ -344,17 +344,37 @@ class RecordingShortcutManager: ObservableObject {
                         return true // Consume the entire press so the recording-start stop never also advances media.
                     }
 
-                    switch self.engine.retargetMostRecentPendingTranscriptionToFocusedInput() {
-                    case .retargeted:
-                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=retargeted")
-                        return true
-                    case .noFocusedInput:
-                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
-                        return true
-                    case .noPendingTranscription:
+                    guard self.engine.hasRetargetablePendingTranscription else {
                         self.logger.info("Next Track key-down passed through because no recording or retargetable transcription is active")
                         return false
                     }
+
+                    let capturedInput = FocusLockService.shared
+                        .captureFocusedInputSnapshot()
+                    guard let capturedInput else {
+                        _ = self.engine.retargetMostRecentPendingTranscription(
+                            to: nil
+                        )
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
+                        return true
+                    }
+
+                    // Accept and publish the exact press-time target immediately. A
+                    // Terminal/iTerm native identity lookup may suspend, but it only
+                    // enriches this same capture later; it never delays the icon or
+                    // reinterprets a later focused input, and delivery awaits the
+                    // bounded task if transcription happens to finish first.
+                    switch self.engine.retargetMostRecentPendingTranscription(
+                        to: capturedInput
+                    ) {
+                    case .retargeted:
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=retargeted")
+                    case .noFocusedInput:
+                        self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
+                    case .noPendingTranscription:
+                        self.logger.info("Next Track key-down remained consumed because the pending transcription reached delivery during exact-input capture")
+                    }
+                    return true
                 }
             }
         )

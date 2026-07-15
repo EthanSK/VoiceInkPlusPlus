@@ -102,6 +102,8 @@ xcodebuild \
 
 Destination-routing changes must preserve the regression test named `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` and the contract in [AGENTS.md](AGENTS.md).
 
+If the Mac test runner stalls after launch without executing tests, do not count the successful build or XCTest's `Executed 0 tests` preamble as a pass. Preserve the stalled-run log, then use the already-built `VoiceInkTests.xctest` bundle with `xcrun xctest` as a diagnostic fallback, setting `DYLD_LIBRARY_PATH` to the host app's `Contents/MacOS` and `DYLD_FRAMEWORK_PATH` to its `Contents/Frameworks` plus Xcode's macOS developer frameworks. A valid fallback run names every expected test. Retry the normal Xcode runner after recovering TestManager, and do not enable Developer Mode unless the Mac owner explicitly chooses to.
+
 ## Troubleshooting
 
 ### Xcode license or first-launch error
@@ -119,6 +121,10 @@ Check the network connection, open the project in Xcode, and use **File → Pack
 ### The app cannot record or paste
 
 Verify both Microphone and Accessibility access in System Settings. After rebuilding, macOS may treat the new ad-hoc signature as a fresh app and ask for permission again.
+
+Exact Apple Terminal/iTerm delivery also needs the optional Automation grant shown on first use. If the first native terminal attempt times out or fails, open **System Settings → Privacy & Security → Automation**, allow VoiceInk++ to control that terminal host, then retry on a disposable tab/pane.
+
+If you re-sign a local build after Xcode finishes, the outer app signature must explicitly use `VoiceInk/VoiceInk.local.entitlements`. A generic replacement signature can remove the Automation entitlement even when `codesign --verify --deep --strict` still accepts the nested bundle. Inspect the final outer entitlements and require `com.apple.security.automation.apple-events` to be true before testing Terminal or iTerm delivery.
 
 ### The first build cannot find Whisper
 

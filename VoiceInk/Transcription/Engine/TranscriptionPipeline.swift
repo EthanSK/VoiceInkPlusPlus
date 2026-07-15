@@ -60,7 +60,7 @@ class TranscriptionPipeline {
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
-        pasteTarget resolvePasteTarget: @escaping () -> RecordingPasteTarget,
+        pasteTarget resolvePasteTarget: @escaping () async -> RecordingPasteTarget,
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         // ── VIPP (skip-mode-processing feature) — EXPLICIT bypass flag ──
         // Resolved at pipeline-run time from the owning RecordingSession's one-shot
@@ -85,6 +85,7 @@ class TranscriptionPipeline {
         var responseError: String?
         var outputForDelivery: OutputRuntimeConfiguration?
         var responseConfig: EnhancementRuntimeConfiguration?
+        var frozenPasteTarget: RecordingPasteTarget?
 
         // ── VIPP (skip-mode-processing feature) — resolve the one-shot bypass ONCE ──
         // Read the owning session's flag at pipeline-run time (after STOP) so toggling
@@ -176,6 +177,16 @@ class TranscriptionPipeline {
                let processedText = triggerWordModeSelection(text) {
                 text = processedText
             }
+
+            // Destination input + complete Mode are one atomic decision. Freeze them
+            // immediately after transcription/trigger-word selection and before any
+            // formatting or AI enhancement configuration is resolved. Otherwise a
+            // second-chance Next press during a long enhancement could replace the
+            // input/Return while the text had already been transformed under the old
+            // destination Mode. The accepted window is therefore the transcription
+            // wait itself; once post-processing begins, Next passes through normally.
+            let pasteTargetForPostProcessing = await resolvePasteTarget()
+            frozenPasteTarget = pasteTargetForPostProcessing
 
             let formattingConfiguration = resolveFormattingConfiguration()
             let resolvedEnhancementConfiguration = enhancementConfiguration()
@@ -366,11 +377,16 @@ class TranscriptionPipeline {
             }
         }
 
-        let pasteTargetForDelivery = resolvePasteTarget()
-        // Re-resolve after the target is frozen so a second-chance Next-button press
-        // that arrived during transcription/enhancement supplies the latest target's
-        // complete Mode (output action, command, and Return), not just its input. The
-        // one-shot raw path keeps the already-forced neutral output below.
+        let pasteTargetForDelivery: RecordingPasteTarget
+        if let frozenPasteTarget {
+            pasteTargetForDelivery = frozenPasteTarget
+        } else {
+            // A failed transcription reaches delivery only to persist/surface the
+            // failure. Close any still-open destination window before that teardown.
+            pasteTargetForDelivery = await resolvePasteTarget()
+        }
+        // Re-resolve output from the already-frozen destination Mode. The one-shot raw
+        // path keeps the already-forced neutral output below.
         let pipelineOutput = skipPostProcessingNow
             ? (outputForDelivery ?? outputConfiguration())
             : outputConfiguration()
@@ -400,7 +416,11 @@ class TranscriptionPipeline {
                 responseConfig: responseConfig,
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
-                pasteTarget: pasteTargetForDelivery, // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
+                // This target was resolved and frozen immediately after raw
+                // transcription, before formatting/enhancement. That is the final
+                // second-chance cutoff: post-processing cannot mix one input's Mode
+                // with another input's delivery or auto-send behavior.
+                pasteTarget: pasteTargetForDelivery,
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).

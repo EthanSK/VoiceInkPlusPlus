@@ -127,6 +127,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 // Mode belongs immediately to the LEFT of the waveform. The slot it
                 // previously occupied on the right now shows the currently focused app.
                 RecorderModeButton(
+                    displayedMode: stateProvider.recorderDisplayMode,
                     buttonSize: 22,
                     padding: EdgeInsets()
                 )
