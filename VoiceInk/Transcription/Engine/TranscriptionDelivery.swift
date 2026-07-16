@@ -563,7 +563,8 @@ final class TranscriptionDelivery {
                     )
                 }
 
-                vippLog.info("paste: foreground auto-send finished outcome=\(autoSendOutcome.rawValue, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+                let autoSendSucceeded = autoSendOutcome != .failed
+                vippLog.info("paste: foreground auto-send finished success=\(autoSendSucceeded, privacy: .public) outcome=\(autoSendOutcome.rawValue, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
                 if let applicationToRestore {
                     await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
                 }
