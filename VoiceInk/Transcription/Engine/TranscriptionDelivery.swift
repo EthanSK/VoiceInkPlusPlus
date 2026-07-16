@@ -14,7 +14,10 @@ final class TranscriptionDelivery {
         "com.openai.chat"
     ]
     private static let chatComposerBundleIdentifiers =
-        openAIComposerBundleIdentifiers.union(["ru.keepcoder.Telegram"])
+        openAIComposerBundleIdentifiers.union([
+            "com.anthropic.claudefordesktop",
+            "ru.keepcoder.Telegram"
+        ])
 
     static func isChatComposer(bundleIdentifier: String?) -> Bool {
         guard let bundleIdentifier else { return false }
@@ -71,6 +74,61 @@ final class TranscriptionDelivery {
         case unchanged
         case modifiedWithoutSubmit
         case unavailable
+    }
+
+    enum ForegroundSemanticActionPlan: Equatable {
+        /// AXPress returned either success or an error. Both mean one irreversible
+        /// action may have reached the app, so verification is the only safe next step.
+        case verifyOnly
+        /// No semantic action was issued; one normal Return is allowed only while the
+        /// exact frozen composer still owns system keyboard focus.
+        case issueExactFocusReturn
+        /// Focus moved before any fallback action. The caller may continue through its
+        /// frozen non-activating exact-input session, but must not reactivate the app.
+        case focusMoved
+    }
+
+    private enum ForegroundAutoSendOutcome: String {
+        case succeeded
+        case indeterminate
+        case focusMoved
+        case failed
+    }
+
+    static func foregroundPastePreflightMatches(
+        targetPID: pid_t,
+        frontmostPID: pid_t?,
+        hasExactInput: Bool,
+        exactInputOwnsKeyboardFocus: Bool
+    ) -> Bool {
+        guard frontmostPID == targetPID else { return false }
+        return !hasExactInput || exactInputOwnsKeyboardFocus
+    }
+
+    static func foregroundSemanticActionPlan(
+        result: FocusLockService.NearbySubmitButtonResult,
+        exactInputOwnsKeyboardFocus: Bool
+    ) -> ForegroundSemanticActionPlan {
+        switch result {
+        case .pressed, .failed:
+            return .verifyOnly
+        case .unavailable:
+            return exactInputOwnsKeyboardFocus
+                ? .issueExactFocusReturn
+                : .focusMoved
+        }
+    }
+
+    static func shouldRetryForegroundSemanticSendWithReturn(
+        bundleIdentifier: String?,
+        semanticResult: FocusLockService.NearbySubmitButtonResult,
+        verification: ChatComposerSubmissionVerification,
+        exactInputOwnsKeyboardFocus: Bool
+    ) -> Bool {
+        openAIComposerBundleIdentifiers.contains(bundleIdentifier ?? "")
+            && semanticResult == .pressed
+            && verification == .unchanged
+            && exactInputOwnsKeyboardFocus
     }
 
     /// A chat submit is proven by the exact composer clearing/resetting. A rendered
@@ -333,9 +391,41 @@ final class TranscriptionDelivery {
             return
         }
 
+        // A recording-start app fallback is permission to choose that app's one current
+        // editable input, not permission to keep targeting only a PID. Promote it once
+        // after activation and freeze that exact wrapper before clipboard settlement,
+        // paste verification, or Return. If no exact input is exposed, fail closed.
+        let foregroundInput: FocusLockService.Target
+        if focusedInput.hasExactInput {
+            foregroundInput = focusedInput
+        } else if allowsApplicationFallback,
+                  let promoted = FocusLockService.shared.captureFocusedInput(),
+                  promoted.processIdentifier == targetPID,
+                  promoted.hasExactInput {
+            foregroundInput = promoted
+            vippLog.info("paste: promoted recording-start application fallback to one frozen exact foreground input targetPid=\(targetPID, privacy: .public)")
+        } else {
+            handleMissingPasteTarget(pastedText, destination: target.destination)
+            return
+        }
+
         vippLog.info("paste: target restored; issuing paste keystroke targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
 
-        let pasteTask = CursorPaster.startPasteAtCursor(pastedText) // Use the proven foreground Cmd-V path from cba45ba; CGEvent.postToPid can succeed without the background app accepting the paste.
+        let textBeforeForegroundPaste = FocusLockService.shared
+            .focusedExactInputTextFast(foregroundInput)
+        let pasteTask = CursorPaster.startPasteAtCursor(
+            pastedText,
+            preflight: {
+                Self.foregroundPastePreflightMatches(
+                    targetPID: targetPID,
+                    frontmostPID: NSWorkspace.shared.frontmostApplication?
+                        .processIdentifier,
+                    hasExactInput: foregroundInput.hasExactInput,
+                    exactInputOwnsKeyboardFocus: FocusLockService.shared
+                        .targetOwnsSystemKeyboardFocus(foregroundInput)
+                )
+            }
+        ) // Use the proven foreground Cmd-V path from cba45ba, but cancel before Cmd-V if Ethan moved; the frozen exact-input route below can then continue without focus theft.
 
         let applicationToRestore = previouslyFrontmostApplication?.processIdentifier == targetPID
             ? nil
@@ -351,6 +441,24 @@ final class TranscriptionDelivery {
             let pasteResult = await pasteTask.value
             vippLog.info("paste: command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(targetPID, privacy: .public)")
             guard pasteResult.didPostPasteCommand else {
+                if foregroundInput.hasExactInput,
+                   !Self.foregroundPastePreflightMatches(
+                    targetPID: targetPID,
+                    frontmostPID: NSWorkspace.shared.frontmostApplication?
+                        .processIdentifier,
+                    hasExactInput: true,
+                    exactInputOwnsKeyboardFocus: FocusLockService.shared
+                        .targetOwnsSystemKeyboardFocus(foregroundInput)
+                   ) {
+                    vippLog.notice("paste: user focus moved before foreground Cmd-V; retrying once through frozen non-activating exact-input delivery targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+                    await deliverToBackgroundExactInput(
+                        pastedText,
+                        target: target,
+                        focusedInput: foregroundInput,
+                        autoSendKey: autoSendKey
+                    )
+                    return
+                }
                 _ = ClipboardManager.copyToClipboard(pastedText)
                 NotificationManager.shared.showNotification(
                     title: String(localized: "Couldn’t send the paste to the saved input — transcription copied to clipboard"),
@@ -364,40 +472,103 @@ final class TranscriptionDelivery {
             }
 
             if autoSendKey.isEnabled {
-                // Keep the destination frontmost for the complete atomic delivery.
-                // The live Codex trace proved that AXConfirm can return `.success`
-                // without submitting an Electron editor, while Terminal happened to
-                // accept it. A real foreground key-code Return is the reliable public
-                // macOS route; restore the user's previous app only after it is posted.
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                guard await FocusLockService.shared.restoreFocus(
-                    to: focusedInput,
-                    allowApplicationFallback: allowsApplicationFallback
-                ) else {
-                    showAutoSendFailure(
-                        "Transcription pasted, but couldn’t focus the destination to press Return",
-                        detail: "foreground Return restore failed targetPid=\(targetPID)"
+                let usesSemanticChatSubmit = autoSendKey == .enter
+                    && Self.isChatComposer(
+                        bundleIdentifier: foregroundInput.bundleIdentifier
                     )
-                    if let applicationToRestore {
-                        await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+                    && FocusLockService.supportsSemanticSend(
+                        bundleIdentifier: foregroundInput.bundleIdentifier
+                    )
+                let autoSendOutcome: ForegroundAutoSendOutcome
+                if usesSemanticChatSubmit {
+                    if !FocusLockService.shared.targetOwnsSystemKeyboardFocus(
+                        foregroundInput
+                    ) {
+                        await performDetachedChatAutoSendAfterForegroundPaste(
+                            autoSendKey,
+                            pastedText: pastedText,
+                            target: foregroundInput
+                        )
+                        return
                     }
-                    return
+                    // Do not impose the old fixed 500 ms chat delay. Cmd-V has already
+                    // been issued; poll the exact still-focused wrapper and continue as
+                    // soon as it proves the transcript arrived. The full document/chat
+                    // identity is revalidated below and again immediately before AXPress.
+                    guard await waitForForegroundChatPaste(
+                        pastedText,
+                        previousText: textBeforeForegroundPaste,
+                        target: foregroundInput
+                    ) else {
+                        showAutoSendFailure(
+                            "Transcription paste was issued, but the saved chat input could not be verified before Send",
+                            detail: "foreground chat paste readiness failed targetPid=\(targetPID)"
+                        )
+                        if let applicationToRestore {
+                            await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+                        }
+                        return
+                    }
+                    if !FocusLockService.shared.targetOwnsSystemKeyboardFocus(
+                        foregroundInput
+                    ) {
+                        await performDetachedChatAutoSendAfterForegroundPaste(
+                            autoSendKey,
+                            pastedText: pastedText,
+                            target: foregroundInput
+                        )
+                        return
+                    }
+                    // Do not call activating restoreFocus here. The exact composer was
+                    // just verified; every semantic/Return action below rechecks it at
+                    // the irreversible boundary. If Ethan moves, continue detached.
+                    autoSendOutcome = await performAutoSend(
+                        autoSendKey,
+                        to: foregroundInput,
+                        allowsApplicationFallback: false,
+                        transcriptLength: pastedLength,
+                        expectedFrontmostPID: targetPID
+                    )
+                    if autoSendOutcome == .focusMoved {
+                        await performDetachedChatAutoSendAfterForegroundPaste(
+                            autoSendKey,
+                            pastedText: pastedText,
+                            target: foregroundInput
+                        )
+                        return
+                    }
+                } else {
+                    // Non-chat foreground targets still use their established settlement
+                    // window until a surface-specific verifier exists for them.
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard await FocusLockService.shared.restoreFocus(
+                        to: foregroundInput,
+                        allowApplicationFallback: false
+                    ) else {
+                        showAutoSendFailure(
+                            "Transcription pasted, but couldn’t focus the destination to press Return",
+                            detail: "foreground Return restore failed targetPid=\(targetPID)"
+                        )
+                        if let applicationToRestore {
+                            await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
+                        }
+                        return
+                    }
+                    autoSendOutcome = await performAutoSend(
+                        autoSendKey,
+                        to: foregroundInput,
+                        allowsApplicationFallback: false,
+                        transcriptLength: pastedLength,
+                        expectedFrontmostPID: targetPID
+                    )
                 }
 
-                let autoSendSucceeded = await performAutoSend(
-                    autoSendKey,
-                    to: focusedInput,
-                    allowsApplicationFallback: allowsApplicationFallback,
-                    transcriptLength: pastedLength,
-                    expectedFrontmostPID: targetPID
-                )
-
-                vippLog.info("paste: foreground auto-send finished success=\(autoSendSucceeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+                vippLog.info("paste: foreground auto-send finished outcome=\(autoSendOutcome.rawValue, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
                 if let applicationToRestore {
                     await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
                 }
 
-                guard autoSendSucceeded else {
+                guard autoSendOutcome != .failed else {
                     showAutoSendFailure(
                         "Transcription pasted, but couldn’t press Return automatically",
                         detail: "foreground Return produced no verified submit targetPid=\(targetPID)"
@@ -411,6 +582,43 @@ final class TranscriptionDelivery {
                 await restorePreviousApplication(applicationToRestore, displacedBy: targetPID)
             }
         }
+    }
+
+    /// A user can click away after foreground Cmd-V was issued but before chat submit.
+    /// Never reactivate the destination in that race. Re-open the same frozen exact-input
+    /// session non-activatingly, prove the pasted transcript is still in that composer,
+    /// press its explicit Send control once, and tear the session down. If the target app
+    /// changed its own internal input/chat, preparation fails closed instead of stealing
+    /// focus or sending into the newly selected surface.
+    private func performDetachedChatAutoSendAfterForegroundPaste(
+        _ autoSendKey: AutoSendKey,
+        pastedText: String,
+        target: FocusLockService.Target
+    ) async {
+        guard let session = await FocusLockService.shared.prepareBackgroundDelivery(
+            to: target
+        ) else {
+            showAutoSendFailure(
+                "Transcription pasted, but the saved chat input could not be re-verified after focus moved",
+                detail: "detached foreground chat submit preparation failed targetPid=\(target.processIdentifier)"
+            )
+            return
+        }
+        defer { FocusLockService.shared.finishBackgroundDelivery(session) }
+
+        guard await waitForDetachedForegroundChatPaste(
+            pastedText,
+            session: session
+        ) else {
+            showAutoSendFailure(
+                "Transcription pasted, but the saved chat input no longer contained it after focus moved",
+                detail: "detached foreground chat paste settlement or exact-boundary verification failed targetPid=\(target.processIdentifier)"
+            )
+            return
+        }
+
+        vippLog.notice("paste: foreground chat lost keyboard focus after paste; continuing with non-activating exact semantic Send targetPid=\(target.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        await performBackgroundAutoSend(autoSendKey, session: session)
     }
 
     private func deliverToBackgroundExactInput(
@@ -544,11 +752,13 @@ final class TranscriptionDelivery {
         _ autoSendKey: AutoSendKey,
         session: FocusLockService.BackgroundDeliverySession
     ) async {
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        // `waitForBackgroundInsertion` already proved the exact composer contains the
+        // transcript. Submit immediately; a fixed 150 ms sleep only made the result feel
+        // late and widened the window for unrelated user focus changes.
         guard await FocusLockService.shared.refreshBackgroundFocus(session),
               let textBeforeSubmit = FocusLockService.shared.backgroundInputText(for: session) else {
             showAutoSendFailure(
-                "Transcription inserted, but couldn’t restore the saved background input to press Return",
+                "Transcription inserted, but couldn’t re-verify the saved background input before Send",
                 detail: "background auto-send focus verification failed targetPid=\(session.processIdentifier)"
             )
             return
@@ -663,6 +873,150 @@ final class TranscriptionDelivery {
         return currentText != previousText && currentText.contains(verificationText)
     }
 
+    static func foregroundChatPasteIsReady(
+        insertedText: String,
+        previousText: String?,
+        currentText: String?
+    ) -> Bool {
+        let verificationText = insertedText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !verificationText.isEmpty,
+              let currentText,
+              currentText != previousText else {
+            return false
+        }
+        return currentText.contains(verificationText)
+    }
+
+    private func waitForForegroundChatPaste(
+        _ insertedText: String,
+        previousText: String?,
+        target: FocusLockService.Target
+    ) async -> Bool {
+        if Self.foregroundChatPasteIsReady(
+            insertedText: insertedText,
+            previousText: previousText,
+            currentText: FocusLockService.shared.focusedInputText(for: target)
+        ) {
+            vippLog.info("paste: foreground chat text was immediately ready for semantic Send targetPid=\(target.processIdentifier, privacy: .public)")
+            return true
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if Self.foregroundChatPasteIsReady(
+                insertedText: insertedText,
+                previousText: previousText,
+                currentText: FocusLockService.shared.focusedExactInputTextFast(target)
+            ) {
+                vippLog.info("paste: foreground chat text became ready for semantic Send without fixed delay targetPid=\(target.processIdentifier, privacy: .public)")
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 15_000_000)
+        }
+        return Self.foregroundChatPasteIsReady(
+            insertedText: insertedText,
+            previousText: previousText,
+            currentText: FocusLockService.shared.focusedInputText(for: target)
+        )
+    }
+
+    private func waitForDetachedForegroundChatPaste(
+        _ insertedText: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async -> Bool {
+        let verificationText = insertedText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !verificationText.isEmpty else { return false }
+        let containsTranscript: (String?) -> Bool = { currentText in
+            currentText?.contains(verificationText) == true
+        }
+        if containsTranscript(
+            FocusLockService.shared.backgroundInputText(for: session)
+        ) {
+            return true
+        }
+
+        // Cmd-V can return before an Electron/Telegram AXValue reflects the paste.
+        // Poll the frozen session instead of declaring a false failure or sleeping a
+        // fixed amount. Fast reads retain the exact process/window/editor boundary;
+        // a full resolver confirms it once text becomes observable.
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if containsTranscript(
+                FocusLockService.shared.backgroundInputTextFast(for: session)
+            ), containsTranscript(
+                FocusLockService.shared.backgroundInputText(for: session)
+            ) {
+                vippLog.info("paste: detached foreground chat text became ready without a fixed delay targetPid=\(session.processIdentifier, privacy: .public)")
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 15_000_000)
+        }
+        return containsTranscript(
+            FocusLockService.shared.backgroundInputText(for: session)
+        )
+    }
+
+    private func waitForForegroundChatComposerSubmission(
+        from previousText: String,
+        target: FocusLockService.Target,
+        allowsApplicationFallback: Bool
+    ) async -> ChatComposerSubmissionVerification {
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.75
+        var iteration = 0
+        var latest = Self.classifyChatComposerSubmission(
+            from: previousText,
+            to: FocusLockService.shared.focusedInputText(
+                for: target,
+                allowApplicationFallback: allowsApplicationFallback
+            )
+        )
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if latest == .verified || latest == .modifiedWithoutSubmit {
+                return latest
+            }
+            let fast = Self.classifyChatComposerSubmission(
+                from: previousText,
+                to: FocusLockService.shared.focusedExactInputTextFast(target)
+            )
+            if fast == .verified || fast == .modifiedWithoutSubmit {
+                let confirmed = Self.classifyChatComposerSubmission(
+                    from: previousText,
+                    to: FocusLockService.shared.focusedInputText(
+                        for: target,
+                        allowApplicationFallback: allowsApplicationFallback
+                    )
+                )
+                if confirmed == .verified || confirmed == .modifiedWithoutSubmit {
+                    return confirmed
+                }
+            }
+            // A chat renderer may replace its AXTextArea after Send. Re-run the full
+            // resolver at a bounded cadence while cheap exact-wrapper reads cover the
+            // common case, avoiding an arbitrary 350 ms sleep and dozens of tree walks.
+            if iteration.isMultiple(of: 5) {
+                latest = Self.classifyChatComposerSubmission(
+                    from: previousText,
+                    to: FocusLockService.shared.focusedInputText(
+                        for: target,
+                        allowApplicationFallback: allowsApplicationFallback
+                    )
+                )
+            }
+            iteration += 1
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return Self.classifyChatComposerSubmission(
+            from: previousText,
+            to: FocusLockService.shared.focusedInputText(
+                for: target,
+                allowApplicationFallback: allowsApplicationFallback
+            )
+        )
+    }
+
     private func waitForBackgroundChatComposerSubmission(
         from previousText: String,
         session: FocusLockService.BackgroundDeliverySession
@@ -724,109 +1078,145 @@ final class TranscriptionDelivery {
         allowsApplicationFallback: Bool,
         transcriptLength: Int,
         expectedFrontmostPID: pid_t
-    ) async -> Bool {
-        let isOpenAIComposer = target.bundleIdentifier.map {
-            Self.openAIComposerBundleIdentifiers.contains($0)
-        } ?? false
+    ) async -> ForegroundAutoSendOutcome {
+        let isSemanticChatComposer = Self.isChatComposer(
+            bundleIdentifier: target.bundleIdentifier
+        ) && FocusLockService.supportsSemanticSend(
+            bundleIdentifier: target.bundleIdentifier
+        )
 
-        guard key == .enter, isOpenAIComposer else {
-            return await CursorPaster.performAutoSend(
-                key,
-                transcriptLength: transcriptLength,
-                expectedFrontmostPID: expectedFrontmostPID
-            ).didPostAutoSendCommand
+        let exactFocusPreflight = {
+            Self.foregroundPastePreflightMatches(
+                targetPID: expectedFrontmostPID,
+                frontmostPID: NSWorkspace.shared.frontmostApplication?
+                    .processIdentifier,
+                hasExactInput: target.hasExactInput,
+                exactInputOwnsKeyboardFocus: FocusLockService.shared
+                    .targetOwnsSystemKeyboardFocus(target)
+            )
         }
 
-        // OpenAI's Electron composer has now ignored both a background AXConfirm
-        // that returned success and an instantaneous foreground CGEvent pair. First
-        // use its tightly-scoped adjacent Send button when present. While a response
-        // is already running that button becomes Stop, so fall back to System Events'
-        // script-level key code 36—the public equivalent of a real scripted Return.
+        guard key == .enter, isSemanticChatComposer else {
+            let result = await CursorPaster.performAutoSend(
+                key,
+                transcriptLength: transcriptLength,
+                expectedFrontmostPID: expectedFrontmostPID,
+                preflight: exactFocusPreflight
+            )
+            return result.didPostAutoSendCommand ? .succeeded : .failed
+        }
+
+        // Allowlisted chat composers have ignored synthetic Return on some surfaces.
+        // Use the tightly-scoped explicitly labelled Send button first. While a response
+        // is already running an OpenAI button can become Stop, so label verification is
+        // mandatory; only a still-foreground exact input may fall back to real Return.
         let textBeforeSubmit = FocusLockService.shared.focusedInputText(
             for: target,
             allowApplicationFallback: allowsApplicationFallback
         )
-        var primaryIssued = false
-        switch FocusLockService.shared.pressNearbySubmitButton(
+        let semanticResult = FocusLockService.shared.pressNearbySubmitButton(
             for: target,
             allowApplicationFallback: allowsApplicationFallback
+        )
+        switch Self.foregroundSemanticActionPlan(
+            result: semanticResult,
+            exactInputOwnsKeyboardFocus: FocusLockService.shared
+                .targetOwnsSystemKeyboardFocus(target)
         ) {
-        case .pressed:
-            primaryIssued = true
-            vippLog.info("paste: OpenAI composer auto-send used nearby Send button targetPid=\(expectedFrontmostPID, privacy: .public)")
-        case .unavailable:
+        case .verifyOnly:
+            switch semanticResult {
+            case .pressed:
+                vippLog.info("paste: foreground chat auto-send used nearby Send button targetPid=\(expectedFrontmostPID, privacy: .public)")
+            case .failed(let error):
+                // AX may report an error after the app handled the button. A second
+                // Return here could submit twice, so verify the one action only.
+                vippLog.error("paste: foreground chat Send returned AXError=\(error, privacy: .public); verifying without fallback targetPid=\(expectedFrontmostPID, privacy: .public)")
+            case .unavailable:
+                break
+            }
+        case .issueExactFocusReturn:
             let result = await CursorPaster.performAutoSend(
                 .enter,
                 transcriptLength: transcriptLength,
                 expectedFrontmostPID: expectedFrontmostPID,
                 method: .systemEvents,
-                sendRedundantEnter: false
+                sendRedundantEnter: false,
+                preflight: exactFocusPreflight
             )
-            primaryIssued = result.didPostAutoSendCommand
-            vippLog.info("paste: OpenAI composer nearby Send unavailable; System Events Return issued=\(primaryIssued, privacy: .public) targetPid=\(expectedFrontmostPID, privacy: .public)")
-        case .failed(let error):
-            vippLog.error("paste: OpenAI composer nearby Send failed AXError=\(error, privacy: .public); trying System Events Return targetPid=\(expectedFrontmostPID, privacy: .public)")
-            let result = await CursorPaster.performAutoSend(
-                .enter,
-                transcriptLength: transcriptLength,
-                expectedFrontmostPID: expectedFrontmostPID,
-                method: .systemEvents,
-                sendRedundantEnter: false
-            )
-            primaryIssued = result.didPostAutoSendCommand
+            guard result.didPostAutoSendCommand else {
+                return exactFocusPreflight() ? .failed : .focusMoved
+            }
+            vippLog.info("paste: foreground chat nearby Send unavailable; issued one exact-focus-gated System Events Return targetPid=\(expectedFrontmostPID, privacy: .public)")
+        case .focusMoved:
+            return .focusMoved
         }
 
-        guard primaryIssued else {
-            return await CursorPaster.performAutoSend(
-                .enter,
-                transcriptLength: transcriptLength,
-                expectedFrontmostPID: expectedFrontmostPID,
-                method: .cgEvent,
-                sendRedundantEnter: false
-            ).didPostAutoSendCommand
-        }
-
-        // Chat composers clear or replace the editor value when a submit is accepted.
-        // If AX cannot read the value, report only that the action was issued. If it
-        // can read the value and it remains identical, retry once with a humanized HID
-        // CGEvent; if that also leaves the transcript untouched, surface a real error
-        // instead of another false-success log.
         guard let textBeforeSubmit, !textBeforeSubmit.isEmpty else {
-            vippLog.notice("paste: OpenAI composer submit verification unavailable before action targetPid=\(expectedFrontmostPID, privacy: .public)")
-            return true
+            vippLog.notice("paste: foreground chat submit post-state is unreadable after one action; reporting indeterminate without retry or visible false-failure targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .indeterminate
         }
 
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        guard FocusLockService.shared.focusedInputText(
-            for: target,
-            allowApplicationFallback: allowsApplicationFallback
-        ) == textBeforeSubmit else {
-            vippLog.info("paste: OpenAI composer changed after primary auto-send targetPid=\(expectedFrontmostPID, privacy: .public)")
-            return true
+        let verification = await waitForForegroundChatComposerSubmission(
+            from: textBeforeSubmit,
+            target: target,
+            allowsApplicationFallback: allowsApplicationFallback
+        )
+        switch verification {
+        case .verified:
+            vippLog.info("paste: foreground chat composer cleared after one auto-send action targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .succeeded
+        case .unavailable:
+            vippLog.notice("paste: foreground chat submit verification became unreadable after one action; no retry and no visible false-failure targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .indeterminate
+        case .modifiedWithoutSubmit:
+            vippLog.error("paste: foreground chat auto-send modified the composer without clearing it targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .failed
+        case .unchanged:
+            break
         }
 
-        vippLog.notice("paste: OpenAI composer ignored primary auto-send; trying humanized CGEvent Return targetPid=\(expectedFrontmostPID, privacy: .public)")
+        guard Self.shouldRetryForegroundSemanticSendWithReturn(
+            bundleIdentifier: target.bundleIdentifier,
+            semanticResult: semanticResult,
+            verification: verification,
+            exactInputOwnsKeyboardFocus: FocusLockService.shared
+                .targetOwnsSystemKeyboardFocus(target)
+        ) else {
+            vippLog.error("paste: foreground chat composer remained unchanged after its one auto-send action; no unsafe retry targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .failed
+        }
+
+        // OpenAI is the one proven foreground exception: a successful semantic press
+        // that leaves a readable unchanged exact composer may receive one normal HID
+        // Return. The action closure rechecks exact focus at Return-down; AX errors,
+        // Telegram, and Claude never enter this retry path.
         let fallback = await CursorPaster.performAutoSend(
             .enter,
             transcriptLength: transcriptLength,
             expectedFrontmostPID: expectedFrontmostPID,
             method: .cgEvent,
-            sendRedundantEnter: false
+            sendRedundantEnter: false,
+            preflight: exactFocusPreflight
         )
-        guard fallback.didPostAutoSendCommand else { return false }
-
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        let textAfterFallback = FocusLockService.shared.focusedInputText(
-            for: target,
-            allowApplicationFallback: allowsApplicationFallback
-        )
-        guard textAfterFallback != textBeforeSubmit else {
-            vippLog.error("paste: OpenAI composer still contained identical text after both auto-send routes targetPid=\(expectedFrontmostPID, privacy: .public)")
-            return false
+        guard fallback.didPostAutoSendCommand else {
+            return .failed
         }
-
-        vippLog.info("paste: OpenAI composer changed after humanized CGEvent fallback targetPid=\(expectedFrontmostPID, privacy: .public)")
-        return true
+        let fallbackVerification = await waitForForegroundChatComposerSubmission(
+            from: textBeforeSubmit,
+            target: target,
+            allowsApplicationFallback: allowsApplicationFallback
+        )
+        switch fallbackVerification {
+        case .verified:
+            vippLog.info("paste: foreground OpenAI composer cleared after its one exact-focus HID Return retry targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .succeeded
+        case .unavailable:
+            vippLog.notice("paste: foreground OpenAI retry post-state became unreadable; no further action and no visible false-failure targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .indeterminate
+        case .unchanged, .modifiedWithoutSubmit:
+            vippLog.error("paste: foreground OpenAI composer did not clear after its one permitted HID Return retry targetPid=\(expectedFrontmostPID, privacy: .public)")
+            return .failed
+        }
     }
 
     private func showAutoSendFailure(_ title: String, detail: String) {

@@ -46,9 +46,12 @@ class CursorPaster {
 
     @MainActor
     @discardableResult
-    static func startPasteAtCursor(_ text: String) -> Task<PasteResult, Never> {
+    static func startPasteAtCursor(
+        _ text: String,
+        preflight: (() -> Bool)? = nil
+    ) -> Task<PasteResult, Never> {
         Task { @MainActor in
-            await performPasteSession(text)
+            await performPasteSession(text, preflight: preflight)
         }
     }
 
@@ -58,7 +61,10 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func performPasteSession(_ text: String) async -> PasteResult {
+    private static func performPasteSession(
+        _ text: String,
+        preflight: (() -> Bool)?
+    ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
         let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
@@ -72,19 +78,27 @@ class CursorPaster {
             logger.error("Failed to prepare clipboard for paste")
             return .commandNotPosted
         }
-
-        await wait(prePasteDelay)
-
-        let pasteResult = await postPasteCommand()
-        if shouldRestoreClipboard {
-            scheduleClipboardRestore(
-                savedContents,
-                expectedText: text,
-                sessionID: sessionID,
-                on: pasteboard
-            )
+        defer {
+            if shouldRestoreClipboard {
+                scheduleClipboardRestore(
+                    savedContents,
+                    expectedText: text,
+                    sessionID: sessionID,
+                    on: pasteboard
+                )
+            }
         }
 
+        await wait(prePasteDelay)
+        guard preflight?() != false else {
+            // The user may click away during the deliberate clipboard-settlement wait.
+            // Never let a global Cmd-V drift into that newly focused app; the caller can
+            // retry through its frozen exact-input, non-activating delivery session.
+            logger.notice("Cancelled foreground paste because its exact focus preflight changed before Cmd-V")
+            return .commandNotPosted
+        }
+
+        let pasteResult = await postPasteCommand(preflight: preflight)
         return pasteResult
     }
 
@@ -100,11 +114,15 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func postPasteCommand() async -> PasteResult {
+    private static func postPasteCommand(
+        preflight: (() -> Bool)?
+    ) async -> PasteResult {
         if PasteMethod.current() == .appleScript {
-            return pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
+            return pasteUsingAppleScript(preflight: preflight)
+                ? .commandPosted
+                : .commandNotPosted
         } else {
-            return await pasteFromClipboard()
+            return await pasteFromClipboard(preflight: preflight)
         }
     }
 
@@ -175,9 +193,15 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func pasteUsingAppleScript() -> Bool {
+    private static func pasteUsingAppleScript(
+        preflight: (() -> Bool)?
+    ) -> Bool {
         guard let script = layoutSwitchesToQWERTYOnCommand ? pasteScriptKeyCode : pasteScriptKeystroke else {
             logger.error("AppleScript paste script is unavailable")
+            return false
+        }
+        guard preflight?() != false else {
+            logger.notice("Cancelled foreground AppleScript paste because its exact focus preflight changed immediately before Cmd-V")
             return false
         }
 
@@ -193,7 +217,9 @@ class CursorPaster {
 
     // Posts Cmd+V via CGEvent without modifying the active input source.
     @MainActor
-    private static func pasteFromClipboard() async -> PasteResult {
+    private static func pasteFromClipboard(
+        preflight: (() -> Bool)?
+    ) async -> PasteResult {
         guard AXIsProcessTrusted() else {
             logger.error("Accessibility permission is required to paste with simulated key events")
             return .commandNotPosted
@@ -213,8 +239,21 @@ class CursorPaster {
         vDown.flags   = .maskCommand
         vUp.flags     = .maskCommand
 
+        guard preflight?() != false else {
+            logger.notice("Cancelled foreground CGEvent paste because its exact focus preflight changed immediately before Command-down")
+            return .commandNotPosted
+        }
+
         cmdDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
+        guard preflight?() != false else {
+            // Focus can move during the humanized Command-down/V-down interval. Release
+            // Command but never post V: a global Cmd-V in Ethan's newly selected input
+            // would be a wrong-target mutation, while a bare modifier release is safe.
+            cmdUp.post(tap: .cghidEventTap)
+            logger.notice("Cancelled foreground CGEvent paste and released Command because its exact focus preflight changed before V-down")
+            return .commandNotPosted
+        }
         vDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
         vUp.post(tap: .cghidEventTap)
@@ -318,7 +357,9 @@ class CursorPaster {
             logger.error("Stopped targeted Unicode insertion because the exact input boundary changed or a chunk could not be posted pid=\(pid, privacy: .public)")
             return false
         }
-        await wait(0.05)
+        // The delivery owner polls the exact AXValue and continues as soon as the last
+        // Unicode chunk is observable. A fixed post-typing sleep only delayed semantic
+        // Send and widened the interval in which the user could change focus.
         logger.info("Issued targeted Unicode text events pid=\(pid, privacy: .public) utf16Units=\(utf16.count, privacy: .public)")
         return true
     }
@@ -393,8 +434,8 @@ class CursorPaster {
     private static let doubleEnterMaxDelay: TimeInterval = 0.60     // 600ms
 
     // `transcriptLength` scales the optional redundant Enter delay. The caller
-    // chooses System Events for OpenAI's Electron composer because a real live trace
-    // showed it ignoring zero-duration CGEvents while Terminal accepted them. Both
+    // can choose System Events for a foreground chat composer because a real OpenAI
+    // trace showed it ignoring zero-duration CGEvents while Terminal accepted them. Both
     // routes remain foreground-only so a Return can never drift into another app.
     @MainActor
     static func performAutoSend(
@@ -402,7 +443,8 @@ class CursorPaster {
         transcriptLength: Int = 0,
         expectedFrontmostPID: pid_t,
         method: AutoSendMethod = .cgEvent,
-        sendRedundantEnter: Bool = true
+        sendRedundantEnter: Bool = true,
+        preflight: (() -> Bool)? = nil
     ) async -> AutoSendResult {
         guard key.isEnabled else {
             logger.error("Refused to auto-send a disabled key")
@@ -416,8 +458,16 @@ class CursorPaster {
             logger.error("Refused to auto-send Return because the saved destination is not frontmost expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
             return .commandNotPosted
         }
+        guard preflight?() != false else {
+            logger.error("Refused to auto-send Return because the exact-input preflight did not match")
+            return .commandNotPosted
+        }
 
-        let firstResult = await issueAutoSendKey(key, method: method)
+        let firstResult = await issueAutoSendKey(
+            key,
+            method: method,
+            preflight: preflight
+        )
         guard firstResult.didPostAutoSendCommand else { return firstResult }
 
         // Feature B: schedule a SECOND Return ONLY for plain Enter, after a
@@ -442,8 +492,16 @@ class CursorPaster {
             logger.notice("Skipped redundant auto-send Return because focus moved expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
             return .commandPosted
         }
+        guard preflight?() != false else {
+            logger.notice("Skipped redundant auto-send Return because the exact-input preflight changed")
+            return .commandPosted
+        }
 
-        let retryResult = await issueAutoSendKey(.enter, method: method)
+        let retryResult = await issueAutoSendKey(
+            .enter,
+            method: method,
+            preflight: preflight
+        )
         if !retryResult.didPostAutoSendCommand {
             logger.error("Failed to issue redundant auto-send Return")
         }
@@ -454,18 +512,22 @@ class CursorPaster {
     @MainActor
     private static func issueAutoSendKey(
         _ key: AutoSendKey,
-        method: AutoSendMethod
+        method: AutoSendMethod,
+        preflight: (() -> Bool)?
     ) async -> AutoSendResult {
         switch method {
         case .systemEvents:
-            return issueAutoSendUsingSystemEvents(key)
+            return issueAutoSendUsingSystemEvents(key, preflight: preflight)
         case .cgEvent:
-            return await issueAutoSendUsingCGEvent(key)
+            return await issueAutoSendUsingCGEvent(key, preflight: preflight)
         }
     }
 
     @MainActor
-    private static func issueAutoSendUsingSystemEvents(_ key: AutoSendKey) -> AutoSendResult {
+    private static func issueAutoSendUsingSystemEvents(
+        _ key: AutoSendKey,
+        preflight: (() -> Bool)?
+    ) -> AutoSendResult {
         let script: NSAppleScript?
         switch key {
         case .none:
@@ -483,6 +545,10 @@ class CursorPaster {
             logger.error("System Events auto-send script is unavailable")
             return .commandNotPosted
         }
+        guard preflight?() != false else {
+            logger.notice("Cancelled System Events auto-send because the exact-input preflight changed immediately before Return")
+            return .commandNotPosted
+        }
 
         var error: NSDictionary?
         script.executeAndReturnError(&error)
@@ -496,7 +562,10 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func issueAutoSendUsingCGEvent(_ key: AutoSendKey) async -> AutoSendResult {
+    private static func issueAutoSendUsingCGEvent(
+        _ key: AutoSendKey,
+        preflight: (() -> Bool)?
+    ) async -> AutoSendResult {
         // HID system state plus a real down/up interval more closely resembles a
         // physical key press than the old back-to-back private-state events. The old
         // pair worked in Terminal but was ignored by the OpenAI Electron composer.
@@ -522,6 +591,10 @@ class CursorPaster {
             enterUp.flags = .maskCommand
         }
 
+        guard preflight?() != false else {
+            logger.notice("Cancelled humanized CGEvent auto-send because the exact-input preflight changed immediately before Return-down")
+            return .commandNotPosted
+        }
         enterDown.post(tap: .cghidEventTap)
         await wait(0.03)
         enterUp.post(tap: .cghidEventTap)

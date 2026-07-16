@@ -14,12 +14,12 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "210"
+            buildNumber: "211"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".210")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 210")
+        #expect(presentation.bottomLine == ".211")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 211")
     }
 
     @MainActor
@@ -202,43 +202,151 @@ struct VoiceInkTests {
 
     @MainActor
     @Test func telegramRetainedComposerRequiresReadableMatchingChatAndExactInternalFocus() {
-        let captured = [
-            "Saved Messages conversation heading",
+        let capturedPrimary = ["Saved Messages"]
+        let capturedSecondary = [
             "Earlier disposable verification message",
             "Another stable chat-context anchor",
             "Fourth readable context anchor"
         ]
 
         #expect(FocusLockService.telegramRetainedInputAllowed(
-            capturedContextAnchors: captured,
-            currentContextAnchors: captured + ["newer message"],
+            capturedPrimaryContextAnchors: capturedPrimary,
+            capturedContextAnchors: capturedSecondary,
+            currentPrimaryContextAnchors: capturedPrimary,
+            currentContextAnchors: capturedSecondary + ["newer message"],
             internalFocusMatches: true,
             structureMatches: true
         ))
         #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedContextAnchors: captured,
+            capturedPrimaryContextAnchors: capturedPrimary,
+            capturedContextAnchors: capturedSecondary,
+            currentPrimaryContextAnchors: [],
             currentContextAnchors: [],
             internalFocusMatches: true,
             structureMatches: true
         ))
         #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedContextAnchors: captured,
+            capturedPrimaryContextAnchors: capturedPrimary,
+            capturedContextAnchors: capturedSecondary,
+            currentPrimaryContextAnchors: ["Different chat"],
             currentContextAnchors: ["Different chat", "Unrelated conversation"],
             internalFocusMatches: true,
             structureMatches: true
         ))
         #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedContextAnchors: captured,
-            currentContextAnchors: captured,
+            capturedPrimaryContextAnchors: capturedPrimary,
+            capturedContextAnchors: capturedSecondary,
+            currentPrimaryContextAnchors: capturedPrimary,
+            currentContextAnchors: capturedSecondary,
             internalFocusMatches: false,
             structureMatches: true
         ))
         #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedContextAnchors: captured,
-            currentContextAnchors: captured,
+            capturedPrimaryContextAnchors: capturedPrimary,
+            capturedContextAnchors: capturedSecondary,
+            currentPrimaryContextAnchors: capturedPrimary,
+            currentContextAnchors: capturedSecondary,
             internalFocusMatches: true,
             structureMatches: false
         ))
+    }
+
+    @MainActor
+    @Test func telegramShortChatTitleIdentifiesEmptySavedMessagesAndRejectsWrongChat() {
+        #expect(FocusLockService.contextAnchorIsEligible(
+            "Saved Messages",
+            role: "AXStaticText",
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.contextAnchorIsEligible(
+            "Saved Messages",
+            role: "AXTextField",
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.contextAnchorIsEligible(
+            "Saved Messages",
+            role: "AXStaticText",
+            bundleIdentifier: "com.openai.codex"
+        ))
+        #expect(!FocusLockService.contextAnchorIsEligible(
+            "online",
+            role: "AXStaticText",
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.contextAnchorIsEligible(
+            "last seen a few minutes ago",
+            role: "AXStaticText",
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.contextAnchorIsEligible(
+            "248 members",
+            role: "AXStaticText",
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.contextAnchorIsEligible(
+            "12:48",
+            role: "AXStaticText",
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+
+        #expect(FocusLockService.telegramContextFingerprintMatches(
+            capturedPrimary: ["Saved Messages"],
+            capturedSecondary: [],
+            currentPrimary: ["Saved Messages"],
+            currentSecondary: []
+        ))
+        #expect(!FocusLockService.telegramContextFingerprintMatches(
+            capturedPrimary: ["Saved Messages"],
+            capturedSecondary: [],
+            currentPrimary: ["Work chat"],
+            currentSecondary: []
+        ))
+        #expect(!FocusLockService.telegramContextFingerprintMatches(
+            capturedPrimary: ["Saved Messages"],
+            capturedSecondary: ["Earlier disposable verification message"],
+            currentPrimary: ["Different chat"],
+            currentSecondary: [
+                "Saved Messages",
+                "Earlier disposable verification message"
+            ]
+        ))
+        #expect(!FocusLockService.telegramContextFingerprintMatches(
+            capturedPrimary: ["Engineering Project Chat"],
+            capturedSecondary: [
+                "First overlapping generic context anchor",
+                "Second overlapping generic context anchor",
+                "Third overlapping generic context anchor"
+            ],
+            currentPrimary: ["Different Project Chat"],
+            currentSecondary: [
+                "First overlapping generic context anchor",
+                "Second overlapping generic context anchor",
+                "Third overlapping generic context anchor"
+            ]
+        ))
+
+        let selection = FocusLockService.selectContextAnchors(
+            [
+                FocusLockService.ContextAnchorCandidate(
+                    value: "Saved Messages",
+                    isPrimary: false
+                )
+            ] + (0..<20).map {
+                FocusLockService.ContextAnchorCandidate(
+                    value: "Long populated message history anchor number \($0)",
+                    isPrimary: false
+                )
+            } + [
+                FocusLockService.ContextAnchorCandidate(
+                    value: "Saved Messages",
+                    isPrimary: true
+                )
+            ],
+            limit: 16
+        )
+        #expect(selection.primary == ["Saved Messages"])
+        #expect(selection.secondary.count == 15)
+        #expect(!selection.secondary.contains("Saved Messages"))
     }
 
     @MainActor
@@ -254,6 +362,12 @@ struct VoiceInkTests {
         ))
         #expect(TranscriptionDelivery.isChatComposer(
             bundleIdentifier: "com.openai.codex"
+        ))
+        #expect(TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "com.anthropic.claudefordesktop"
+        ))
+        #expect(FocusLockService.supportsSemanticSend(
+            bundleIdentifier: "com.anthropic.claudefordesktop"
         ))
         #expect(!TranscriptionDelivery.isChatComposer(
             bundleIdentifier: "com.apple.TextEdit"
@@ -278,6 +392,89 @@ struct VoiceInkTests {
         #expect(!TranscriptionDelivery.shouldUseTargetedUnicodeFallback(
             after: .unavailable,
             requiresDirectAccessibilityInsertion: true
+        ))
+    }
+
+    @MainActor
+    @Test func foregroundChatSubmitWaitsOnlyUntilTheExactPasteAppears() {
+        #expect(TranscriptionDelivery.foregroundChatPasteIsReady(
+            insertedText: "This is a test ",
+            previousText: "draft",
+            currentText: "draftThis is a test "
+        ))
+        #expect(!TranscriptionDelivery.foregroundChatPasteIsReady(
+            insertedText: "This is a test",
+            previousText: "draft",
+            currentText: "draft"
+        ))
+        #expect(!TranscriptionDelivery.foregroundChatPasteIsReady(
+            insertedText: "This is a test",
+            previousText: "draft",
+            currentText: nil
+        ))
+
+        #expect(TranscriptionDelivery.foregroundPastePreflightMatches(
+            targetPID: 100,
+            frontmostPID: 100,
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.foregroundPastePreflightMatches(
+            targetPID: 100,
+            frontmostPID: 200,
+            hasExactInput: false,
+            exactInputOwnsKeyboardFocus: false
+        ))
+        #expect(!TranscriptionDelivery.foregroundPastePreflightMatches(
+            targetPID: 100,
+            frontmostPID: 100,
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: false
+        ))
+    }
+
+    @MainActor
+    @Test func foregroundChatSemanticFallbackIsOneShotAndExactFocusGated() {
+        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
+            result: .pressed,
+            exactInputOwnsKeyboardFocus: false
+        ) == .verifyOnly)
+        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
+            result: .failed(AXError.cannotComplete.rawValue),
+            exactInputOwnsKeyboardFocus: true
+        ) == .verifyOnly)
+        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
+            result: .unavailable,
+            exactInputOwnsKeyboardFocus: true
+        ) == .issueExactFocusReturn)
+        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
+            result: .unavailable,
+            exactInputOwnsKeyboardFocus: false
+        ) == .focusMoved)
+
+        #expect(TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
+            bundleIdentifier: "com.openai.codex",
+            semanticResult: .pressed,
+            verification: .unchanged,
+            exactInputOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
+            bundleIdentifier: "com.openai.codex",
+            semanticResult: .failed(AXError.cannotComplete.rawValue),
+            verification: .unchanged,
+            exactInputOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
+            bundleIdentifier: "com.anthropic.claudefordesktop",
+            semanticResult: .pressed,
+            verification: .unchanged,
+            exactInputOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
+            bundleIdentifier: "com.openai.codex",
+            semanticResult: .pressed,
+            verification: .unchanged,
+            exactInputOwnsKeyboardFocus: false
         ))
     }
 

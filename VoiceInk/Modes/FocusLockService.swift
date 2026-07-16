@@ -33,7 +33,21 @@ final class FocusLockService: ObservableObject {
         let relativeFrame: CGRect?
         let ancestorPath: [String]
         let contextRegion: CGRect?
+        /// Telegram reuses one editor wrapper across chats. Header/title anchors are
+        /// kept separately from message-history context so the selected chat identity
+        /// cannot be evicted by long messages or satisfied by title text inside a chat.
+        let primaryContextAnchors: [String]
         let contextAnchors: [String]
+    }
+
+    struct ContextAnchorCandidate: Equatable {
+        let value: String
+        let isPrimary: Bool
+    }
+
+    struct ContextAnchorSelection: Equatable {
+        let primary: [String]
+        let secondary: [String]
     }
 
     struct Target {
@@ -98,6 +112,7 @@ final class FocusLockService: ObservableObject {
         let element: AXUIElement
         let label: String
         let score: CGFloat
+        let discoveredDepth: Int
     }
 
     static let shared = FocusLockService()
@@ -116,6 +131,7 @@ final class FocusLockService: ObservableObject {
     private static let exactWrapperRequiresIdentityOrContextBundleIdentifiers: Set<String> = [
         "com.openai.codex",
         "com.openai.chat",
+        "com.anthropic.claudefordesktop",
         "com.google.Chrome",
         "com.google.Chrome.beta",
         "com.google.Chrome.canary",
@@ -125,7 +141,16 @@ final class FocusLockService: ObservableObject {
     private static let semanticSendBundleIdentifiers: Set<String> = [
         "com.openai.codex",
         "com.openai.chat",
+        "com.anthropic.claudefordesktop",
         "ru.keepcoder.Telegram"
+    ]
+    private static let telegramGenericContextLabels: Set<String> = [
+        "attach", "cancel", "close", "edit", "emoji", "message", "more",
+        "mute", "online", "search", "send", "telegram", "unmute",
+        "write a message"
+    ]
+    private static let telegramVolatileContextPrefixes = [
+        "last seen", "typing", "write a message"
     ]
 
     private init() {}
@@ -186,9 +211,18 @@ final class FocusLockService: ObservableObject {
         ActiveWindowService.shared.updateCurrentApplicationForDisplay(app)
 
         let owningWindow = isExactEditableInput ? owningWindow(for: element) : nil
-        let identity = owningWindow.flatMap { exactInputIdentity(for: element, in: $0) }
+        let identity = owningWindow.flatMap {
+            exactInputIdentity(
+                for: element,
+                in: $0,
+                bundleIdentifier: app.bundleIdentifier
+            )
+        }
+        // Only Telegram can hide its AX tree after capture and need the exact button
+        // wrapper retained. OpenAI and Claude resolve Send at delivery time, keeping
+        // their recording start/stop capture path free of a descendant search.
         let retainedSubmitCandidate = isExactEditableInput
-            && Self.supportsSemanticSend(bundleIdentifier: app.bundleIdentifier)
+            && Self.isTelegram(bundleIdentifier: app.bundleIdentifier)
             ? nearbySubmitButtonCandidate(
                 element: element,
                 pid: pid,
@@ -261,10 +295,24 @@ final class FocusLockService: ObservableObject {
 
         guard let element = resolvedExactElement(for: target) else {
             guard allowApplicationFallback else {
-                logger.error("Focused input restore could not uniquely resolve the saved exact input")
+                let diagnostics = exactInputResolutionDiagnostics(for: target)
+                logger.error("Focused input restore could not uniquely resolve the saved exact input \(diagnostics, privacy: .public)")
                 return false
             }
             logger.notice("Foreground recording-start exact input became unavailable; using the saved app's current focus targetPid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return true
+        }
+
+        // A primary-button stop commonly arrives while the captured input still owns
+        // real system keyboard focus. Re-selecting that same window/editor is needless
+        // and can make native apps churn their Accessibility wrappers. Resolution above
+        // still proves the saved document/chat identity (Telegram included); only then
+        // may this be a no-op. The paste and normal HID Return remain foreground actions.
+        if frontmostPIDBeforeRestore == target.pid,
+           let focused = systemFocusedElement(),
+           focused.pid == target.pid,
+           CFEqual(focused.element, element) {
+            logger.info("Focused input restore verified the already-focused exact input without rewriting focus targetPid=\(target.pid, privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
             return true
         }
 
@@ -434,7 +482,7 @@ final class FocusLockService: ObservableObject {
               let element = target.element,
               let window = target.window,
               let identity = target.identity,
-              !identity.contextAnchors.isEmpty,
+              !identity.primaryContextAnchors.isEmpty,
               let keyboardFocus = systemFocusedElement(),
               keyboardFocus.pid != target.pid,
               Self.backgroundTargetRemainsNonFrontmost(
@@ -465,12 +513,13 @@ final class FocusLockService: ObservableObject {
 
         try? await Task.sleep(nanoseconds: 50_000_000)
         guard telegramDeliveryBoundaryMatches(session) else {
-            let currentAnchors = contextAnchors(
+            let currentContext = contextFingerprint(
                 in: window,
                 region: identity.contextRegion,
-                excluding: element
+                excluding: element,
+                bundleIdentifier: target.bundleIdentifier
             )
-            logger.notice("Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat pid=\(target.pid, privacy: .public) capturedAnchors=\(identity.contextAnchors.count, privacy: .public) currentAnchors=\(currentAnchors.count, privacy: .public)")
+            logger.notice("Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat pid=\(target.pid, privacy: .public) capturedPrimary=\(identity.primaryContextAnchors.count, privacy: .public) capturedSecondary=\(identity.contextAnchors.count, privacy: .public) currentPrimary=\(currentContext.primary.count, privacy: .public) currentSecondary=\(currentContext.secondary.count, privacy: .public)")
             if preparedTargetFocusBoundaryIsSafe(session) {
                 CursorPaster.endTargetedInputSession(pid: target.pid)
             }
@@ -658,6 +707,21 @@ final class FocusLockService: ObservableObject {
         return focused.pid == target.pid && CFEqual(focused.element, element)
     }
 
+    /// Cheap foreground paste-settlement read. This never authorizes delivery: callers
+    /// must still run the full saved document/chat resolver immediately before Send.
+    /// It only avoids repeatedly walking an Electron/Telegram AX tree while waiting for
+    /// a just-issued foreground paste to appear in the exact still-focused wrapper.
+    func focusedExactInputTextFast(_ target: Target) -> String? {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
+              let element = target.element,
+              let focused = systemFocusedElement(),
+              focused.pid == target.pid,
+              CFEqual(focused.element, element) else {
+            return nil
+        }
+        return stringAttribute(kAXValueAttribute, from: element)
+    }
+
     private func preparedTargetFocusBoundaryIsSafe(
         _ session: BackgroundDeliverySession
     ) -> Bool {
@@ -801,14 +865,17 @@ final class FocusLockService: ObservableObject {
         } == true && internalWindow.map {
             CFEqual($0, session.window)
         } == true
-        let currentContext = contextAnchors(
+        let currentContext = contextFingerprint(
             in: session.window,
             region: identity.contextRegion,
-            excluding: session.element
+            excluding: session.element,
+            bundleIdentifier: session.bundleIdentifier
         )
         return Self.telegramRetainedInputAllowed(
+            capturedPrimaryContextAnchors: identity.primaryContextAnchors,
             capturedContextAnchors: identity.contextAnchors,
-            currentContextAnchors: currentContext,
+            currentPrimaryContextAnchors: currentContext.primary,
+            currentContextAnchors: currentContext.secondary,
             internalFocusMatches: internalFocusMatches,
             structureMatches: true
         )
@@ -865,7 +932,9 @@ final class FocusLockService: ObservableObject {
     }
 
     static func telegramRetainedInputAllowed(
+        capturedPrimaryContextAnchors: [String],
         capturedContextAnchors: [String],
+        currentPrimaryContextAnchors: [String],
         currentContextAnchors: [String],
         internalFocusMatches: Bool,
         structureMatches: Bool
@@ -873,24 +942,31 @@ final class FocusLockService: ObservableObject {
         internalFocusMatches
             && structureMatches
             && telegramContextFingerprintMatches(
-                captured: capturedContextAnchors,
-                current: currentContextAnchors
+                capturedPrimary: capturedPrimaryContextAnchors,
+                capturedSecondary: capturedContextAnchors,
+                currentPrimary: currentPrimaryContextAnchors,
+                currentSecondary: currentContextAnchors
             )
     }
 
     static func telegramContextFingerprintMatches(
-        captured: [String],
-        current: [String]
+        capturedPrimary: [String],
+        capturedSecondary: [String],
+        currentPrimary: [String],
+        currentSecondary: [String]
     ) -> Bool {
-        guard !captured.isEmpty, !current.isEmpty else { return false }
-        let currentSet = Set(current)
-        let matchCount = captured.reduce(into: 0) { count, anchor in
-            if currentSet.contains(anchor) { count += 1 }
+        guard !capturedPrimary.isEmpty, !currentPrimary.isEmpty,
+              Set(capturedPrimary) == Set(currentPrimary) else {
+            return false
         }
-        let requiredMatches = captured.count <= 3
-            ? captured.count
-            : max(3, Int(ceil(Double(captured.count) * 0.75)))
-        return matchCount >= requiredMatches
+        // The selected-chat title/header is the mandatory identity. Message-history
+        // anchors are only corroboration: requiring every captured message made normal
+        // incoming messages or scrolling break delivery, while ignoring them entirely
+        // would make duplicate chat titles indistinguishable. When history existed at
+        // capture, require at least one exact stable overlap and otherwise fail closed.
+        guard !capturedSecondary.isEmpty else { return true }
+        let currentSecondarySet = Set(currentSecondary)
+        return capturedSecondary.contains { currentSecondarySet.contains($0) }
     }
 
     /// Pure guard used by the post-submit verifier and its regression tests. A new
@@ -1070,7 +1146,7 @@ final class FocusLockService: ObservableObject {
     }
 
     /// Read the live editor text for bounded delivery verification. This is not used
-    /// to infer focus or choose a destination; it only lets the OpenAI composer path
+    /// to infer focus or choose a destination; it only lets an allowlisted chat path
     /// detect the otherwise invisible "Return was issued but ignored" failure after
     /// the transcript has already been pasted into the saved target.
     func focusedInputText(
@@ -1105,6 +1181,7 @@ final class FocusLockService: ObservableObject {
         guard !target.app.isTerminated,
               Self.supportsSemanticSend(bundleIdentifier: target.bundleIdentifier),
               NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
+              (!target.hasExactInput || targetOwnsSystemKeyboardFocus(target)),
               let element = liveElement(
                 for: target,
                 allowApplicationFallback: allowApplicationFallback
@@ -1117,6 +1194,8 @@ final class FocusLockService: ObservableObject {
             pid: target.pid,
             preflight: {
                 NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid
+                    && (!target.hasExactInput
+                        || self.targetOwnsSystemKeyboardFocus(target))
             }
         )
     }
@@ -1182,20 +1261,45 @@ final class FocusLockService: ObservableObject {
             return nil
         }
 
+        let searchStarted = ProcessInfo.processInfo.systemUptime
+        let timeBudget: TimeInterval = requireEnabled ? 0.075 : 0.030
+        let deadline = searchStarted + timeBudget
+        var remainingNodeBudget = requireEnabled ? 600 : 240
+        var visitedNodeHashes = Set<CFHashCode>()
+        var visitedNodeCount = 0
         var ancestor = elementAttribute(kAXParentAttribute, from: element)
-        for _ in 0..<5 {
+        // Codex's current React composer nests FooterAction/Send several wrapper
+        // levels away from the AXTextArea. Keep this search inside the nearest
+        // composer-sized ancestors so recording capture stays cheap, but allow enough
+        // depth to reach the app's real explicitly labelled Send button. A whole-window
+        // scan here would regress recorder start/stop latency on large chat histories.
+        for ancestorIndex in 0..<10 {
+            guard remainingNodeBudget > 0,
+                  ProcessInfo.processInfo.systemUptime < deadline else {
+                break
+            }
             guard let container = ancestor else { break }
             ancestor = elementAttribute(kAXParentAttribute, from: container)
-            if let containerFrame = frame(of: container) {
-                guard containerFrame.intersects(editorFrame),
-                      containerFrame.width <= editorFrame.width + 240,
-                      containerFrame.height <= editorFrame.height + 240 else {
-                    continue
-                }
+            // Frameless Electron wrappers can represent huge virtual subtrees. Never
+            // traverse one: doing so made a bounded ancestor count effectively become a
+            // whole-window scan and delayed the recorder even when the button was Stop.
+            guard let containerFrame = frame(of: container),
+                  containerFrame.intersects(editorFrame),
+                  containerFrame.width <= editorFrame.width + 240,
+                  containerFrame.height <= editorFrame.height + 240 else {
+                continue
             }
 
             var candidates: [NearbySubmitButtonCandidate] = []
-            for candidateElement in descendants(of: container, maximumDepth: 4) {
+            let descendants = boundedDescendants(
+                of: container,
+                maximumDepth: 8,
+                remainingNodeBudget: &remainingNodeBudget,
+                visitedNodeHashes: &visitedNodeHashes,
+                deadline: deadline
+            )
+            visitedNodeCount += descendants.count
+            for (candidateElement, discoveredDepth) in descendants {
                 var candidatePID: pid_t = 0
                 guard !CFEqual(candidateElement, element),
                       AXUIElementGetPid(candidateElement, &candidatePID) == .success,
@@ -1225,7 +1329,8 @@ final class FocusLockService: ObservableObject {
                     element: candidateElement,
                     label: label,
                     score: abs(center.x - editorFrame.maxX)
-                        + abs(center.y - editorFrame.maxY)
+                        + abs(center.y - editorFrame.maxY),
+                    discoveredDepth: discoveredDepth
                 )
                 if let existingIndex = candidates.firstIndex(where: {
                     CFEqual($0.element, candidateElement)
@@ -1240,15 +1345,25 @@ final class FocusLockService: ObservableObject {
 
             let ranked = candidates.sorted { $0.score < $1.score }
             if ranked.count == 1, let candidate = ranked.first {
-                logger.info("Resolved explicitly labelled Send button in nearest composer container pid=\(pid, privacy: .public) label=\(candidate.label, privacy: .public)")
+                let elapsedMilliseconds = Int(
+                    (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
+                )
+                logger.info("Resolved explicitly labelled Send button in nearest composer container pid=\(pid, privacy: .public) label=\(candidate.label, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) discoveredDepth=\(candidate.discoveredDepth, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
                 return candidate
             }
             if ranked.count > 1 {
-                logger.notice("Nearest composer container had ambiguous Send buttons pid=\(pid, privacy: .public) candidates=\(ranked.count, privacy: .public)")
+                let elapsedMilliseconds = Int(
+                    (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
+                )
+                logger.notice("Nearest composer container had ambiguous Send buttons pid=\(pid, privacy: .public) candidates=\(ranked.count, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
                 return nil
             }
         }
 
+        let elapsedMilliseconds = Int(
+            (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
+        )
+        logger.notice("Bounded nearby Send search found no candidate pid=\(pid, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) remainingNodeBudget=\(remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
         return nil
     }
 
@@ -1482,8 +1597,8 @@ final class FocusLockService: ObservableObject {
             return session.element
         }
 
-        // Only OpenAI renderer composers have a proven post-submit wrapper-replacement
-        // pattern. Resolve the app's one internally focused element in the exact saved
+        // Allowlisted renderer chat composers can replace their wrapper after Send.
+        // Resolve the app's one internally focused element in the exact saved
         // window and use it solely for the read-only clear/reset verifier below.
         guard allowReplacementAfterSubmission,
               Self.supportsSemanticSend(bundleIdentifier: session.bundleIdentifier),
@@ -1682,20 +1797,23 @@ final class FocusLockService: ObservableObject {
         let savedWindow = liveWindow(for: target, resolvedElement: nil)
         let directContextMatches = target.identity.map { identity in
             let currentContext = savedWindow.map {
-                contextAnchors(
+                contextFingerprint(
                     in: $0,
                     region: identity.contextRegion,
                     excluding: Self.isTelegram(bundleIdentifier: target.bundleIdentifier)
                         ? target.element
-                        : nil
+                        : nil,
+                    bundleIdentifier: target.bundleIdentifier
                 )
-            } ?? []
+            } ?? ContextAnchorSelection(primary: [], secondary: [])
             return Self.directCapturedElementContextAllowed(
                 bundleIdentifier: target.bundleIdentifier,
                 hasStableIdentifier: identity.identifier != nil
                     || identity.domIdentifier != nil,
+                capturedPrimaryContextAnchors: identity.primaryContextAnchors,
                 capturedContextAnchors: identity.contextAnchors,
-                currentContextAnchors: currentContext
+                currentPrimaryContextAnchors: currentContext.primary,
+                currentContextAnchors: currentContext.secondary
             )
         } ?? true
 
@@ -1773,6 +1891,66 @@ final class FocusLockService: ObservableObject {
         return labelMatches.count == 1 ? labelMatches[0] : nil
     }
 
+    /// Failure telemetry intentionally reports only booleans, counts, roles, and AX
+    /// hashes—never chat titles or message text. This distinguishes an empty/mismatched
+    /// Telegram context from a stale window, replaced wrapper, or ambiguous editor tree
+    /// without leaking the user's conversation into unified logs.
+    private func exactInputResolutionDiagnostics(for target: Target) -> String {
+        let savedWindow = liveWindow(for: target, resolvedElement: nil)
+        let identity = target.identity
+        let currentContext: ContextAnchorSelection = if let savedWindow, let identity {
+            contextFingerprint(
+                in: savedWindow,
+                region: identity.contextRegion,
+                excluding: Self.isTelegram(bundleIdentifier: target.bundleIdentifier)
+                    ? target.element
+                    : nil,
+                bundleIdentifier: target.bundleIdentifier
+            )
+        } else {
+            ContextAnchorSelection(primary: [], secondary: [])
+        }
+        let directContextMatches = identity.map {
+            Self.directCapturedElementContextAllowed(
+                bundleIdentifier: target.bundleIdentifier,
+                hasStableIdentifier: $0.identifier != nil || $0.domIdentifier != nil,
+                capturedPrimaryContextAnchors: $0.primaryContextAnchors,
+                capturedContextAnchors: $0.contextAnchors,
+                currentPrimaryContextAnchors: currentContext.primary,
+                currentContextAnchors: currentContext.secondary
+            )
+        } ?? false
+        let currentContextSet = Set(currentContext.secondary)
+        let contextMatchCount = identity?.contextAnchors.reduce(into: 0) { count, anchor in
+            if currentContextSet.contains(anchor) { count += 1 }
+        } ?? 0
+        let directStructureMatches = if let element = target.element,
+                                        let identity,
+                                        let savedWindow {
+            exactStructureMatches(element, identity: identity, in: savedWindow)
+        } else {
+            false
+        }
+        let matchingRoleCandidateCount = if let identity, let savedWindow {
+            descendants(of: savedWindow).filter { element in
+                let role = stringAttribute(kAXRoleAttribute, from: element)
+                let subrole = stringAttribute(kAXSubroleAttribute, from: element)
+                return role == identity.role
+                    && subrole == identity.subrole
+                    && isEditableInput(role: role, subrole: subrole)
+            }.count
+        } else {
+            0
+        }
+        let focused = systemFocusedElement()
+        let currentFocusMatchesSaved = if let focused, let savedElement = target.element {
+            focused.pid == target.pid && CFEqual(focused.element, savedElement)
+        } else {
+            false
+        }
+        return "bundle=\(target.bundleIdentifier ?? "nil") savedWindow=\(savedWindow != nil) identity=\(identity != nil) capturedPrimary=\(identity?.primaryContextAnchors.count ?? 0) currentPrimary=\(currentContext.primary.count) capturedSecondary=\(identity?.contextAnchors.count ?? 0) currentSecondary=\(currentContext.secondary.count) matchedSecondary=\(contextMatchCount) directContext=\(directContextMatches) directStructure=\(directStructureMatches) roleCandidates=\(matchingRoleCandidateCount) currentFocusPid=\(focused?.pid ?? -1) currentFocusMatchesSaved=\(currentFocusMatchesSaved)"
+    }
+
     private func exactStructureMatches(
         _ element: AXUIElement,
         identity: ExactInputIdentity,
@@ -1813,10 +1991,17 @@ final class FocusLockService: ObservableObject {
 
     private func exactInputIdentity(
         for element: AXUIElement,
-        in window: AXUIElement
+        in window: AXUIElement,
+        bundleIdentifier: String?
     ) -> ExactInputIdentity? {
         guard let role = stringAttribute(kAXRoleAttribute, from: element) else { return nil }
         let contextRegion = contentRegion(for: element, in: window)
+        let context = contextFingerprint(
+            in: window,
+            region: contextRegion,
+            excluding: element,
+            bundleIdentifier: bundleIdentifier
+        )
         return ExactInputIdentity(
             role: role,
             subrole: stringAttribute(kAXSubroleAttribute, from: element),
@@ -1828,11 +2013,8 @@ final class FocusLockService: ObservableObject {
             relativeFrame: relativeFrame(of: element, in: window),
             ancestorPath: ancestorPath(from: element, through: window),
             contextRegion: contextRegion,
-            contextAnchors: contextAnchors(
-                in: window,
-                region: contextRegion,
-                excluding: element
-            )
+            primaryContextAnchors: context.primary,
+            contextAnchors: context.secondary
         )
     }
 
@@ -1841,10 +2023,22 @@ final class FocusLockService: ObservableObject {
         in window: AXUIElement,
         bundleIdentifier: String?
     ) -> Bool {
+        if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
+            guard !identity.primaryContextAnchors.isEmpty else { return false }
+            let current = contextFingerprint(
+                in: window,
+                region: identity.contextRegion,
+                excluding: nil,
+                bundleIdentifier: bundleIdentifier
+            )
+            return Self.telegramContextFingerprintMatches(
+                capturedPrimary: identity.primaryContextAnchors,
+                capturedSecondary: identity.contextAnchors,
+                currentPrimary: current.primary,
+                currentSecondary: current.secondary
+            )
+        }
         if identity.contextAnchors.isEmpty {
-            if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
-                return false
-            }
             // Stable AX/DOM identifiers can safely re-resolve without document text.
             // With neither identifiers nor context, an existing exact AX wrapper is
             // still usable, but frame/path-only stale-wrapper recovery is unsafe: a
@@ -1855,14 +2049,9 @@ final class FocusLockService: ObservableObject {
         let currentContext = contextAnchors(
             in: window,
             region: identity.contextRegion,
-            excluding: nil
+            excluding: nil,
+            bundleIdentifier: bundleIdentifier
         )
-        if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
-            return Self.telegramContextFingerprintMatches(
-                captured: identity.contextAnchors,
-                current: currentContext
-            )
-        }
         return Self.contextFingerprintMatches(
             captured: identity.contextAnchors,
             current: currentContext
@@ -1872,13 +2061,17 @@ final class FocusLockService: ObservableObject {
     static func directCapturedElementContextAllowed(
         bundleIdentifier: String?,
         hasStableIdentifier: Bool = false,
+        capturedPrimaryContextAnchors: [String] = [],
         capturedContextAnchors: [String],
+        currentPrimaryContextAnchors: [String] = [],
         currentContextAnchors: [String]
     ) -> Bool {
         if isTelegram(bundleIdentifier: bundleIdentifier) {
             return telegramContextFingerprintMatches(
-                captured: capturedContextAnchors,
-                current: currentContextAnchors
+                capturedPrimary: capturedPrimaryContextAnchors,
+                capturedSecondary: capturedContextAnchors,
+                currentPrimary: currentPrimaryContextAnchors,
+                currentSecondary: currentContextAnchors
             )
         }
         if capturedContextAnchors.isEmpty {
@@ -1911,18 +2104,35 @@ final class FocusLockService: ObservableObject {
     private func contextAnchors(
         in window: AXUIElement,
         region: CGRect?,
-        excluding excludedElement: AXUIElement?
+        excluding excludedElement: AXUIElement?,
+        bundleIdentifier: String?
     ) -> [String] {
-        var anchors: [String] = []
-        var seen = Set<String>()
+        let fingerprint = contextFingerprint(
+            in: window,
+            region: region,
+            excluding: excludedElement,
+            bundleIdentifier: bundleIdentifier
+        )
+        return fingerprint.primary + fingerprint.secondary
+    }
+
+    private func contextFingerprint(
+        in window: AXUIElement,
+        region: CGRect?,
+        excluding excludedElement: AXUIElement?,
+        bundleIdentifier: String?
+    ) -> ContextAnchorSelection {
+        var candidates: [ContextAnchorCandidate] = []
         for element in descendants(of: window) {
             if let excludedElement, CFEqual(element, excludedElement) { continue }
-            if let region,
-               let elementFrame = relativeFrame(of: element, in: window),
-               !region.intersects(elementFrame) {
-                continue
+            let elementFrame = relativeFrame(of: element, in: window)
+            if let region {
+                guard let elementFrame, region.intersects(elementFrame) else {
+                    continue
+                }
             }
-            switch stringAttribute(kAXRoleAttribute, from: element) {
+            let role = stringAttribute(kAXRoleAttribute, from: element)
+            switch role {
             case kAXStaticTextRole, kAXTextAreaRole, kAXTextFieldRole:
                 break
             default:
@@ -1934,17 +2144,138 @@ final class FocusLockService: ObservableObject {
             let normalized = rawValue
                 .split(whereSeparator: { $0.isWhitespace })
                 .joined(separator: " ")
-            guard normalized.count >= 20,
+            guard Self.contextAnchorIsEligible(
+                    normalized,
+                    role: role,
+                    bundleIdentifier: bundleIdentifier
+                  ),
                   normalized != "Ask for follow-up changes",
                   normalized != "Do anything" else {
                 continue
             }
             let anchor = String(normalized.prefix(180))
-            if seen.insert(anchor).inserted {
-                anchors.append(anchor)
-            }
+            let isTelegramPrimary = Self.isTelegram(
+                bundleIdentifier: bundleIdentifier
+            )
+                && role == kAXStaticTextRole
+                && elementFrame != nil
+                && !hasAncestor(
+                    element,
+                    role: kAXScrollAreaRole,
+                    stoppingAt: window
+                )
+            candidates.append(ContextAnchorCandidate(
+                value: anchor,
+                isPrimary: isTelegramPrimary
+            ))
         }
-        return Array(anchors.sorted { $0.count > $1.count }.prefix(16))
+        return Self.selectContextAnchors(candidates, limit: 16)
+    }
+
+    /// Reserve bounded slots for non-scroll Telegram header/title text before sorting
+    /// secondary message anchors. This makes a short selected-chat title survive a
+    /// populated history and keeps the same words inside message text from pretending
+    /// to be the selected title. Generic apps simply receive secondary anchors.
+    static func selectContextAnchors(
+        _ candidates: [ContextAnchorCandidate],
+        limit: Int
+    ) -> ContextAnchorSelection {
+        guard limit > 0 else {
+            return ContextAnchorSelection(primary: [], secondary: [])
+        }
+        var primarySeen = Set<String>()
+        let primary = Array(
+            candidates
+                .filter {
+                    $0.isPrimary
+                        && !$0.value.isEmpty
+                        && primarySeen.insert($0.value).inserted
+                }
+                .prefix(min(4, limit))
+                .map(\.value)
+        )
+        let primarySet = Set(primary)
+        var secondarySeen = Set<String>()
+        let secondary = Array(
+            candidates
+                .filter {
+                    !$0.isPrimary
+                        && !$0.value.isEmpty
+                        && !primarySet.contains($0.value)
+                        && secondarySeen.insert($0.value).inserted
+                }
+                .sorted { $0.value.count > $1.value.count }
+                .prefix(max(0, limit - primary.count))
+                .map(\.value)
+        )
+        return ContextAnchorSelection(primary: primary, secondary: secondary)
+    }
+
+    /// Telegram can expose an otherwise empty chat with only a short selected-chat
+    /// title. Generic collection historically discarded every value under 20
+    /// characters, so "Saved Messages" had no readable identity and every foreground
+    /// primary stop failed closed. Admit short values only when they are static text and
+    /// do not look like volatile status or generic app chrome. These short anchors are
+    /// then mandatory in `telegramContextFingerprintMatches`, preserving wrong-chat
+    /// rejection. Other apps retain the established 20-character threshold.
+    static func contextAnchorIsEligible(
+        _ normalized: String,
+        role: String?,
+        bundleIdentifier: String?
+    ) -> Bool {
+        guard isTelegram(bundleIdentifier: bundleIdentifier) else {
+            return normalized.count >= 20
+        }
+        let lowercased = normalized.lowercased()
+        guard !telegramGenericContextLabels.contains(lowercased),
+              !telegramVolatileContextPrefixes.contains(where: {
+                lowercased.hasPrefix($0)
+              }),
+              !telegramContextLooksVolatile(lowercased),
+              lowercased.contains(where: { $0.isLetter }) else {
+            return false
+        }
+        if normalized.count >= 20 { return true }
+        return role == kAXStaticTextRole && normalized.count >= 4
+    }
+
+    private static func telegramContextLooksVolatile(_ lowercased: String) -> Bool {
+        if lowercased.contains(" members")
+            || lowercased.contains(" member")
+            || lowercased.contains(" subscribers")
+            || lowercased.contains(" subscriber")
+            || lowercased.contains(" participants")
+            || lowercased.contains(" participant")
+            || lowercased.hasSuffix(" online") {
+            return true
+        }
+        let dateOrTimeCharacters = CharacterSet.decimalDigits.union(
+            CharacterSet(charactersIn: ":/.-")
+        )
+        let scalars = lowercased.unicodeScalars
+        return !scalars.isEmpty
+            && scalars.allSatisfy {
+                dateOrTimeCharacters.contains($0) || CharacterSet.whitespaces.contains($0)
+            }
+    }
+
+    private func hasAncestor(
+        _ element: AXUIElement,
+        role: String,
+        stoppingAt boundary: AXUIElement
+    ) -> Bool {
+        var current = elementAttribute(kAXParentAttribute, from: element)
+        for _ in 0..<30 {
+            guard let candidate = current,
+                  !CFEqual(candidate, boundary) else {
+                return false
+            }
+            if stringAttribute(kAXRoleAttribute, from: candidate) == role {
+                return true
+            }
+            current = elementAttribute(kAXParentAttribute, from: candidate)
+        }
+        return false
     }
 
     private func contentRegion(
@@ -1995,6 +2326,40 @@ final class FocusLockService: ObservableObject {
             cursor += 1
             guard seen.insert(CFHash(element)).inserted else { continue }
             result.append(element)
+            guard depth < maximumDepth else { continue }
+            for child in elementArrayAttribute(kAXChildrenAttribute, from: element) {
+                queue.append((child, depth + 1))
+            }
+        }
+        return result
+    }
+
+    /// Traverse only new nodes inside the semantic-Send search's shared node/time
+    /// budget. Outer composer ancestors overlap inner ones heavily; the cross-ancestor
+    /// hash set prevents repeatedly walking the same React subtree while still allowing
+    /// a larger framed ancestor to contribute previously unseen sibling controls.
+    private func boundedDescendants(
+        of root: AXUIElement,
+        maximumDepth: Int,
+        remainingNodeBudget: inout Int,
+        visitedNodeHashes: inout Set<CFHashCode>,
+        deadline: TimeInterval
+    ) -> [(AXUIElement, Int)] {
+        var result: [(AXUIElement, Int)] = []
+        var queue: [(AXUIElement, Int)] = [(root, 0)]
+        var cursor = 0
+        while cursor < queue.count,
+              remainingNodeBudget > 0,
+              ProcessInfo.processInfo.systemUptime < deadline {
+            let (element, depth) = queue[cursor]
+            cursor += 1
+            let hash = CFHash(element)
+            guard visitedNodeHashes.insert(hash).inserted else {
+                // A prior, nearer ancestor already traversed this whole bounded subtree.
+                continue
+            }
+            remainingNodeBudget -= 1
+            result.append((element, depth))
             guard depth < maximumDepth else { continue }
             for child in elementArrayAttribute(kAXChildrenAttribute, from: element) {
                 queue.append((child, depth + 1))
