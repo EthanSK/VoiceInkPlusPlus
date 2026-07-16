@@ -265,19 +265,29 @@ class CursorPaster {
     }
 
     @MainActor
-    static func typeTextIntoTargetedProcess(_ text: String, pid: pid_t) async -> Bool {
+    static func typeTextIntoTargetedProcess(
+        _ text: String,
+        pid: pid_t,
+        sessionAlreadyPrepared: Bool = false,
+        beforeChunk: ((Int) -> Bool)? = nil
+    ) async -> Bool {
         guard !text.isEmpty,
               AXIsProcessTrusted(),
-              beginTargetedInputSession(pid: pid) else {
+              (sessionAlreadyPrepared || beginTargetedInputSession(pid: pid)) else {
             return false
         }
-        defer { endTargetedInputSession(pid: pid) }
+        defer {
+            if !sessionAlreadyPrepared {
+                endTargetedInputSession(pid: pid)
+            }
+        }
 
-        let source = CGEventSource(stateID: .hidSystemState)
         let utf16 = Array(text.utf16)
-        for start in stride(from: 0, to: utf16.count, by: 20) {
-            let end = min(start + 20, utf16.count)
-            let chunk = Array(utf16[start..<end])
+        let source = CGEventSource(stateID: .hidSystemState)
+        let completed = await runTargetedUnicodeChunks(
+            utf16,
+            beforeChunk: beforeChunk
+        ) { chunk in
             guard let keyDown = CGEvent(
                 keyboardEventSource: source,
                 virtualKey: 0,
@@ -302,59 +312,37 @@ class CursorPaster {
             await wait(0.005)
             keyUp.postToPid(pid)
             await wait(0.005)
+            return true
+        }
+        guard completed else {
+            logger.error("Stopped targeted Unicode insertion because the exact input boundary changed or a chunk could not be posted pid=\(pid, privacy: .public)")
+            return false
         }
         await wait(0.05)
         logger.info("Issued targeted Unicode text events pid=\(pid, privacy: .public) utf16Units=\(utf16.count, privacy: .public)")
         return true
     }
 
+    /// Execute the exact chunk loop behind targeted Unicode delivery through an
+    /// injectable posting closure. Production supplies real CGEvents; tests supply a
+    /// counter so they can prove a failed boundary causes zero later mutations. The
+    /// boundary is evaluated immediately before every irreversible chunk.
     @MainActor
-    static func performTargetedAutoSend(
-        _ key: AutoSendKey,
-        pid: pid_t
-    ) async -> AutoSendResult {
-        guard key.isEnabled,
-              AXIsProcessTrusted(),
-              beginTargetedInputSession(pid: pid) else {
-            return .commandNotPosted
+    static func runTargetedUnicodeChunks(
+        _ utf16: [UInt16],
+        chunkSize: Int = 20,
+        beforeChunk: ((Int) -> Bool)? = nil,
+        postChunk: ([UInt16]) async -> Bool
+    ) async -> Bool {
+        guard chunkSize > 0 else { return false }
+        for start in stride(from: 0, to: utf16.count, by: chunkSize) {
+            guard beforeChunk?(start) != false else { return false }
+            let end = min(start + chunkSize, utf16.count)
+            guard await postChunk(Array(utf16[start..<end])) else {
+                return false
+            }
         }
-        defer { endTargetedInputSession(pid: pid) }
-
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let keyDown = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 0x24,
-            keyDown: true
-        ),
-        let keyUp = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 0x24,
-            keyDown: false
-        ) else {
-            logger.error("Failed to create targeted auto-send events pid=\(pid, privacy: .public)")
-            return .commandNotPosted
-        }
-
-        switch key {
-        case .none:
-            return .commandNotPosted
-        case .enter:
-            keyDown.flags = []
-            keyUp.flags = []
-        case .shiftEnter:
-            keyDown.flags = .maskShift
-            keyUp.flags = .maskShift
-        case .commandEnter:
-            keyDown.flags = .maskCommand
-            keyUp.flags = .maskCommand
-        }
-
-        keyDown.postToPid(pid)
-        await wait(0.03)
-        keyUp.postToPid(pid)
-        await wait(0.05)
-        logger.info("Issued targeted background auto-send key=\(key.rawValue, privacy: .public) pid=\(pid, privacy: .public)")
-        return .commandPosted
+        return true
     }
 
     @MainActor

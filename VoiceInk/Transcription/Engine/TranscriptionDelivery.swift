@@ -13,6 +13,82 @@ final class TranscriptionDelivery {
         "com.openai.codex",
         "com.openai.chat"
     ]
+    private static let chatComposerBundleIdentifiers =
+        openAIComposerBundleIdentifiers.union(["ru.keepcoder.Telegram"])
+
+    static func isChatComposer(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return chatComposerBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    static func shouldUseTargetedUnicodeFallback(
+        after result: FocusLockService.BackgroundTextInsertionResult,
+        requiresDirectAccessibilityInsertion: Bool
+    ) -> Bool {
+        result == .unavailable && !requiresDirectAccessibilityInsertion
+    }
+
+    /// Accessibility-first insertion is deliberately orchestrated through closures so
+    /// tests can count every mutation attempt without touching a live app. Telegram may
+    /// reuse one editor/window wrapper across chats, so its Unicode fallback receives
+    /// the complete readable-chat boundary before every irreversible chunk—not a cheap
+    /// wrapper-only checkpoint. A setter error is verified without retry because the
+    /// target may already have accepted the text.
+    static func executeAccessibilityFirstBackgroundInsertion(
+        requiresDirectAccessibilityInsertion: Bool,
+        attemptAccessibility: () -> FocusLockService.BackgroundTextInsertionResult,
+        fullBoundaryMatches: @escaping () -> Bool,
+        onUnicodeFallback: () -> Void = {},
+        onAccessibilityError: (Int32) -> Void = { _ in },
+        targetedUnicode: (@escaping (Int) -> Bool) async -> Bool
+    ) async -> Bool {
+        let accessibilityResult = attemptAccessibility()
+        switch accessibilityResult {
+        case .acceptedSelectedText:
+            return true
+        case .unavailable:
+            guard shouldUseTargetedUnicodeFallback(
+                after: accessibilityResult,
+                requiresDirectAccessibilityInsertion:
+                    requiresDirectAccessibilityInsertion
+            ), fullBoundaryMatches() else {
+                return false
+            }
+            onUnicodeFallback()
+            return await targetedUnicode { _ in
+                fullBoundaryMatches()
+            }
+        case .failed(let error):
+            onAccessibilityError(error)
+            return true
+        case .focusSafetyViolation:
+            return false
+        }
+    }
+
+    enum ChatComposerSubmissionVerification: Equatable {
+        case verified
+        case unchanged
+        case modifiedWithoutSubmit
+        case unavailable
+    }
+
+    /// A chat submit is proven by the exact composer clearing/resetting. A rendered
+    /// message echo is useful telemetry, but Codex/ChatGPT can omit or delay that text
+    /// in a background Accessibility tree after Return has already been handled. Conversely,
+    /// any non-empty mutation (for example, a newline) is not proof of submission.
+    /// Keep this classifier pure so classification is unit tested independently from
+    /// the app-specific Accessibility transport.
+    static func classifyChatComposerSubmission(
+        from previousText: String,
+        to currentText: String?
+    ) -> ChatComposerSubmissionVerification {
+        guard let currentText else { return .unavailable }
+        guard currentText != previousText else { return .unchanged }
+        return currentText.isEmpty
+            ? .verified
+            : .modifiedWithoutSubmit
+    }
 
     struct Request {
         let transcription: Transcription
@@ -238,8 +314,11 @@ final class TranscriptionDelivery {
         let allowsApplicationFallback = target.destination == .recordingStart
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
 
+        let exactTargetOwnsKeyboardFocus = FocusLockService.shared
+            .targetOwnsSystemKeyboardFocus(focusedInput)
         if focusedInput.hasExactInput,
-           previouslyFrontmostApplication?.processIdentifier != targetPID {
+           (previouslyFrontmostApplication?.processIdentifier != targetPID
+            || !exactTargetOwnsKeyboardFocus) {
             await deliverToBackgroundExactInput(
                 pastedText,
                 target: target,
@@ -364,13 +443,13 @@ final class TranscriptionDelivery {
             return
         }
 
-        vippLog.info("paste: background exact focus verified targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(session.expectedFrontmostProcessIdentifier, privacy: .public) destination=\(String(describing: target.destination), privacy: .public)")
-        let textEventsPosted = await CursorPaster.typeTextIntoTargetedProcess(
+        vippLog.info("paste: background exact focus verified targetPid=\(session.processIdentifier, privacy: .public) startFrontmostPid=\(session.frontmostProcessIdentifierAtStart, privacy: .public) destination=\(String(describing: target.destination), privacy: .public)")
+        let insertionIssued = await issueBackgroundInsertion(
             pastedText,
-            pid: session.processIdentifier
+            session: session
         )
         let insertionVerified: Bool
-        if textEventsPosted {
+        if insertionIssued {
             insertionVerified = await waitForBackgroundInsertion(
                 pastedText,
                 previousText: textBeforeInsertion,
@@ -380,8 +459,7 @@ final class TranscriptionDelivery {
             insertionVerified = false
         }
         guard insertionVerified,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier
-                == session.expectedFrontmostProcessIdentifier else {
+              FocusLockService.shared.backgroundDeliveryFocusIsSafe(session) else {
             handleBackgroundPasteFailure(
                 pastedText,
                 destination: target.destination,
@@ -396,6 +474,76 @@ final class TranscriptionDelivery {
             return
         }
 
+        await performBackgroundAutoSend(autoSendKey, session: session)
+    }
+
+    /// Telegram's retained native editor has a real Accessibility insertion primitive.
+    /// Prefer AXSelectedText so delivery is bound to the exact saved wrapper. If that
+    /// attribute is genuinely unavailable before any mutation, the already-open bounded
+    /// internal session may use the same Unicode event route as other exact targets. An
+    /// AX setter error is never retried because Telegram may have inserted the text even
+    /// while returning an error; verification, not the return code, decides the result.
+    private func issueBackgroundInsertion(
+        _ pastedText: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async -> Bool {
+        guard FocusLockService.shared.prefersAccessibilityTextInsertion(for: session) else {
+            return await CursorPaster.typeTextIntoTargetedProcess(
+                pastedText,
+                pid: session.processIdentifier,
+                sessionAlreadyPrepared: true,
+                beforeChunk: { _ in
+                    FocusLockService.shared
+                        .backgroundTextEventBoundaryMatches(session)
+                }
+            )
+        }
+
+        let fullBoundaryMatches = {
+            FocusLockService.shared.backgroundTextMutationBoundaryMatches(
+                session
+            )
+        }
+        let result = await Self.executeAccessibilityFirstBackgroundInsertion(
+            requiresDirectAccessibilityInsertion:
+                session.requiresDirectAccessibilityInsertion,
+            attemptAccessibility: {
+                FocusLockService.shared.insertTextUsingAccessibility(
+                    pastedText,
+                    for: session
+                )
+            },
+            fullBoundaryMatches: fullBoundaryMatches,
+            onUnicodeFallback: {
+                vippLog.notice("paste: Telegram AXSelectedText unavailable before mutation; using one bounded Unicode insertion with full chat revalidation before every chunk targetPid=\(session.processIdentifier, privacy: .public)")
+            },
+            onAccessibilityError: { error in
+                vippLog.error("paste: Telegram AXSelectedText returned an error after its one allowed attempt; verifying without retry AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+            },
+            targetedUnicode: { beforeChunk in
+                await CursorPaster.typeTextIntoTargetedProcess(
+                    pastedText,
+                    pid: session.processIdentifier,
+                    sessionAlreadyPrepared: true,
+                    beforeChunk: beforeChunk
+                )
+            }
+        )
+        if !result {
+            vippLog.error("paste: Telegram exact insertion stopped before an unsafe mutation or because its exact chat/focus boundary changed targetPid=\(session.processIdentifier, privacy: .public)")
+        }
+        return result
+    }
+
+    /// A fully backgrounded editor cannot safely receive process-targeted Return: macOS
+    /// can accept that event while Electron or Telegram ignores it, and another input in
+    /// the same process may own the internal key route. Background chat submission is
+    /// therefore one explicitly labelled semantic Send action followed by composer-state
+    /// verification. Missing labels and ambiguity fail visibly without stealing focus.
+    private func performBackgroundAutoSend(
+        _ autoSendKey: AutoSendKey,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async {
         try? await Task.sleep(nanoseconds: 150_000_000)
         guard await FocusLockService.shared.refreshBackgroundFocus(session),
               let textBeforeSubmit = FocusLockService.shared.backgroundInputText(for: session) else {
@@ -406,96 +554,88 @@ final class TranscriptionDelivery {
             return
         }
 
-        let isOpenAIComposer = session.bundleIdentifier.map {
-            Self.openAIComposerBundleIdentifiers.contains($0)
-        } ?? false
-        var submitRoute = "targetedKey"
-        var submitIssued = false
-        if autoSendKey == .enter, isOpenAIComposer {
-            switch FocusLockService.shared.pressNearbySubmitButton(for: session) {
-            case .pressed:
-                submitRoute = "semanticSend"
-                submitIssued = true
-            case .unavailable:
-                break
-            case .failed(let error):
-                vippLog.error("paste: background semantic Send failed AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
-            }
-        }
-
-        if !submitIssued {
-            submitIssued = await CursorPaster.performTargetedAutoSend(
-                autoSendKey,
-                pid: session.processIdentifier
-            ).didPostAutoSendCommand
-        }
-        guard submitIssued else {
+        let isChatComposer = Self.isChatComposer(
+            bundleIdentifier: session.bundleIdentifier
+        )
+        guard autoSendKey == .enter,
+              isChatComposer,
+              FocusLockService.supportsSemanticSend(
+                bundleIdentifier: session.bundleIdentifier
+              ) else {
             showAutoSendFailure(
-                "Transcription inserted, but couldn’t press Return in the saved background input",
-                detail: "no background auto-send event was created targetPid=\(session.processIdentifier)"
+                "Transcription inserted, but this saved background input has no safe auto-send action",
+                detail: "process-targeted background key events are forbidden key=\(autoSendKey.rawValue) targetPid=\(session.processIdentifier)"
             )
             return
         }
 
-        var submitVerified = await waitForBackgroundValueChange(
+        let submitRoute: String
+        switch FocusLockService.shared.pressNearbySubmitButton(for: session) {
+        case .pressed:
+            submitRoute = "semanticSend"
+        case .unavailable:
+            showAutoSendFailure(
+                "Transcription inserted, but no verified Send control was available in the saved background input",
+                detail: "semantic Send unavailable or ambiguous targetPid=\(session.processIdentifier)"
+            )
+            return
+        case .failed(let error):
+            // AX can report an error after a button handled its press. Treat this as
+            // one issued action and classify the exact composer; never retry Return or
+            // Send because that could submit the transcript twice.
+            submitRoute = "semanticSendAXError"
+            vippLog.error("paste: background semantic Send returned AXError=\(error, privacy: .public); verifying without retry targetPid=\(session.processIdentifier, privacy: .public)")
+        }
+
+        let verification = await waitForBackgroundChatComposerSubmission(
             from: textBeforeSubmit,
             session: session
         )
-        if !submitVerified,
-           submitRoute == "semanticSend",
-           await FocusLockService.shared.refreshBackgroundFocus(session) {
-            submitRoute = "semanticSend+targetedKey"
-            let fallbackIssued = await CursorPaster.performTargetedAutoSend(
-                autoSendKey,
-                pid: session.processIdentifier
-            ).didPostAutoSendCommand
-            if fallbackIssued {
-                submitVerified = await waitForBackgroundValueChange(
-                    from: textBeforeSubmit,
-                    session: session
-                )
-            }
-        } else if !submitVerified,
-                  autoSendKey == .enter,
-                  await FocusLockService.shared.refreshBackgroundFocus(session) {
-            submitRoute = "targetedKeyRetry"
-            let retryIssued = await CursorPaster.performTargetedAutoSend(
-                .enter,
-                pid: session.processIdentifier
-            ).didPostAutoSendCommand
-            if retryIssued {
-                submitVerified = await waitForBackgroundValueChange(
-                    from: textBeforeSubmit,
-                    session: session
-                )
-            }
-        }
+        let focusStayedSafe = FocusLockService.shared
+            .backgroundDeliveryFocusIsSafe(
+                session,
+                allowReplacementAfterSubmission: true
+            )
+        let targetExecutablePath = FocusLockService.shared
+            .backgroundTargetExecutablePath(for: session) ?? "nil"
+        let succeeded = verification == .verified && focusStayedSafe
+        vippLog.info("paste: background auto-send finished success=\(succeeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=\(submitRoute, privacy: .public) verification=\(String(describing: verification), privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) targetExecutable=\(targetExecutablePath, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
 
-        let stayedBackground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            == session.expectedFrontmostProcessIdentifier
-        let requiresVisibleSubmittedMessage = autoSendKey == .enter && isOpenAIComposer
-        let submittedTextVisible: Bool
-        if requiresVisibleSubmittedMessage {
-            submittedTextVisible = await waitForBackgroundSubmittedText(
-                pastedText,
-                session: session
-            )
-        } else {
-            submittedTextVisible = FocusLockService.shared.backgroundWindowContains(
-                pastedText.trimmingCharacters(in: .whitespacesAndNewlines),
-                for: session
-            )
-        }
-        let succeeded = submitVerified
-            && stayedBackground
-            && (!requiresVisibleSubmittedMessage || submittedTextVisible)
-        vippLog.info("paste: background auto-send finished success=\(succeeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=\(submitRoute, privacy: .public) submittedTextVisible=\(submittedTextVisible, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-        guard succeeded else {
+        guard focusStayedSafe else {
             showAutoSendFailure(
-                "Transcription inserted, but Return could not be verified in the saved background input",
-                detail: "background auto-send produced no verified value change targetPid=\(session.processIdentifier)"
+                "Transcription inserted, but background delivery could not preserve focus safely",
+                detail: "semantic Send target became frontmost route=\(submitRoute) targetPid=\(session.processIdentifier)"
             )
             return
+        }
+
+        switch verification {
+        case .verified:
+            return
+        case .unavailable:
+            // An issued action whose post-state became unreadable is indeterminate,
+            // not permission to retry and not a proven user-facing failure. Surface an
+            // error only when Accessibility itself disappeared or the app terminated.
+            guard FocusLockService.shared.backgroundDeliveryEnvironmentIsAvailable(
+                session
+            ) else {
+                showAutoSendFailure(
+                    "Transcription inserted, but Send verification lost access to the saved app",
+                    detail: "semantic Send verification unavailable after app termination or Accessibility loss route=\(submitRoute) targetPid=\(session.processIdentifier)"
+                )
+                return
+            }
+            vippLog.notice("paste: background semantic Send verification unavailable after one issued action; no retry and no visible false-failure targetPid=\(session.processIdentifier, privacy: .public) route=\(submitRoute, privacy: .public)")
+        case .modifiedWithoutSubmit:
+            showAutoSendFailure(
+                "Transcription inserted, but Send changed the saved input without submitting it",
+                detail: "semantic Send modifiedWithoutSubmit route=\(submitRoute) targetPid=\(session.processIdentifier)"
+            )
+        case .unchanged:
+            showAutoSendFailure(
+                "Transcription inserted, but the saved input ignored Send",
+                detail: "semantic Send remained unchanged after one issued action route=\(submitRoute) targetPid=\(session.processIdentifier)"
+            )
         }
     }
 
@@ -507,9 +647,12 @@ final class TranscriptionDelivery {
         let verificationText = insertedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         while ProcessInfo.processInfo.systemUptime < deadline {
-            if let currentText = FocusLockService.shared.backgroundInputText(for: session),
+            if let currentText = FocusLockService.shared.backgroundInputTextFast(for: session),
                currentText != previousText,
-               currentText.contains(verificationText) {
+               currentText.contains(verificationText),
+               let verifiedText = FocusLockService.shared.backgroundInputText(for: session),
+               verifiedText != previousText,
+               verifiedText.contains(verificationText) {
                 return true
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
@@ -520,41 +663,40 @@ final class TranscriptionDelivery {
         return currentText != previousText && currentText.contains(verificationText)
     }
 
-    private func waitForBackgroundValueChange(
+    private func waitForBackgroundChatComposerSubmission(
         from previousText: String,
         session: FocusLockService.BackgroundDeliverySession
-    ) async -> Bool {
+    ) async -> ChatComposerSubmissionVerification {
         let deadline = ProcessInfo.processInfo.systemUptime + 0.75
+        var latest: ChatComposerSubmissionVerification = .unavailable
         while ProcessInfo.processInfo.systemUptime < deadline {
-            if FocusLockService.shared.backgroundInputText(for: session) != previousText {
-                return true
+            latest = Self.classifyChatComposerSubmission(
+                from: previousText,
+                to: FocusLockService.shared.backgroundInputTextFast(
+                    for: session,
+                    allowReplacementAfterSubmission: true
+                )
+            )
+            if latest == .verified {
+                let fullyVerified = Self.classifyChatComposerSubmission(
+                    from: previousText,
+                    to: FocusLockService.shared.backgroundInputText(
+                        for: session,
+                        allowReplacementAfterSubmission: true
+                    )
+                )
+                if fullyVerified == .verified {
+                    return .verified
+                }
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        return FocusLockService.shared.backgroundInputText(for: session) != previousText
-    }
-
-    private func waitForBackgroundSubmittedText(
-        _ submittedText: String,
-        session: FocusLockService.BackgroundDeliverySession
-    ) async -> Bool {
-        let verificationText = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !verificationText.isEmpty else { return false }
-        let deadline = ProcessInfo.processInfo.systemUptime + 2
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if FocusLockService.shared.backgroundWindowContains(
-                verificationText,
+        return Self.classifyChatComposerSubmission(
+            from: previousText,
+            to: FocusLockService.shared.backgroundInputText(
                 for: session,
-                excludingSavedInput: true
-            ) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return FocusLockService.shared.backgroundWindowContains(
-            verificationText,
-            for: session,
-            excludingSavedInput: true
+                allowReplacementAfterSubmission: true
+            )
         )
     }
 
