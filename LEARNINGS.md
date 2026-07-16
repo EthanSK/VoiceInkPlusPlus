@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-16T17:51:56Z
+**Trigger:** v2.0.211 release signing gate
+**Symptom:** The first signed v2.0.211 artifact passed certificate and deep/strict verification but its outer signature contained no Automation entitlement.
+**Root cause:** The Mac Mini resign-local.sh still replaced the outer app signature without passing VoiceInk.local.entitlements even though the repository documentation already required it.
+**Fix:** Patched the real Mini helper to accept the checked-in entitlements as argument 2, fail closed when they are missing, sign the outer app with them, and verify Automation afterward; BUILDING.md and UPDATING.md now give the exact invocation.
+**Commit:** ff33fb2
+**Guard:** The helper's real v2.0.211 invocation now passes deep/strict verification and dumps com.apple.security.automation.apple-events=true; the installed app was checked again after transfer.
+---
+
+
+---
 **Date:** 2026-07-15T22:28:08Z
 **Trigger:** Ethan rejected v2.0.208 and asked to revert everything after slow recorder start/stop, failed background ChatGPT Enter, and ChatGPT focus instability.
 **Symptom:** v2.0.208 inherited v2.0.207 recorder latency and could paste into the saved ChatGPT composer but failed to submit it in the background; repeated live activation-state probing then destabilized ChatGPT focus and the app restarted.
