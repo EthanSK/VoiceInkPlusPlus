@@ -1,0 +1,83 @@
+# Telegram live delivery test
+
+Use this procedure to distinguish routing failures from Telegram exact-input resolution, insertion, and auto-send failures. Run only against disposable Telegram content.
+
+## Prepare Saved Messages safely
+
+1. Start the repository trace:
+
+   ```sh
+   bash .agents/skills/learnings/scripts/live-delivery-trace.sh start
+   bash .agents/skills/learnings/scripts/live-delivery-trace.sh status
+   ```
+
+2. Ask Ethan to open **Saved Messages**, or use the `computer-use` skill when UI control is explicitly in scope. Before an agent takes focus, clicks, types, or presses a key, follow the `macos-heads-up-notification` skill and warn Ethan. Never improvise private Accessibility mutations when Computer Use refuses the target.
+3. Verify the selected search result and open chat are actually labelled **Saved Messages** before pressing Return or typing. Telegram search once selected an unrelated public channel; a matching-looking search result is not sufficient.
+4. Ethan must manually send this harmless seed message in Saved Messages:
+
+   ```text
+   VoiceInk Telegram disposable context anchor
+   ```
+
+   The seed supplies readable chat context. Do not claim a Telegram background test when the captured context is empty or unreadable.
+5. Focus the now-empty Saved Messages composer. Do not use a real conversation as a fallback test target.
+
+## Foreground primary-stop scenario
+
+Keep Telegram and the Saved Messages composer frontmost throughout this scenario:
+
+1. Press the **primary button** to start recording.
+2. Dictate a harmless distinctive test sentence.
+3. Press the same **primary button** to stop. Do not press Next.
+4. Wait for delivery and auto-send to finish.
+
+Accept only a trace that proves all of the following:
+
+- the stop route is `destination=focusedAtStop` with `targetCaptured=true`;
+- `pipeline: about to DELIVER` carries `targetAutoSend=enter destination=focusedAtStop`;
+- the exact Telegram input resolves/restores instead of logging `Focused input restore could not uniquely resolve the saved exact input`;
+- insertion succeeds and the foreground auto-send line ends with `success=true`;
+- the intended Saved Messages composer is cleared and the message appears there.
+
+`Focused input restore BEGIN` identifies the foreground resolver. `paste: target restore failed; copied transcription to clipboard` means delivery failed before paste even if routing and Mode selection were correct.
+
+## True-background second-chance scenario
+
+Reset to the empty Saved Messages composer, then:
+
+1. Press the primary button, dictate a harmless distinctive sentence, and press the primary button again for a normal stop.
+2. While the newest result is still transcribing, keep the Telegram composer focused and press the **Next button once**. This is the `focusedDuringTranscription` second chance.
+3. **Immediately press Command-Tab away from Telegram** and remain in the other app for at least five seconds. Moving away only after delivery does not test background behavior.
+4. Do not refocus Telegram until the trace records the final result.
+
+Require these acceptance lines (IDs and PIDs vary):
+
+```text
+paste retarget: ... destination=focusedDuringTranscription targetCaptured=true
+pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTranscription
+Telegram retained exact input prepared with readable matching chat context
+paste: background text verified success=true
+paste: background auto-send finished success=true ... verification=verified
+```
+
+Also require the final delivery line's `frontmostPid` to differ from Telegram's target PID, and verify Telegram received and sent the text without becoming frontmost. If Telegram stayed frontmost, `Focused input restore BEGIN` appeared, or target/frontmost PIDs match, only the foreground route was exercised.
+
+## Wrong-chat fail-closed scenario
+
+Run this only when two disposable Telegram chats are available; never risk a real conversation.
+
+1. Capture and second-chance-latch the Saved Messages composer as above.
+2. Before delivery, switch Telegram internally to the other disposable chat, then Command-Tab away.
+3. Require readable-context mismatch/rejection in the trace and **zero insertion or Send action in either unintended composer**.
+
+Expected failure evidence includes `Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat` or another explicit exact-chat resolution failure. A subsequent `paste: background text verified success=true` is a test failure. If a second disposable chat is unavailable, mark this scenario **not tested**.
+
+## Read and close the trace
+
+```sh
+bash .agents/skills/learnings/scripts/live-delivery-trace.sh show 300
+bash .agents/skills/learnings/scripts/live-delivery-trace.sh stop
+bash .agents/skills/learnings/scripts/live-delivery-trace.sh status
+```
+
+Interpret the route, captured destination, `targetAutoSend`, resolver, insertion result, verification, target PID, and final frontmost PID together. Message appearance alone is not proof, and a warning may reflect a verification defect rather than a failed Return. Preserve only the minimal metadata needed for a durable learning; never copy dictated transcript text into skill evidence.
