@@ -159,6 +159,16 @@ silently remove `com.apple.security.automation.apple-events`, even while nested 
 `codesign --verify --deep --strict` still pass. Treat the final entitlement dump as a separate release
 gate whenever exact Terminal/iTerm delivery is included.
 
+Do not trust this requirement to documentation alone: the actual Mac Mini helper was still signing
+the outer app without entitlements during the v2.0.211 release. Its current interface accepts the
+checked-in entitlements as argument 2, refuses a missing file, and verifies Automation after signing:
+
+```sh
+~/Projects/VoiceInk-build/resign-local.sh \
+  ~/Downloads/VoiceInkPlusPlus.app \
+  "$PWD/VoiceInk/VoiceInk.local.entitlements"
+```
+
 ## Port upstream features one at a time
 
 The 2026-07-15 audit found the fork 68 commits ahead and upstream 80 commits ahead of merge base
