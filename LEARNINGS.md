@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-18T11:01:33Z
+**Trigger:** Ethan directed the Mac Mini to stop monitoring, take ownership, and emulate the Codex failure locally.
+**Symptom:** The exact-input candidate never landed on authoritative main, Release unit tests could not see makeTestingTarget, and Codex submit discovery missed a Chromium subtree.
+**Root cause:** The prior work remained a root-snapshot candidate; the Release test action excluded a DEBUG-only seam; and Chromium exposed useful controls only through AXChildrenInNavigationOrder.
+**Fix:** Rebuilt the candidate as a normal branch from d3819c12, added navigation-order fallback plus an exact audited Codex idle-Send contract behind a default-off legacy flag, and kept the internal test seam available to Release test builds.
+**Commit:** 13fb3a9
+**Guard:** Require the canonical Release build attempt plus all 55 named tests through the bounded Debug xctest fallback, keep exact delivery off by default, and do not install or ship without a disposable live Codex trace.
+---
+
+
+---
 **Date:** 2026-07-16T17:51:56Z
 **Trigger:** v2.0.211 release signing gate
 **Symptom:** The first signed v2.0.211 artifact passed certificate and deep/strict verification but its outer signature contained no Automation entitlement.
