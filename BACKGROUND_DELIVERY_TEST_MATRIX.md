@@ -3,14 +3,14 @@
 This is the permanent compatibility matrix for Ethan's main destinations. Read it before changing
 exact-input capture, background insertion, auto-send, focus restoration, or verification.
 
-**Current runtime state (2026-07-18):** signed v2.0.223 is installed with
-`VIPPExactInputDeliveryEnabled=true`. Its two-slot HUD keeps the warning visible until exact capture
-proves a destination, then replaces it with the detected app icon; compatibility mode also keeps the
-warning slot visible instead of collapsing the layout. The Mac Mini ran all 56 named unit tests, but
-the disposable live Codex capture/background-delivery trace is still the acceptance gate and must not
-be inferred from installation or tests. v2.0.222 is preserved as the immediate operational rollback;
-v2.0.207/v2.0.208 remain rejected evidence and v2.0.206 remains the accepted exact-location rollback
-floor until v2.0.223 passes that physical trace.
+**Current runtime state (2026-07-19):** signed v2.0.224 is installed with
+`VIPPExactInputDeliveryEnabled=true`. It repairs the live ChatGPT-hosted Codex capture rejection by
+allowing the description and placeholder to differ only when each independently proves the same
+product; ChatGPT/Codex cross-product pairs and arbitrary editors still fail closed. The Mac Mini ran
+all 56 named unit tests, but the disposable live Codex capture/background-delivery trace remains the
+acceptance gate and must not be inferred from installation or tests. v2.0.223 is preserved as the
+immediate operational rollback; v2.0.207/v2.0.208 remain rejected evidence and v2.0.206 remains the
+accepted exact-location rollback floor until v2.0.224 passes that physical trace.
 
 ## Safety invariant
 
