@@ -4,6 +4,15 @@ import ApplicationServices // AXUIElement* APIs — used to resolve the *keyboar
 import os
 
 class ActiveWindowService: ObservableObject {
+    struct ConfigurationResolution {
+        /// App/default (or explicit) Mode applied synchronously at the decision point.
+        let immediateConfiguration: ModeConfig?
+        /// The same decision, optionally refined by that captured browser tab's URL.
+        /// Returning the value prevents callers from re-reading unrelated global Mode
+        /// after another app activation while the URL lookup was suspended.
+        let finalConfiguration: Task<ModeConfig?, Never>
+    }
+
     static let shared = ActiveWindowService()
     @Published var currentApplication: NSRunningApplication?
     private let browserURLService = BrowserURLService.shared
@@ -99,7 +108,14 @@ class ActiveWindowService: ObservableObject {
         // Same resolution order used at record-start. resolveAndApplyConfiguration
         // also handles the neutral-nil fallback (issue #784) and the async
         // browser-URL override.
-        resolveAndApplyConfiguration(for: bundleIdentifier, shouldApply: { true })
+        resolveAndApplyConfiguration(
+            for: bundleIdentifier,
+            applicationBundleName: app.bundleURL?.lastPathComponent,
+            shouldApply: { [weak self] in
+                self?.currentApplication?.processIdentifier
+                    == app.processIdentifier
+            }
+        )
     }
 
     // Shared resolution used by BOTH the record-start path and the live-follow
@@ -111,45 +127,109 @@ class ActiveWindowService: ObservableObject {
     @discardableResult
     private func resolveAndApplyConfiguration(
         for bundleIdentifier: String,
+        applicationBundleName: String? = nil,
+        applyGlobally: Bool = true,
+        allowBrowserURLRefinement: Bool = true,
         shouldApply: @escaping @MainActor () -> Bool
-    ) -> Task<Void, Never> {
-        let quickConfig = ModeManager.shared.getConfigurationForApp(bundleIdentifier)
+    ) -> ConfigurationResolution {
+        let modeBundleIdentifier = Self.modeLookupBundleIdentifier(
+            capturedBundleIdentifier: bundleIdentifier,
+            applicationBundleName: applicationBundleName
+        )
+        let quickConfig = ModeManager.shared.getConfigurationForApp(
+            modeBundleIdentifier
+        )
             ?? ModeManager.shared.getDefaultConfiguration()
 
-        if let quickConfig {
-            ModeManager.shared.setActiveConfiguration(quickConfig)
-        } else {
-            // Issue #784: no app-specific Mode AND no default Mode -> apply a neutral
-            // config (nil) instead of leaving the previously-active Mode in place.
-            // Delivery treats nil as plain paste / no auto-send (ModeRuntimeConfiguration),
-            // so a stale Mode from a prior app can't leak its auto-send behavior here.
-            ModeManager.shared.setActiveConfiguration(nil)
+        if applyGlobally, shouldApply() {
+            if let quickConfig {
+                ModeManager.shared.setActiveConfiguration(quickConfig)
+            } else {
+                // Issue #784: no app-specific Mode AND no default Mode -> apply a neutral
+                // config (nil) instead of leaving the previously-active Mode in place.
+                // Delivery treats nil as plain paste / no auto-send (ModeRuntimeConfiguration),
+                // so a stale Mode from a prior app can't leak its auto-send behavior here.
+                ModeManager.shared.setActiveConfiguration(nil)
+            }
         }
 
-        guard let browserType = BrowserType.allCases.first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
-            return Task {}
+        guard allowBrowserURLRefinement,
+              let browserType = BrowserType.allCases.first(where: {
+                  $0.bundleIdentifier == bundleIdentifier
+              }) else {
+            return ConfigurationResolution(
+                immediateConfiguration: quickConfig,
+                finalConfiguration: Task { quickConfig }
+            )
         }
 
         // Browser: asynchronously fetch the current tab URL and, if a URL-specific
         // Mode matches, override the app-level Mode chosen above.
-        return Task { [weak self] in
-            guard let self else { return }
+        let finalConfiguration = Task { [weak self] in
+            guard let self else { return quickConfig }
 
             do {
                 let currentURL = try await self.browserURLService.getCurrentURL(from: browserType)
-                await MainActor.run {
-                    guard shouldApply(),
-                          let config = ModeManager.shared.getConfigurationForURL(currentURL) else {
-                        return
-                    }
-                    ModeManager.shared.setActiveConfiguration(config)
+                let urlConfiguration = await MainActor.run {
+                    ModeManager.shared.getConfigurationForURL(currentURL)
                 }
+                guard let urlConfiguration else { return quickConfig }
+                await MainActor.run {
+                    guard applyGlobally, shouldApply() else { return }
+                    ModeManager.shared.setActiveConfiguration(urlConfiguration)
+                }
+                return urlConfiguration
             } catch is CancellationError {
-                return
+                return quickConfig
             } catch {
                 self.logger.error("❌ Failed to get URL from \(browserType.displayName, privacy: .public): \(error, privacy: .public)")
+                return quickConfig
             }
         }
+        return ConfigurationResolution(
+            immediateConfiguration: quickConfig,
+            finalConfiguration: finalConfiguration
+        )
+    }
+
+    /// Resolve the Mode owned by one exact destination decision without consuming or
+    /// mutating the global live Mode. Primary stop and second-chance Next call this at
+    /// the same boundary as Accessibility input capture. Because that capture does not
+    /// prove a browser tab identity, the result deliberately freezes only the captured
+    /// app/default Mode; URL refinement stays disabled until a window+tab-bound resolver
+    /// exists. This prevents a later tab or global-focus change from changing the Mode
+    /// attached to the saved input.
+    @MainActor
+    func resolveConfigurationForCapturedTarget(
+        bundleIdentifier: String,
+        applicationBundleName: String?
+    ) -> ConfigurationResolution {
+        // A destination capture currently owns an exact app/input but not a browser
+        // tab identity. Reading "the current URL" after this method returns can race a
+        // tab switch and attach another tab's formatting or auto-send behavior to the
+        // saved input. Keep the synchronous app/default Mode until a window+tab-bound
+        // URL resolver exists; the exact destination and its Mode stay atomic.
+        resolveAndApplyConfiguration(
+            for: bundleIdentifier,
+            applicationBundleName: applicationBundleName,
+            applyGlobally: false,
+            allowBrowserURLRefinement: false,
+            shouldApply: { false }
+        )
+    }
+
+    /// Some OpenAI builds report ChatGPT with Codex's bundle identifier. The saved
+    /// launch instance still exposes its bundle URL, so map only that proven
+    /// ChatGPT.app case to the existing ChatGPT Mode key; Codex.app keeps Codex's key.
+    static func modeLookupBundleIdentifier(
+        capturedBundleIdentifier: String,
+        applicationBundleName: String?
+    ) -> String {
+        if capturedBundleIdentifier == "com.openai.codex",
+           applicationBundleName == "ChatGPT.app" {
+            return "com.openai.chat"
+        }
+        return capturedBundleIdentifier
     }
 
     // MARK: - Keyboard-focused-app resolution (ChatGPT floating-window fix)
@@ -239,13 +319,22 @@ class ActiveWindowService: ObservableObject {
     @discardableResult
     func beginApplyingConfiguration(
         modeId: UUID? = nil,
+        preferredApplication: NSRunningApplication? = nil,
         shouldApply: @escaping @MainActor () -> Bool = { true }
-    ) -> Task<Void, Never> {
+    ) -> ConfigurationResolution {
         if let modeId = modeId,
            let config = ModeManager.shared.getConfiguration(with: modeId) {
-            guard shouldApply() else { return Task {} }
+            guard shouldApply() else {
+                return ConfigurationResolution(
+                    immediateConfiguration: nil,
+                    finalConfiguration: Task { nil }
+                )
+            }
             ModeManager.shared.setActiveConfiguration(config)
-            return Task {}
+            return ConfigurationResolution(
+                immediateConfiguration: config,
+                finalConfiguration: Task { config }
+            )
         }
 
         // Prefer the KEYBOARD-focused app (Accessibility) over the frontmost app, so
@@ -254,28 +343,65 @@ class ActiveWindowService: ObservableObject {
         // per-app mode (incl. auto-Enter). Falls back to frontmostApplication when AX
         // can't help (untrusted / no focused element / focus is VoiceInk itself).
         // For ordinary windows these two are the same app, so this is non-breaking.
-        let activeApp = accessibilityFocusedApplication()
-            ?? NSWorkspace.shared.frontmostApplication
+        let activeApp: NSRunningApplication?
+        if let preferredApplication {
+            // A non-nil preferred app is an exact capture decision, not a hint. If
+            // that launch instance terminated, falling back to current focus would
+            // stamp an unrelated app's Mode onto recordingStart.
+            activeApp = preferredApplication.isTerminated
+                ? nil
+                : preferredApplication
+        } else {
+            activeApp = accessibilityFocusedApplication()
+                ?? NSWorkspace.shared.frontmostApplication
+        }
 
         guard let activeApp,
               let bundleIdentifier = activeApp.bundleIdentifier else {
-            return Task {}
+            // No input/app identity means no Mode identity. Returning the previous
+            // global Mode would stamp an unrelated app's formatting/Return behavior
+            // onto this new recording, so unresolved startup is deliberately neutral.
+            return ConfigurationResolution(
+                immediateConfiguration: nil,
+                finalConfiguration: Task { nil }
+            )
         }
 
-        guard shouldApply() else { return Task {} }
+        guard shouldApply() else {
+            return ConfigurationResolution(
+                immediateConfiguration: nil,
+                finalConfiguration: Task { nil }
+            )
+        }
         currentApplication = activeApp
+        let activeProcessIdentifier = activeApp.processIdentifier
 
         // Delegate to the shared resolver (app-config -> default -> neutral nil, plus
         // the async browser-URL override). This is the SAME logic the live-follow
         // observer uses, so record-start and app-switch stay in sync. The neutral-nil
         // fallback (issue #784) now also applies here.
-        return resolveAndApplyConfiguration(for: bundleIdentifier, shouldApply: shouldApply)
+        return resolveAndApplyConfiguration(
+            for: bundleIdentifier,
+            applicationBundleName: activeApp.bundleURL?.lastPathComponent,
+            // preferredApplication comes from a captured exact input/app but carries
+            // no stable browser-tab identity. Do not let a suspended URL lookup bind
+            // whichever tab happens to be current later.
+            allowBrowserURLRefinement: preferredApplication == nil,
+            shouldApply: { [weak self] in
+                guard shouldApply(), let self else { return false }
+                // ChatGPT.app and Codex.app can share a bundle identifier. Keep the
+                // asynchronous refinement attached to the exact captured process rather
+                // than whichever sibling application happens to be returned first.
+                return self.currentApplication?.processIdentifier
+                    == activeProcessIdentifier
+            }
+        )
     }
 
     func applyConfiguration(modeId: UUID? = nil) async {
-        let task = await MainActor.run {
+        let resolution = await MainActor.run {
             beginApplyingConfiguration(modeId: modeId)
         }
-        await task.value
+        _ = await resolution.finalConfiguration.value
     }
-} 
+}

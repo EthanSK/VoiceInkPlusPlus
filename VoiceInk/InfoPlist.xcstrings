@@ -79,19 +79,19 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "VoiceInk muss mit Ihrem Browser interagieren, um die aktuelle Website zu erkennen und website-spezifische Konfigurationen anzuwenden."
+            "value" : "VoiceInk++ verwendet Browser-Automatisierung für website-spezifische Modi und Terminal- oder iTerm-Automatisierung, um Transkriptionstext und optional die Eingabetaste an die exakt gespeicherte Terminalsitzung zu senden."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "VoiceInk needs to interact with your browser to detect the current website for applying website-specific configurations."
+            "value" : "VoiceInk++ uses browser automation for website-specific Modes and Terminal or iTerm automation to deliver transcription text and an optional Return to the exact saved terminal session."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "VoiceInk 需要与浏览器交互以检测当前网站，从而应用针对特定网站的配置。"
+            "value": "VoiceInk++ 使用浏览器自动化来应用网站专用模式，并使用终端或 iTerm 自动化将转录文本和可选的回车键发送到准确保存的终端会话。"
           }
         }
       }

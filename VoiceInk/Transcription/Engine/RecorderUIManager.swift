@@ -202,6 +202,20 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
         vippLog.info("toggleRecorderPanel: enter panelVisible=\(self.isRecorderPanelVisible, privacy: .public) state=\(String(describing: engine.recordingState), privacy: .public) modeId=\(modeId?.uuidString ?? "nil", privacy: .public)")
 
+        // The microphone session, not HUD visibility, decides whether this press stops.
+        // If a window/display refresh hid every panel while recording, preserve the
+        // `focusedAtStop` route instead of falling into the start branch. ShortcutMonitor
+        // consumes G HUB's completed chord, so this ordinary stop capture still sees the
+        // pre-shortcut editor without any Accessibility call inside the event tap.
+        if !isRecorderPanelVisible, engine.recordingState == .recording {
+            isRecorderPanelVisible = true
+            await engine.toggleRecord(
+                modeId: modeId,
+                stopPasteDestination: stopPasteDestination
+            )
+            return
+        }
+
         if isRecorderPanelVisible {
             switch engine.recordingState {
             case .recording:
@@ -249,7 +263,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                 // ═══════════════════════════════════════════════════════════════
                 vippLog.info("toggleRecorderPanel: toggle during \(String(describing: engine.recordingState), privacy: .public) → START NEW SESSION (record-while-transcribing; serial-queue makes this safe)")
                 SoundManager.shared.playStartSound()
-                await engine.toggleRecord(modeId: modeId)
+                await engine.toggleRecord(
+                    modeId: modeId
+                )
             case .idle:
                 // .idle now also covers "a previous session is transcribing in the
                 // background but none is actively recording" (derived state falls back to
@@ -266,7 +282,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                 } else if !engine.sessions.isEmpty {
                     // Background transcription(s) in flight → start ANOTHER recording.
                     SoundManager.shared.playStartSound()
-                    await engine.toggleRecord(modeId: modeId)
+                    await engine.toggleRecord(
+                        modeId: modeId
+                    )
                 } else {
                     await dismissRecorderPanel()
                 }
@@ -276,7 +294,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         } else {
             SoundManager.shared.playStartSound()
             isRecorderPanelVisible = true
-            await engine.toggleRecord(modeId: modeId)
+            await engine.toggleRecord(
+                modeId: modeId
+            )
         }
     }
 

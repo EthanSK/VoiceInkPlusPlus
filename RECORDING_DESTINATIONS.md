@@ -36,6 +36,14 @@ second/locked icon, as does a successful Next second-chance retarget while trans
 A failed retarget or an ordinary pass-through Next Track media press does not pulse. With macOS
 Reduce Motion enabled, the same confirmation uses a light fade without the scale beats.
 
+That flash confirms the action; a persistent cyan outline confirms ownership. As soon as any stop
+route freezes a real exact input, the stable second/locked icon remains outlined while that session
+is transcribing or delivering, including on a compact background chip. The outline follows a
+successful second-chance replacement and clears only when delivery resolves, visibly fails, or is
+cancelled. The recording-time preview, missing target, and app-only no-caret fallback remain
+unoutlined until exact-composer promotion succeeds. The first/current-focus icon never stays
+outlined because it can change after the destination decision.
+
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
 transcription phase that starts after recording stops.
@@ -159,11 +167,15 @@ unchanged, and never made Codex frontmost. Never generalize that result into raw
 Command–V/Return or infer success from an event return code alone. `AXConfirm` is still not a generic
 editor Return.
 
-When only a recording-start application fallback exists, or when the target app is already
-frontmost, VoiceInk++ retains the foreground route: activate/verify the saved application and input,
-send ordinary Command–V, perform the bounded semantic/System Events/humanized-HID auto-send, and
-restore the displaced workspace after the complete delivery. If Ethan moves focus during that
-sequence, the verification gates prevent Return from drifting into another app.
+When the exact saved input already owns system keyboard focus, VoiceInk++ uses the foreground route:
+it re-verifies that same app/window/input at the irreversible boundary, sends ordinary Command–V,
+and performs only the surface's bounded semantic or ordinary-HID auto-send. It never activates or
+internally refocuses a delivery target. If Ethan moves before Command–V, the key is cancelled and the
+same frozen target may continue through the non-activating exact-input route; otherwise delivery
+fails visibly. Separately, recording-start capture may make one bounded in-place attempt to focus a
+uniquely proven main composer while that app/window/task is already active. It rechecks the original
+control immediately before the one focus setter and never performs a compensating focus rewrite,
+because a rollback cannot distinguish VoiceInk++'s caret from a newer user click on that composer.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.

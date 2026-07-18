@@ -5,6 +5,36 @@ import os
 
 @MainActor
 final class FocusLockService: ObservableObject {
+    /// Terminal and iTerm reuse Accessibility editor wrappers across tabs and panes.
+    /// Their native window plus TTY/session pair is therefore the only authority for
+    /// later text delivery; window titles and whichever AX input is focused at delivery
+    /// are intentionally not part of this identity.
+    fileprivate enum TerminalAutomationTarget {
+        case appleTerminal(windowID: Int, tty: String)
+        case iTerm(windowID: Int, sessionID: String)
+    }
+
+    struct TerminalCaptureScriptResult: Equatable {
+        let windowID: Int
+        let sessionIdentity: String
+        let windowSessionCount: Int
+        let contents: String
+    }
+
+    struct TerminalNativeScriptResult: Equatable {
+        let windowID: Int
+        let sessionIdentity: String
+        let previousContents: String
+        let currentContents: String
+    }
+
+    enum TerminalTextDeliveryResult: Equatable {
+        case issued(previousContents: String, currentContents: String)
+        case unavailable
+        case failed(String)
+        case focusSafetyViolation
+    }
+
     fileprivate enum BackgroundTargetResolution: String {
         case strictFingerprint
         case telegramRetainedFocusedElement
@@ -40,6 +70,58 @@ final class FocusLockService: ObservableObject {
         let contextAnchors: [String]
     }
 
+    enum ApplicationFallbackScopeKind: Equatable {
+        case selectedTask
+        case floatingQuickComposer
+        case windowMainComposer
+    }
+
+    fileprivate enum ApplicationFallbackValidationPhase: Equatable {
+        case captureStrict
+        case promotedStableSelection
+    }
+
+    /// A no-caret recording start must still identify the selected task or a genuinely
+    /// separate floating panel at the decision moment. An already-focused, semantically
+    /// proven main composer may additionally use a task-specific UUID-bearing window
+    /// document together with its exact editor wrapper. A title, window identifier, or generic
+    /// window wrapper is never enough: different tasks can share titles and Electron
+    /// reuses one window while Codex/ChatGPT switches tasks. Retaining each scope gives
+    /// the resolver a cheap capture-boundary check.
+    fileprivate struct ApplicationFallbackScopeIdentity {
+        let kind: ApplicationFallbackScopeKind
+        let surface: SemanticSendSurface
+        let element: AXUIElement
+        let role: String?
+        let subrole: String?
+        let identifier: String?
+        let domIdentifier: String?
+        var stableTaskKey: String?
+        let label: String?
+        let containerDescriptor: String?
+        let relativeFrame: CGRect?
+        let ancestorPath: [String]
+    }
+
+    private struct SelectedTaskScopeScanResult {
+        let scopes: [ApplicationFallbackScopeIdentity]
+        let completed: Bool
+        let visitedCount: Int
+    }
+
+    /// Cheap capture-time identity for the recordingStart application fallback. This
+    /// is deliberately separate from `ExactInputIdentity`: when no caret exists there
+    /// is no editor to fingerprint yet, but a real task/panel scope must stay selected
+    /// while the post-microphone resolver freezes one exact composer.
+    fileprivate struct ApplicationFallbackIdentity {
+        let capturedAtUptime: TimeInterval
+        let windowTitle: String?
+        let windowDocument: String?
+        let windowIdentifier: String?
+        let scopes: [ApplicationFallbackScopeIdentity]
+        let validationPhase: ApplicationFallbackValidationPhase
+    }
+
     struct ContextAnchorCandidate: Equatable {
         let value: String
         let isPrimary: Bool
@@ -60,14 +142,38 @@ final class FocusLockService: ObservableObject {
         fileprivate let element: AXUIElement?
         fileprivate let window: AXUIElement?
         fileprivate let identity: ExactInputIdentity?
-        fileprivate let retainedSubmitButton: AXUIElement?
-        fileprivate let retainedSubmitButtonFrame: CGRect?
+        fileprivate let applicationFallbackIdentity: ApplicationFallbackIdentity?
         fileprivate let app: NSRunningApplication
         fileprivate let pid: pid_t
+        fileprivate let terminalAutomationTarget: TerminalAutomationTarget?
+        fileprivate let captureID: UUID
+        fileprivate let capturedAtUptime: TimeInterval
+        fileprivate let captureFocusedElement: AXUIElement?
         let bundleIdentifier: String?
         let displayInfo: DisplayInfo
         var processIdentifier: pid_t { pid }
-        var hasExactInput: Bool { element != nil }
+        /// The captured process object is part of the physical input decision. Mode
+        /// resolution must use this exact launch instance rather than looking up the
+        /// PID later: a terminated target must fail closed, and a recycled PID must
+        /// never inherit the newly focused application's Mode.
+        var runningApplication: NSRunningApplication { app }
+        var applicationBundleName: String? { app.bundleURL?.lastPathComponent }
+        /// A retained system-focused wrapper is a foreground-only capability. A large
+        /// Electron history can exhaust the bounded identity scan even though macOS
+        /// gave us the real editor. Keep that wrapper for the zero-focus-mutation path,
+        /// but never re-resolve it or use it after keyboard focus moves.
+        var hasForegroundInput: Bool {
+            element != nil && window != nil
+        }
+
+        // Background delivery remains stricter: it needs both the retained editor and
+        // a complete identity that can safely resolve the same input later.
+        var hasExactInput: Bool {
+            FocusLockService.exactInputCaptureIsUsable(
+                hasElement: hasForegroundInput,
+                hasIdentity: identity != nil
+            )
+        }
     }
 
     struct BackgroundDeliverySession {
@@ -111,8 +217,86 @@ final class FocusLockService: ObservableObject {
     private struct NearbySubmitButtonCandidate {
         let element: AXUIElement
         let label: String
+        let labelAttribute: String
+        let usesVersionedUnlabelledOpenAIContract: Bool
         let score: CGFloat
+        let ancestorIndex: Int
         let discoveredDepth: Int
+        let surface: SemanticSendSurface
+        let enabled: Bool?
+    }
+
+    private enum NearbySubmitButtonLookup {
+        case ready(NearbySubmitButtonCandidate)
+        case disabled(NearbySubmitButtonCandidate)
+        case unavailable
+        case ambiguous
+    }
+
+    enum SemanticSendReadinessObservation: Equatable {
+        case unavailable
+        case disabled
+        case ready
+        case ambiguous
+        case cancelledOrBoundaryLost
+    }
+
+    enum SemanticSendReadinessDecision: Equatable {
+        case wait
+        case press
+        case stop
+    }
+
+    static func semanticSendReadinessDecision(
+        for observation: SemanticSendReadinessObservation,
+        waitForUnavailable: Bool = true
+    ) -> SemanticSendReadinessDecision {
+        switch observation {
+        case .unavailable:
+            return waitForUnavailable ? .wait : .stop
+        case .disabled:
+            return .wait
+        case .ready:
+            return .press
+        case .ambiguous, .cancelledOrBoundaryLost:
+            return .stop
+        }
+    }
+
+    private final class BoundedTraversalState {
+        var remainingNodeBudget: Int
+        var visitedNodeHashes = Set<CFHashCode>()
+
+        init(nodeBudget: Int) {
+            remainingNodeBudget = nodeBudget
+        }
+    }
+
+    private enum BoundedTraversalCompletion: Equatable {
+        case completed
+        case exhausted
+        case cancelled
+        case boundaryChanged
+        case stoppedByVisitor
+    }
+
+    private struct BoundedTraversalResult {
+        let visitedCount: Int
+        let completion: BoundedTraversalCompletion
+    }
+
+    private struct ContextFingerprintResult {
+        let selection: ContextAnchorSelection
+        let completion: BoundedTraversalCompletion
+
+        var completed: Bool { completion == .completed }
+    }
+
+    enum SemanticSendSurface: String, Equatable {
+        case openAIChatGPT
+        case openAICodex
+        case claudeDesktop
+        case telegramForegroundOnly
     }
 
     static let shared = FocusLockService()
@@ -144,6 +328,22 @@ final class FocusLockService: ObservableObject {
         "com.anthropic.claudefordesktop",
         "ru.keepcoder.Telegram"
     ]
+    private static let backgroundSemanticSendBundleIdentifiers: Set<String> = [
+        "com.openai.codex",
+        "com.openai.chat",
+        "com.anthropic.claudefordesktop"
+    ]
+    private static let recordingStartMainComposerBundleIdentifiers: Set<String> = [
+        "com.openai.codex",
+        "com.openai.chat",
+        "com.anthropic.claudefordesktop"
+    ]
+    private static let nativeTerminalBundleIdentifiers: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2"
+    ]
+    private static let openAIChatGPTApplicationName = "ChatGPT.app"
+    private static let openAICodexApplicationName = "Codex.app"
     private static let telegramGenericContextLabels: Set<String> = [
         "attach", "cancel", "close", "edit", "emoji", "message", "more",
         "mute", "online", "search", "send", "telegram", "unmute",
@@ -155,6 +355,12 @@ final class FocusLockService: ObservableObject {
 
     private init() {}
 
+    /// Capture the exact editable input at one destination decision. Application
+    /// fallback is allowed only for recordingStart (Next while recording), where an
+    /// Electron/Chromium shortcut can temporarily hide its editor. That fallback is
+    /// promoted once, immediately after microphone start, against capture-time
+    /// app/window/task identity; delivery never rediscovers a later composer. Primary
+    /// normal stop and second chance must keep the default exact-input-only behavior.
     func captureFocusedInput(allowApplicationFallback: Bool = false) -> Target? {
         guard AXIsProcessTrusted() else {
             logger.error("Focused input capture failed because Accessibility is not trusted")
@@ -171,24 +377,71 @@ final class FocusLockService: ObservableObject {
         guard focusedResult == .success,
               let focusedValue,
               CFGetTypeID(focusedValue) == AXUIElementGetTypeID() else {
+            if allowApplicationFallback,
+               let app = recordingStartApplicationWithoutFocusedInput() {
+                logger.notice("Captured recording-start main-composer application fallback without a focused AX element pid=\(app.processIdentifier, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) focusedAXError=\(focusedResult.rawValue, privacy: .public)")
+                return applicationFallbackTarget(
+                    for: app,
+                    sourceElement: nil
+                )
+            }
             logger.error("Focused input capture failed with AX error \(focusedResult.rawValue)")
             return nil
         }
 
-        let element = focusedValue as! AXUIElement
+        let decisionFocusedElement = focusedValue as! AXUIElement
         var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success,
+        guard AXUIElementGetPid(decisionFocusedElement, &pid) == .success,
               pid != ProcessInfo.processInfo.processIdentifier,
               let app = NSRunningApplication(processIdentifier: pid),
               !app.isTerminated else {
+            if allowApplicationFallback,
+               let fallbackApp = recordingStartApplicationWithoutFocusedInput() {
+                logger.notice("Captured recording-start main-composer application fallback after the focused AX wrapper could not identify a usable external app pid=\(fallbackApp.processIdentifier, privacy: .public) bundle=\(fallbackApp.bundleIdentifier ?? "nil", privacy: .public)")
+                return applicationFallbackTarget(
+                    for: fallbackApp,
+                    sourceElement: nil
+                )
+            }
             logger.error("Focused input capture could not resolve a live owning application")
             return nil
         }
 
-        let role = stringAttribute(kAXRoleAttribute, from: element)
-        let subrole = stringAttribute(kAXSubroleAttribute, from: element)
-        let isExactEditableInput = isEditableInput(role: role, subrole: subrole)
-        let canUseApplicationFallback = allowApplicationFallback && isApplicationFallbackContainer(role: role)
+        var element = decisionFocusedElement
+        var role = stringAttribute(kAXRoleAttribute, from: element)
+        var subrole = stringAttribute(kAXSubroleAttribute, from: element)
+        var isExactEditableInput = isEditableInput(role: role, subrole: subrole)
+        var inferredGenericFocusVerified: Bool?
+        // There is no universal Accessibility "main input" property. For apps without
+        // an audited task/composer contract, make one conservative foreground-only
+        // attempt: if the unchanged active window exposes exactly one visible, enabled,
+        // focusable AXTextArea and the original non-editable control still owns focus,
+        // focus that field in place. Ambiguous or incomplete scans do nothing. Known
+        // OpenAI/Claude surfaces continue through their stronger task-scoped async path.
+        if allowApplicationFallback,
+           !isExactEditableInput,
+           !Self.supportsRecordingStartMainComposer(
+                bundleIdentifier: app.bundleIdentifier
+           ),
+           let promoted = identifyAndFocusUniqueGenericMainInputIfSafe(
+                from: decisionFocusedElement,
+                in: app
+           ) {
+            element = promoted.element
+            inferredGenericFocusVerified = promoted.focusVerified
+            role = stringAttribute(kAXRoleAttribute, from: promoted.element)
+            subrole = stringAttribute(kAXSubroleAttribute, from: promoted.element)
+            isExactEditableInput = isEditableInput(
+                role: role,
+                subrole: subrole
+            )
+            logger.info("Identified the unique generic main input inside the unchanged active app pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) elementHash=\(CFHash(promoted.element), privacy: .public) focusVerified=\(promoted.focusVerified, privacy: .public)")
+        }
+        let canUseApplicationFallback = allowApplicationFallback
+            && (isApplicationFallbackContainer(role: role)
+                || Self.supportsRecordingStartMainComposer(
+                    bundleIdentifier: app.bundleIdentifier
+                ))
         guard isExactEditableInput || canUseApplicationFallback else {
             logger.error("Focused input capture rejected non-editable element pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(role ?? "nil", privacy: .public) subrole=\(subrole ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
             return nil
@@ -197,10 +450,11 @@ final class FocusLockService: ObservableObject {
         if isExactEditableInput {
             logger.info("Captured editable input pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(role ?? "nil", privacy: .public) subrole=\(subrole ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
         } else {
-            // Electron/Chromium frequently reports AXWebArea while a global shortcut's
-            // modifiers are down. Preserve the owning app for the recording-start/Next
-            // Track route; delivery can reactivate that app and use its retained focus even
-            // when macOS did not expose the exact editor wrapper at capture time.
+            // Electron/Chromium can report AXWebArea, a toolbar button, or no focused
+            // editor while the global shortcut is down. For recordingStart only, save
+            // the proven app/window so the one capture-bound promotion immediately
+            // after microphone start can freeze its main composer. Delivery never
+            // rediscovers it; primary normal stop and second chance never use fallback.
             logger.notice("Captured recording-start application fallback pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) rejectedRole=\(role ?? "nil", privacy: .public) rejectedSubrole=\(subrole ?? "nil", privacy: .public)")
         }
 
@@ -210,36 +464,94 @@ final class FocusLockService: ObservableObject {
         // indicator without changing any per-session locked destination semantics.
         ActiveWindowService.shared.updateCurrentApplicationForDisplay(app)
 
-        let owningWindow = isExactEditableInput ? owningWindow(for: element) : nil
-        let identity = owningWindow.flatMap {
+        // Telegram can expose the exact focused AXTextArea while omitting its AXWindow
+        // attribute. Use the owning app's verified focused window at the same capture
+        // instant so readable chat/header context is preserved. Do not accept the live
+        // wrapper alone: Telegram reuses it across chats. This exception must remain
+        // inside `owningWindow`'s explicit Telegram allowlist; applying the same fallback
+        // generically can associate an orphaned editor with an unrelated focused window.
+        let owningWindow = owningWindow(
+            for: element,
+            allowFocusedApplicationFallback: Self.isTelegram(
+                bundleIdentifier: app.bundleIdentifier
+            )
+        )
+        // Streaming/history updates beside an OpenAI or Claude composer may invalidate
+        // ordinary context anchors while the same exact editor still owns focus. Only
+        // a semantically proven main composer may capture the bounded selected-task or
+        // Option-Space panel scope that tolerates that drift. Search/rename/feedback
+        // fields keep the stricter ordinary identity path, and Telegram never uses it.
+        let exactApplicationScope = isExactEditableInput
+            ? exactMainComposerApplicationScope(
+                for: element,
+                in: owningWindow,
+                app: app
+              )
+            : nil
+        let identity = isExactEditableInput ? owningWindow.flatMap {
             exactInputIdentity(
                 for: element,
                 in: $0,
-                bundleIdentifier: app.bundleIdentifier
+                bundleIdentifier: app.bundleIdentifier,
+                hasHardenedApplicationScope: exactApplicationScope != nil
             )
+        } : nil
+        // Non-editable recording-start fallbacks deliberately stay cheap here: they
+        // save only the proven app/window scope and promote one exact composer after
+        // microphone start. Exact inputs retain that scope only as the narrow focused-
+        // wrapper drift guard described above.
+        let fallbackIdentity = isExactEditableInput
+            ? exactApplicationScope
+            : applicationFallbackIdentity(
+                for: owningWindow,
+                sourceElement: element,
+                bundleIdentifier: app.bundleIdentifier,
+                applicationBundleName: app.bundleURL?.lastPathComponent
+            )
+        if !isExactEditableInput,
+           !recordingStartNonFrontmostFallbackIsAllowed(
+                app: app,
+                window: owningWindow
+           ) {
+            logger.notice("Recording-start no-caret fallback rejected because the AX-focused app was not frontmost and no proven ChatGPT floating panel owned the decision pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
         }
-        // Only Telegram can hide its AX tree after capture and need the exact button
-        // wrapper retained. OpenAI and Claude resolve Send at delivery time, keeping
-        // their recording start/stop capture path free of a descendant search.
-        let retainedSubmitCandidate = isExactEditableInput
-            && Self.isTelegram(bundleIdentifier: app.bundleIdentifier)
-            ? nearbySubmitButtonCandidate(
-                element: element,
-                pid: pid,
-                requireEnabled: false
-              )
-            : nil
+        let inferredGenericRetainedTierIsUsable = inferredGenericFocusVerified.map {
+            Self.inferredGenericMainInputCaptureIsUsable(
+                hasExactIdentity: identity != nil,
+                focusVerified: $0
+            )
+        } ?? true
+        guard !isExactEditableInput
+                || identity != nil
+                || (Self.allowsRetainedForegroundOnlyInput(
+                    bundleIdentifier: app.bundleIdentifier
+                )
+                    && owningWindow != nil
+                    && inferredGenericRetainedTierIsUsable) else {
+            // Telegram reuses a retained editor wrapper across chats, so wrapper focus
+            // alone cannot identify the stop-time chat. Other apps may keep the exact
+            // system-focused wrapper as a foreground-only capability when the bounded
+            // context scan is incomplete.
+            logger.notice("Exact-input capture rejected because neither a complete identity nor a safe retained-foreground tier was available pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard isExactEditableInput || fallbackIdentity != nil else {
+            logger.notice("Recording-start application fallback rejected because no capture-time selected task or distinct panel could be proven pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
 
         return Target(
             element: isExactEditableInput ? element : nil,
             window: owningWindow,
             identity: identity,
-            retainedSubmitButton: retainedSubmitCandidate?.element,
-            retainedSubmitButtonFrame: retainedSubmitCandidate.flatMap {
-                frame(of: $0.element)
-            },
+            applicationFallbackIdentity: fallbackIdentity,
             app: app,
             pid: pid,
+            terminalAutomationTarget: nil,
+            captureID: UUID(),
+            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+            captureFocusedElement: decisionFocusedElement,
             bundleIdentifier: app.bundleIdentifier,
             displayInfo: Target.DisplayInfo(
                 applicationName: app.localizedName ?? app.bundleIdentifier ?? String(localized: "Unknown app"),
@@ -247,6 +559,1835 @@ final class FocusLockService: ObservableObject {
                 applicationIcon: app.icon
             )
         )
+    }
+
+    static func genericMainInputPromotionIsAllowed(
+        traversalCompleted: Bool,
+        candidateCount: Int,
+        appIsStillFrontmost: Bool,
+        sourceFocusStillMatches: Bool,
+        focusedWindowStillMatches: Bool
+    ) -> Bool {
+        traversalCompleted
+            && candidateCount == 1
+            && appIsStillFrontmost
+            && sourceFocusStillMatches
+            && focusedWindowStillMatches
+    }
+
+    static func inferredGenericMainInputCaptureIsUsable(
+        hasExactIdentity: Bool,
+        focusVerified: Bool
+    ) -> Bool {
+        // Unlike the original AX-focused element, a discovered generic candidate is
+        // only a real capability if it can be replayed exactly or the one focus setter
+        // was verified. Otherwise it was never the user's input and cannot be latched.
+        hasExactIdentity || focusVerified
+    }
+
+    /// Best-effort fallback for the user's broader "active app, no caret" workflow.
+    /// It is intentionally narrower than app-specific composer discovery: only one
+    /// large visible AXTextArea in the unchanged active window can win, the bounded
+    /// scan must finish, and focus is set only inside the already-frontmost app.
+    private func identifyAndFocusUniqueGenericMainInputIfSafe(
+        from sourceElement: AXUIElement,
+        in app: NSRunningApplication
+    ) -> (element: AXUIElement, focusVerified: Bool)? {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == app.processIdentifier else {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        guard let window = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ),
+              owningWindow(
+                for: sourceElement,
+                allowFocusedApplicationFallback: false
+              ).map({ CFEqual($0, window) }) == true,
+              let windowFrame = frame(of: window),
+              let focusedBefore = systemFocusedElement(),
+              focusedBefore.pid == app.processIdentifier,
+              CFEqual(focusedBefore.element, sourceElement) else {
+            return nil
+        }
+
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.020
+        let nodeBudget = 300
+        var queue: [(AXUIElement, Int)] = [(window, 0)]
+        var cursor = 0
+        var visited = Set<CFHashCode>()
+        var candidates: [AXUIElement] = []
+        var traversalCompleted = true
+        while cursor < queue.count {
+            guard visited.count < nodeBudget,
+                  ProcessInfo.processInfo.systemUptime < deadline else {
+                traversalCompleted = false
+                break
+            }
+            let (candidate, depth) = queue[cursor]
+            cursor += 1
+            guard visited.insert(CFHash(candidate)).inserted else { continue }
+
+            if !CFEqual(candidate, sourceElement),
+               stringAttribute(kAXRoleAttribute, from: candidate)
+                    == kAXTextAreaRole,
+               boolAttribute(kAXEnabledAttribute, from: candidate) != false,
+               boolAttribute("AXVisible", from: candidate) != false,
+               let candidateFrame = frame(of: candidate),
+               candidateFrame.width >= 160,
+               candidateFrame.height >= 24,
+               candidateFrame.intersects(windowFrame),
+               owningWindow(for: candidate).map({ CFEqual($0, window) }) == true {
+                var settable = DarwinBoolean(false)
+                if AXUIElementIsAttributeSettable(
+                    candidate,
+                    kAXFocusedAttribute as CFString,
+                    &settable
+                ) == .success,
+                   settable.boolValue,
+                   !candidates.contains(where: { CFEqual($0, candidate) }) {
+                    candidates.append(candidate)
+                    if candidates.count > 1 { break }
+                }
+            }
+            guard depth < 24 else { continue }
+            for child in elementArrayAttribute(
+                kAXChildrenAttribute,
+                from: candidate
+            ) {
+                queue.append((child, depth + 1))
+            }
+        }
+        if cursor < queue.count { traversalCompleted = false }
+
+        let focusStillMatches = systemFocusedElement().map {
+            $0.pid == app.processIdentifier
+                && CFEqual($0.element, sourceElement)
+        } == true
+        let windowStillMatches = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ).map({ CFEqual($0, window) }) == true
+        guard Self.genericMainInputPromotionIsAllowed(
+            traversalCompleted: traversalCompleted,
+            candidateCount: candidates.count,
+            appIsStillFrontmost:
+                NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    == app.processIdentifier,
+            sourceFocusStillMatches: focusStillMatches,
+            focusedWindowStillMatches: windowStillMatches
+        ), let candidate = candidates.first else {
+            return nil
+        }
+
+        // AX reads can run app code. Put the source-focus read last, immediately before
+        // the one setter, and never make a compensating focus mutation: a rollback
+        // cannot distinguish our caret from a newer user click onto the same composer.
+        guard elementAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+              ).map({ CFEqual($0, window) }) == true,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == app.processIdentifier,
+              systemFocusedElement().map({
+                $0.pid == app.processIdentifier
+                    && CFEqual($0.element, sourceElement)
+              }) == true else {
+            return nil
+        }
+        guard AXUIElementSetAttributeValue(
+            candidate,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success else {
+            // Candidate discovery is independent of this optional convenience focus.
+            // The caller will retain it only if exact replay-safe identity succeeds.
+            return (candidate, false)
+        }
+        let promotionVerified =
+            NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == app.processIdentifier
+            && systemFocusedElement().map({
+                $0.pid == app.processIdentifier
+                    && CFEqual($0.element, candidate)
+            }) == true
+        return (candidate, promotionVerified)
+    }
+
+    func requiresNativeTerminalSessionBinding(for target: Target) -> Bool {
+        target.bundleIdentifier.map(
+            Self.nativeTerminalBundleIdentifiers.contains
+        ) == true
+    }
+
+    func hasNativeTerminalAutomationTarget(for target: Target) -> Bool {
+        target.terminalAutomationTarget != nil
+    }
+
+    func representsSameCaptureDecision(_ lhs: Target, _ rhs: Target) -> Bool {
+        lhs.captureID == rhs.captureID
+    }
+
+    /// Deterministic, non-mutating seam for session-ordering tests. The fake wrapper is
+    /// never resolved or used for delivery; it only lets tests distinguish two enriched
+    /// values that belong to the same capture decision without touching a live input.
+    /// Keep this internal seam available in Release test builds: the shared Xcode scheme
+    /// deliberately runs unit tests with its Release configuration, where `DEBUG` is not
+    /// defined even though `@testable import` is enabled for the test action.
+    static func makeTestingTarget(
+        captureID: UUID,
+        inputName: String
+    ) -> Target? {
+        guard let app = NSWorkspace.shared.frontmostApplication
+                ?? NSWorkspace.shared.runningApplications.first(where: {
+                    !$0.isTerminated && $0.processIdentifier > 0
+                }) else {
+            return nil
+        }
+        let placeholder = AXUIElementCreateApplication(app.processIdentifier)
+        return Target(
+            element: placeholder,
+            window: placeholder,
+            identity: nil,
+            applicationFallbackIdentity: nil,
+            app: app,
+            pid: app.processIdentifier,
+            terminalAutomationTarget: nil,
+            captureID: captureID,
+            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+            captureFocusedElement: placeholder,
+            bundleIdentifier: app.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: app.localizedName ?? "Test application",
+                inputName: inputName,
+                applicationIcon: app.icon
+            )
+        )
+    }
+
+    /// Enrich one already-frozen AX decision with the host-native window and
+    /// TTY/session identity. This never recaptures current focus. The async Apple Event
+    /// is adopted only if the selected tab/pane plus readable AX/native fingerprint
+    /// still prove the same decision after the await; otherwise the unchanged target is
+    /// returned and native delivery later fails closed before mutation.
+    func completingTerminalAutomationTarget(for target: Target) async -> Target {
+        guard target.terminalAutomationTarget == nil,
+              let element = target.element,
+              let window = target.window,
+              requiresNativeTerminalSessionBinding(for: target),
+              !Task.isCancelled else {
+            return target
+        }
+        let automationTarget = await captureTerminalAutomationTarget(
+            bundleIdentifier: target.bundleIdentifier,
+            pid: target.pid,
+            element: element,
+            window: window
+        )
+        guard let automationTarget, !Task.isCancelled else { return target }
+        return Target(
+            element: target.element,
+            window: target.window,
+            identity: target.identity,
+            applicationFallbackIdentity: target.applicationFallbackIdentity,
+            app: target.app,
+            pid: target.pid,
+            terminalAutomationTarget: automationTarget,
+            captureID: target.captureID,
+            capturedAtUptime: target.capturedAtUptime,
+            captureFocusedElement: target.captureFocusedElement,
+            bundleIdentifier: target.bundleIdentifier,
+            displayInfo: target.displayInfo
+        )
+    }
+
+    private func captureTerminalAutomationTarget(
+        bundleIdentifier: String?,
+        pid: pid_t,
+        element: AXUIElement,
+        window: AXUIElement
+    ) async -> TerminalAutomationTarget? {
+        guard let bundleIdentifier,
+              Self.nativeTerminalBundleIdentifiers.contains(bundleIdentifier),
+              terminalDecisionBoundaryMatches(
+                pid: pid,
+                element: element,
+                window: window
+              ),
+              let windowID = cgWindowIdentifier(pid: pid, window: window),
+              let decisionContents = stringAttribute(
+                kAXValueAttribute,
+                from: element
+              ) else {
+            return nil
+        }
+
+        // Freeze every non-Apple-Event input before yielding. A script that merely
+        // reports whichever session is selected later would bind the wrong tab if Ethan
+        // moved immediately after the button press.
+        let selectedScan = terminalSelectedControls(in: window)
+        guard selectedScan.completed else { return nil }
+        let decisionSelectedControls = selectedScan.elements
+        let decisionContentAnchors = Self.terminalContentAnchors(
+            decisionContents
+        )
+        let source: String
+        switch bundleIdentifier {
+        case "com.apple.Terminal":
+            source = Self.terminalScriptHelpers + """
+
+            tell application "Terminal"
+                set windowMatchCount to 0
+                set targetWindow to missing value
+                repeat with candidateWindow in windows
+                    if (id of candidateWindow as integer) is \(windowID) then
+                        set windowMatchCount to windowMatchCount + 1
+                        set targetWindow to contents of candidateWindow
+                    end if
+                end repeat
+                if windowMatchCount is not 1 then error "Terminal window ID was not unique"
+                set targetTab to selected tab of targetWindow
+                set targetTTY to (tty of targetTab as text)
+                if targetTTY is "" then error "Terminal selected tab had no TTY"
+                set targetContents to my voiceInkTail((contents of targetTab as text), 4096)
+                return my voiceInkFramedResult({(id of targetWindow as text), targetTTY, (count of tabs of targetWindow as text)}, {targetContents})
+            end tell
+            """
+        case "com.googlecode.iterm2":
+            source = Self.terminalScriptHelpers + """
+
+            tell application "iTerm2"
+                set windowMatchCount to 0
+                set targetWindow to missing value
+                repeat with candidateWindow in windows
+                    if (id of candidateWindow as integer) is \(windowID) then
+                        set windowMatchCount to windowMatchCount + 1
+                        set targetWindow to contents of candidateWindow
+                    end if
+                end repeat
+                if windowMatchCount is not 1 then error "iTerm window ID was not unique"
+                set targetSession to current session of targetWindow
+                set targetSessionID to (id of targetSession as text)
+                if targetSessionID is "" then error "iTerm current session had no ID"
+                set windowSessionCount to 0
+                repeat with candidateTab in tabs of targetWindow
+                    set windowSessionCount to windowSessionCount + (count of sessions of candidateTab)
+                end repeat
+                set targetContents to my voiceInkTail((contents of targetSession as text), 4096)
+                return my voiceInkFramedResult({(id of targetWindow as text), targetSessionID, (windowSessionCount as text)}, {targetContents})
+            end tell
+            """
+        default:
+            return nil
+        }
+
+        let parsed: TerminalCaptureScriptResult
+        do {
+            let output = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: 1.5
+            ).stdout
+            guard !Task.isCancelled,
+                  let value = Self.terminalCaptureScriptResult(output) else {
+                return nil
+            }
+            parsed = value
+        } catch {
+            logger.error("Terminal native identity capture failed without exposing host output category=\(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+
+        let currentSelectedScan = terminalSelectedControls(in: window)
+        let currentSelectedControls = currentSelectedScan.elements
+        let selectionControlsMatch = currentSelectedScan.completed
+            && decisionSelectedControls.count == currentSelectedControls.count
+            && zip(decisionSelectedControls, currentSelectedControls).allSatisfy {
+                CFEqual($0.0, $0.1)
+            }
+        guard !Task.isCancelled,
+              parsed.windowID == windowID,
+              Self.terminalSelectionMultiplicityIsSafe(
+                selectedControlCount: decisionSelectedControls.count,
+                windowSessionCount: parsed.windowSessionCount
+              ),
+              selectionControlsMatch,
+              Self.terminalDecisionFingerprintMatches(
+                captured: decisionContentAnchors,
+                native: Self.terminalContentAnchors(parsed.contents),
+                windowSessionCount: parsed.windowSessionCount
+              ),
+              terminalCapturedScopeStillMatches(
+                pid: pid,
+                element: element,
+                window: window
+              ) else {
+            logger.error("Terminal native identity did not match the frozen decision boundary pid=\(pid, privacy: .public) windowID=\(windowID, privacy: .public) selectedControls=\(decisionSelectedControls.count, privacy: .public) windowSessions=\(parsed.windowSessionCount, privacy: .public)")
+            return nil
+        }
+
+        switch bundleIdentifier {
+        case "com.apple.Terminal":
+            logger.info("Captured Terminal native destination windowID=\(windowID, privacy: .public) tty=\(parsed.sessionIdentity, privacy: .private(mask: .hash))")
+            return .appleTerminal(
+                windowID: windowID,
+                tty: parsed.sessionIdentity
+            )
+        case "com.googlecode.iterm2":
+            logger.info("Captured iTerm native destination windowID=\(windowID, privacy: .public) session=\(parsed.sessionIdentity, privacy: .private(mask: .hash))")
+            return .iTerm(
+                windowID: windowID,
+                sessionID: parsed.sessionIdentity
+            )
+        default:
+            return nil
+        }
+    }
+
+    static func terminalCaptureScriptResult(
+        _ value: String
+    ) -> TerminalCaptureScriptResult? {
+        guard let framed = terminalFramedFields(
+            value,
+            metadataCount: 3,
+            payloadCount: 1
+        ), let windowID = Int(framed.metadata[0]),
+           !framed.metadata[1].isEmpty,
+           let windowSessionCount = Int(framed.metadata[2]),
+           windowSessionCount > 0,
+           let contents = framed.payloads.first else {
+            return nil
+        }
+        return TerminalCaptureScriptResult(
+            windowID: windowID,
+            sessionIdentity: framed.metadata[1],
+            windowSessionCount: windowSessionCount,
+            contents: contents
+        )
+    }
+
+    static func terminalNativeScriptResult(
+        _ value: String
+    ) -> TerminalNativeScriptResult? {
+        guard let framed = terminalFramedFields(
+            value,
+            metadataCount: 2,
+            payloadCount: 2
+        ), let windowID = Int(framed.metadata[0]),
+           !framed.metadata[1].isEmpty else {
+            return nil
+        }
+        return TerminalNativeScriptResult(
+            windowID: windowID,
+            sessionIdentity: framed.metadata[1],
+            previousContents: framed.payloads[0],
+            currentContents: framed.payloads[1]
+        )
+    }
+
+    static func terminalContentAnchors(_ contents: String) -> [String] {
+        let normalized = contents
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        return Array(normalized
+            .split(separator: "\n")
+            .map {
+                $0.split(whereSeparator: { $0.isWhitespace })
+                    .joined(separator: " ")
+            }
+            .filter { $0.count >= 20 }
+            .suffix(20))
+    }
+
+    static func terminalDecisionFingerprintMatches(
+        captured: [String],
+        native: [String],
+        windowSessionCount: Int
+    ) -> Bool {
+        if windowSessionCount == 1, captured.isEmpty { return true }
+        return contextFingerprintMatches(captured: captured, current: native)
+    }
+
+    static func terminalSelectionMultiplicityIsSafe(
+        selectedControlCount: Int,
+        windowSessionCount: Int
+    ) -> Bool {
+        windowSessionCount == 1 || selectedControlCount == 1
+    }
+
+    static func terminalTextIsSafeForSingleNativeOperation(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        return text.unicodeScalars.allSatisfy { scalar in
+            !CharacterSet.controlCharacters.contains(scalar)
+                && !CharacterSet.newlines.contains(scalar)
+        }
+    }
+
+    static func terminalDeliveryFocusStayedSafe(
+        targetPID: pid_t,
+        targetWasFrontmost: Bool,
+        targetOwnedKeyboardFocus: Bool,
+        currentFrontmostPID: pid_t?,
+        currentKeyboardFocusPID: pid_t?
+    ) -> Bool {
+        (targetWasFrontmost || currentFrontmostPID != targetPID)
+            && (targetOwnedKeyboardFocus || currentKeyboardFocusPID != targetPID)
+    }
+
+    /// Perform exactly one host-native mutation against the frozen session pair. The
+    /// script locates that pair without selecting or activating it, writes text and the
+    /// configured newline atomically, then performs bounded read-only polling. It never
+    /// falls back to PID/AX insertion or retries Return.
+    func performTerminalTextDelivery(
+        _ text: String,
+        autoSendKey: AutoSendKey,
+        to target: Target
+    ) async -> TerminalTextDeliveryResult {
+        guard Self.terminalTextIsSafeForSingleNativeOperation(text),
+              requiresNativeTerminalSessionBinding(for: target),
+              let destination = target.terminalAutomationTarget,
+              !target.app.isTerminated,
+              let focusBefore = systemFocusedElement() else {
+            return target.terminalAutomationTarget == nil
+                ? .unavailable
+                : .failed("terminal transcript or focus boundary was unsafe")
+        }
+        let frontmostPIDBefore = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        let targetWasFrontmost = frontmostPIDBefore == target.pid
+        let targetOwnedKeyboardFocus = focusBefore.pid == target.pid
+
+        let expectedWindowID: Int
+        let expectedSessionIdentity: String
+        let source: String
+        let textLiteral = Self.appleScriptLiteral(text)
+        switch destination {
+        case .appleTerminal(let windowID, let tty):
+            guard autoSendKey == .enter else { return .unavailable }
+            expectedWindowID = windowID
+            expectedSessionIdentity = tty
+            let ttyLiteral = Self.appleScriptLiteral(tty)
+            source = Self.terminalScriptHelpers + """
+
+            tell application "Terminal"
+                set windowMatchCount to 0
+                set tabMatchCount to 0
+                set targetWindow to missing value
+                set targetTab to missing value
+                repeat with candidateWindow in windows
+                    if (id of candidateWindow as integer) is \(windowID) then
+                        set windowMatchCount to windowMatchCount + 1
+                        set targetWindow to contents of candidateWindow
+                    end if
+                end repeat
+                if windowMatchCount is not 1 then error "Terminal window ID was not unique"
+                repeat with candidateTab in tabs of targetWindow
+                    if (tty of candidateTab as text) is (\(ttyLiteral)) then
+                        set tabMatchCount to tabMatchCount + 1
+                        set targetTab to contents of candidateTab
+                    end if
+                end repeat
+                if tabMatchCount is not 1 then error "Terminal TTY was not unique"
+                set beforeContents to my voiceInkTail((contents of targetTab as text), 4096)
+                do script (\(textLiteral)) in targetTab
+                set afterContents to beforeContents
+                repeat with pollIndex from 1 to 16
+                    delay 0.05
+                    set afterContents to my voiceInkTail((contents of targetTab as text), 4096)
+                end repeat
+                return my voiceInkFramedResult({(id of targetWindow as text), (tty of targetTab as text)}, {beforeContents, afterContents})
+            end tell
+            """
+        case .iTerm(let windowID, let sessionID):
+            guard autoSendKey == .none || autoSendKey == .enter else {
+                return .unavailable
+            }
+            expectedWindowID = windowID
+            expectedSessionIdentity = sessionID
+            let sessionLiteral = Self.appleScriptLiteral(sessionID)
+            let newline = autoSendKey == .enter ? "true" : "false"
+            source = Self.terminalScriptHelpers + """
+
+            tell application "iTerm2"
+                set windowMatchCount to 0
+                set sessionMatchCount to 0
+                set targetWindow to missing value
+                set targetSession to missing value
+                repeat with candidateWindow in windows
+                    if (id of candidateWindow as integer) is \(windowID) then
+                        set windowMatchCount to windowMatchCount + 1
+                        set targetWindow to contents of candidateWindow
+                    end if
+                end repeat
+                if windowMatchCount is not 1 then error "iTerm window ID was not unique"
+                repeat with candidateTab in tabs of targetWindow
+                    repeat with candidateSession in sessions of candidateTab
+                        if (id of candidateSession as text) is (\(sessionLiteral)) then
+                            set sessionMatchCount to sessionMatchCount + 1
+                            set targetSession to contents of candidateSession
+                        end if
+                    end repeat
+                end repeat
+                if sessionMatchCount is not 1 then error "iTerm session was not unique"
+                set beforeContents to my voiceInkTail((contents of targetSession as text), 4096)
+                write targetSession text (\(textLiteral)) newline \(newline)
+                set afterContents to beforeContents
+                repeat with pollIndex from 1 to 16
+                    delay 0.05
+                    set afterContents to my voiceInkTail((contents of targetSession as text), 4096)
+                end repeat
+                return my voiceInkFramedResult({(id of targetWindow as text), (id of targetSession as text)}, {beforeContents, afterContents})
+            end tell
+            """
+        }
+
+        let parsed: TerminalNativeScriptResult
+        do {
+            let output = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: 2.5
+            ).stdout
+            guard !Task.isCancelled,
+                  let value = Self.terminalNativeScriptResult(output),
+                  value.windowID == expectedWindowID,
+                  value.sessionIdentity == expectedSessionIdentity else {
+                return .failed("terminal host returned malformed or mismatched native identity")
+            }
+            parsed = value
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+
+        let currentKeyboardPID = systemFocusedElement()?.pid
+        guard Self.terminalDeliveryFocusStayedSafe(
+            targetPID: target.pid,
+            targetWasFrontmost: targetWasFrontmost,
+            targetOwnedKeyboardFocus: targetOwnedKeyboardFocus,
+            currentFrontmostPID: NSWorkspace.shared.frontmostApplication?
+                .processIdentifier,
+            currentKeyboardFocusPID: currentKeyboardPID
+        ) else {
+            return .focusSafetyViolation
+        }
+        return .issued(
+            previousContents: parsed.previousContents,
+            currentContents: parsed.currentContents
+        )
+    }
+
+    private static let terminalScriptHelpers = """
+    on voiceInkTail(valueText, maximumLength)
+        set valueText to valueText as text
+        if (count characters of valueText) is greater than maximumLength then
+            set startIndex to ((count characters of valueText) - maximumLength + 1)
+            return text startIndex thru -1 of valueText
+        end if
+        return valueText
+    end voiceInkTail
+
+    on voiceInkFramedResult(metadataValues, payloadValues)
+        set outputText to ""
+        repeat with metadataValue in metadataValues
+            set outputText to outputText & ((contents of metadataValue) as text) & linefeed
+        end repeat
+        repeat with payloadValue in payloadValues
+            set payloadText to (contents of payloadValue) as text
+            set outputText to outputText & ((count characters of payloadText) as text) & linefeed
+        end repeat
+        repeat with payloadValue in payloadValues
+            set outputText to outputText & ((contents of payloadValue) as text)
+        end repeat
+        return outputText
+    end voiceInkFramedResult
+    """
+
+    private static func terminalFramedFields(
+        _ value: String,
+        metadataCount: Int,
+        payloadCount: Int
+    ) -> (metadata: [String], payloads: [String])? {
+        guard metadataCount > 0, payloadCount > 0 else { return nil }
+        var cursor = value.startIndex
+        func nextHeaderLine() -> String? {
+            guard let newline = value[cursor...].firstIndex(of: "\n") else {
+                return nil
+            }
+            var line = String(value[cursor..<newline])
+            if line.last == "\r" { line.removeLast() }
+            cursor = value.index(after: newline)
+            return line
+        }
+
+        var metadata: [String] = []
+        for _ in 0..<metadataCount {
+            guard let field = nextHeaderLine() else { return nil }
+            metadata.append(field)
+        }
+        var lengths: [Int] = []
+        for _ in 0..<payloadCount {
+            guard let field = nextHeaderLine(),
+                  let length = Int(field),
+                  (0...4096).contains(length) else {
+                return nil
+            }
+            lengths.append(length)
+        }
+        var payloads: [String] = []
+        for length in lengths {
+            guard let end = value.index(
+                cursor,
+                offsetBy: length,
+                limitedBy: value.endIndex
+            ) else {
+                return nil
+            }
+            payloads.append(String(value[cursor..<end]))
+            cursor = end
+        }
+        let suffix = value[cursor...]
+        guard suffix.isEmpty || suffix == "\n" else { return nil }
+        return (metadata, payloads)
+    }
+
+    static func appleScriptLiteral(_ value: String) -> String {
+        var expression: [String] = []
+        var segment = ""
+        func flushSegment() {
+            guard !segment.isEmpty else { return }
+            let escaped = segment
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            expression.append("\"\(escaped)\"")
+            segment = ""
+        }
+        for character in value {
+            switch character {
+            case "\n":
+                flushSegment()
+                expression.append("(ASCII character 10)")
+            case "\r":
+                flushSegment()
+                expression.append("(ASCII character 13)")
+            case "\t":
+                flushSegment()
+                expression.append("(ASCII character 9)")
+            default:
+                segment.append(character)
+            }
+        }
+        flushSegment()
+        return expression.isEmpty ? "\"\"" : expression.joined(separator: " & ")
+    }
+
+    private func terminalDecisionBoundaryMatches(
+        pid: pid_t,
+        element: AXUIElement,
+        window: AXUIElement
+    ) -> Bool {
+        guard let focused = systemFocusedElement(),
+              focused.pid == pid,
+              CFEqual(focused.element, element),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        else { return false }
+        return terminalCapturedScopeStillMatches(
+            pid: pid,
+            element: element,
+            window: window
+        )
+    }
+
+    private func terminalCapturedScopeStillMatches(
+        pid: pid_t,
+        element: AXUIElement,
+        window: AXUIElement
+    ) -> Bool {
+        var elementPID: pid_t = 0
+        var windowPID: pid_t = 0
+        guard AXUIElementGetPid(element, &elementPID) == .success,
+              AXUIElementGetPid(window, &windowPID) == .success,
+              elementPID == pid,
+              windowPID == pid,
+              owningWindow(
+                for: element,
+                allowFocusedApplicationFallback: false
+              ).map({ CFEqual($0, window) }) == true else {
+            return false
+        }
+        return true
+    }
+
+    private func terminalSelectedControls(
+        in window: AXUIElement
+    ) -> (elements: [AXUIElement], completed: Bool) {
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.04
+        var queue: [(AXUIElement, Int)] = [(window, 0)]
+        var cursor = 0
+        var visited = 0
+        var seen = Set<CFHashCode>()
+        var selected: [AXUIElement] = []
+        var truncated = false
+        while cursor < queue.count,
+              visited < 500,
+              ProcessInfo.processInfo.systemUptime < deadline {
+            let (element, depth) = queue[cursor]
+            cursor += 1
+            guard seen.insert(CFHash(element)).inserted else { continue }
+            visited += 1
+            if stringAttribute(kAXRoleAttribute, from: element)
+                    == kAXRadioButtonRole,
+               numberAttribute(kAXValueAttribute, from: element)?.intValue == 1 {
+                selected.append(element)
+            }
+            let descendants = traversalChildren(of: element)
+            guard depth < 14 else {
+                if !descendants.isEmpty { truncated = true }
+                continue
+            }
+            let remaining = max(
+                0,
+                500 - visited - (queue.count - cursor)
+            )
+            if descendants.count > remaining { truncated = true }
+            queue.append(contentsOf: descendants.prefix(remaining).map {
+                ($0, depth + 1)
+            })
+        }
+        return (
+            selected,
+            cursor >= queue.count && !truncated
+                && ProcessInfo.processInfo.systemUptime < deadline
+        )
+    }
+
+    private func cgWindowIdentifier(
+        pid: pid_t,
+        window: AXUIElement
+    ) -> Int? {
+        guard let expectedFrame = frame(of: window),
+              let windowInfo = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID
+              ) as? [[String: Any]] else {
+            return nil
+        }
+        let expectedTitle = nonEmptyStringAttribute(
+            kAXTitleAttribute,
+            from: window
+        )
+        let candidates: [(id: Int, title: String?)] = windowInfo.compactMap {
+            info in
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?
+                    .int32Value == pid,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let number = info[kCGWindowNumber as String] as? NSNumber,
+                  let boundsDictionary = info[kCGWindowBounds as String]
+                    as? NSDictionary else {
+                return nil
+            }
+            var bounds = CGRect.zero
+            guard CGRectMakeWithDictionaryRepresentation(
+                boundsDictionary as CFDictionary,
+                &bounds
+            ), frameDistance(bounds, expectedFrame) <= 4 else {
+                return nil
+            }
+            return (
+                number.intValue,
+                info[kCGWindowName as String] as? String
+            )
+        }
+        if candidates.count == 1 { return candidates[0].id }
+        guard let expectedTitle else { return nil }
+        let titleMatches = candidates.filter { $0.title == expectedTitle }
+        return titleMatches.count == 1 ? titleMatches[0].id : nil
+    }
+
+    private func recordingStartApplicationWithoutFocusedInput() -> NSRunningApplication? {
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedApplicationValue: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            systemWide,
+            kAXFocusedApplicationAttribute as CFString,
+            &focusedApplicationValue
+        )
+        var accessibilityApplication: NSRunningApplication?
+        if result == .success,
+           let focusedApplicationValue,
+           CFGetTypeID(focusedApplicationValue) == AXUIElementGetTypeID() {
+            var focusedPID: pid_t = 0
+            if AXUIElementGetPid(
+                focusedApplicationValue as! AXUIElement,
+                &focusedPID
+            ) == .success {
+                accessibilityApplication = NSRunningApplication(
+                    processIdentifier: focusedPID
+                )
+            }
+        }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let candidates = [
+            accessibilityApplication,
+            NSWorkspace.shared.frontmostApplication
+        ].compactMap { $0 }.reduce(into: [NSRunningApplication]()) {
+            result, candidate in
+            if !result.contains(where: { existing in
+                existing.processIdentifier == candidate.processIdentifier
+            }) {
+                result.append(candidate)
+            }
+        }
+        return candidates.first { candidate in
+            guard candidate.processIdentifier != ownPID,
+                  !candidate.isTerminated,
+                  Self.supportsRecordingStartMainComposer(
+                    bundleIdentifier: candidate.bundleIdentifier
+                  ) else {
+                return false
+            }
+            let appElement = AXUIElementCreateApplication(
+                candidate.processIdentifier
+            )
+            let window = elementAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+            )
+            // A stale AX-focused OpenAI app must not prevent the real frontmost app
+            // from being considered. Only a proven ChatGPT floating panel may win a
+            // deliberate AX/frontmost disagreement.
+            return recordingStartNonFrontmostFallbackIsAllowed(
+                app: candidate,
+                window: window
+            )
+        }
+    }
+
+    private func recordingStartNonFrontmostFallbackIsAllowed(
+        app: NSRunningApplication,
+        window: AXUIElement?
+    ) -> Bool {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == app.processIdentifier {
+            return true
+        }
+        guard let window,
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: app.bundleIdentifier,
+                applicationBundleName: app.bundleURL?.lastPathComponent
+              ) else {
+            return false
+        }
+        return Self.recordingStartFloatingPanelEvidenceMatches(
+            surface: surface,
+            subrole: nonEmptyStringAttribute(kAXSubroleAttribute, from: window),
+            isModal: boolAttribute(kAXModalAttribute, from: window) == true
+        )
+    }
+
+    private static func allowsRetainedForegroundOnlyInput(
+        bundleIdentifier: String?
+    ) -> Bool {
+        // Telegram can reuse one AXTextArea wrapper for a different selected chat.
+        // Without complete readable chat identity, even CFEqual + keyboard focus does
+        // not prove that this is the chat selected at the stop decision.
+        !isTelegram(bundleIdentifier: bundleIdentifier)
+    }
+
+    private func applicationFallbackTarget(
+        for app: NSRunningApplication,
+        sourceElement: AXUIElement?
+    ) -> Target? {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let window = sourceElement.flatMap {
+            owningWindow(for: $0, allowFocusedApplicationFallback: false)
+        }
+            ?? elementAttribute(kAXFocusedWindowAttribute, from: appElement)
+        guard recordingStartNonFrontmostFallbackIsAllowed(
+            app: app,
+            window: window
+        ) else {
+            logger.notice("Recording-start no-focus fallback rejected because a nonfrontmost app did not expose the proven ChatGPT floating panel pid=\(app.processIdentifier, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let identity = applicationFallbackIdentity(
+            for: window,
+            sourceElement: sourceElement,
+            bundleIdentifier: app.bundleIdentifier,
+            applicationBundleName: app.bundleURL?.lastPathComponent
+        ) else {
+            logger.notice("Recording-start no-focus fallback rejected because no capture-time selected task or distinct panel could be proven pid=\(app.processIdentifier, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        ActiveWindowService.shared.updateCurrentApplicationForDisplay(app)
+        return Target(
+            element: nil,
+            window: window,
+            identity: nil,
+            applicationFallbackIdentity: identity,
+            app: app,
+            pid: app.processIdentifier,
+            terminalAutomationTarget: nil,
+            captureID: UUID(),
+            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+            captureFocusedElement: sourceElement,
+            bundleIdentifier: app.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: app.localizedName
+                    ?? app.bundleIdentifier
+                    ?? String(localized: "Unknown app"),
+                inputName: String(localized: "main composer"),
+                applicationIcon: app.icon
+            )
+        )
+    }
+
+    /// Only a proven primary chat composer may borrow the selected-task/floating-panel
+    /// scope as its context-drift boundary. Merely being an editable field inside an
+    /// OpenAI/Claude process is insufficient: search, feedback, rename, settings, and
+    /// modal textareas must keep their ordinary exact context proof. Submission still
+    /// independently requires an explicit semantic Send control at action time.
+    private func exactMainComposerApplicationScope(
+        for element: AXUIElement,
+        in window: AXUIElement?,
+        app: NSRunningApplication
+    ) -> ApplicationFallbackIdentity? {
+        guard let window,
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: app.bundleIdentifier,
+                applicationBundleName: app.bundleURL?.lastPathComponent
+              ),
+              surface != .telegramForegroundOnly else {
+            return nil
+        }
+        let windowIsModal = boolAttribute(kAXModalAttribute, from: window) == true
+        let hasDisallowedSecondaryAncestor =
+            hasDisallowedSecondaryComposerAncestor(element, stoppingAt: window)
+        guard Self.exactMainComposerCaptureEvidenceMatches(
+            surface: surface,
+            description: nonEmptyStringAttribute(
+                kAXDescriptionAttribute,
+                from: element
+            ),
+            placeholder: nonEmptyStringAttribute(
+                kAXPlaceholderValueAttribute,
+                from: element
+            ),
+            windowIsModal: windowIsModal,
+            hasDisallowedSecondaryAncestor: hasDisallowedSecondaryAncestor
+        ) else {
+            return nil
+        }
+
+        // A focused main composer already supplies the semantic input proof that a
+        // no-caret fallback lacks. Prefer a strict UUID-bearing task/window identity
+        // when the app exposes one: this avoids synchronously walking a long React
+        // history before the recorder HUD can appear. Titles—even specific-looking
+        // ones—are not unique and never qualify on their own; without a task key this
+        // falls back to the selected-task scan or a foreground-only wrapper.
+        if let windowIdentity = exactMainComposerWindowIdentity(
+            for: window,
+            surface: surface
+        ) {
+            return windowIdentity
+        }
+
+        guard let identity = applicationFallbackIdentity(
+            for: window,
+            sourceElement: element,
+            bundleIdentifier: app.bundleIdentifier,
+            applicationBundleName: app.bundleURL?.lastPathComponent,
+            // One complete selected-task scope is the only safe way to let a retained
+            // renderer composer survive later focus changes. Give this targeted start-
+            // decision scan the same bounded budget as the no-caret path; when it wins,
+            // exact-input capture skips the separate history fingerprint, so recorder
+            // latency stays bounded while the common Codex enrichment path remains usable.
+            scanDeadlineInterval: 0.060,
+            scanNodeBudget: 900
+        ), identity.scopes.count == 1,
+           let scope = identity.scopes.first,
+           Self.recordingStartComposerContainmentAllowed(
+            scopeKind: scope.kind,
+            windowIsModal: windowIsModal,
+            hasDisallowedSecondaryAncestor: hasDisallowedSecondaryAncestor
+           ) else {
+            return nil
+        }
+        // The composer itself has already supplied the semantic promotion proof. Convert
+        // selected-task captures to the stable-key phase so a streaming response or an
+        // automatic task-title update cannot invalidate a still-selected task. A real
+        // task/tab switch still fails because the retained selected control/key changes.
+        return identityAfterSuccessfulComposerPromotion(identity)
+    }
+
+    private func exactMainComposerWindowIdentity(
+        for window: AXUIElement,
+        surface: SemanticSendSurface
+    ) -> ApplicationFallbackIdentity? {
+        let title = nonEmptyStringAttribute(kAXTitleAttribute, from: window)
+        let document = nonEmptyStringAttribute(kAXDocumentAttribute, from: window)
+        let identifier = nonEmptyStringAttribute(kAXIdentifierAttribute, from: window)
+        guard Self.exactMainComposerWindowIdentityIsUsable(
+            windowTitle: title,
+            windowDocument: document,
+            windowIdentifier: identifier
+        ), let scope = applicationFallbackScopeIdentity(
+            kind: .windowMainComposer,
+            surface: surface,
+            element: window,
+            in: window,
+            containerDescriptor: title ?? document ?? identifier
+        ) else {
+            return nil
+        }
+        return ApplicationFallbackIdentity(
+            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+            windowTitle: title,
+            windowDocument: document,
+            windowIdentifier: identifier,
+            scopes: [scope],
+            validationPhase: .captureStrict
+        )
+    }
+
+    static func exactMainComposerWindowIdentityIsUsable(
+        windowTitle: String?,
+        windowDocument: String?,
+        windowIdentifier: String?
+    ) -> Bool {
+        // Electron commonly exposes stable-but-generic window identifiers—including
+        // UUID-shaped renderer/window instance IDs—while the selected task changes
+        // inside that same window. A UUID shape therefore proves only uniqueness of a
+        // string, not task ownership. The fast path is valid only when AXDocument is a
+        // task/conversation/thread URL that carries instance evidence; otherwise use
+        // the bounded selected-task scan. Window title and AXIdentifier remain drift
+        // checks after that document proof, never identity authorities by themselves.
+        _ = windowTitle // Titles are retained for drift detection, never uniqueness.
+        _ = windowIdentifier
+        return windowDocument.map(stableTaskDocumentHasInstanceEvidence) == true
+    }
+
+    static func stableTaskDocumentHasInstanceEvidence(_ value: String) -> Bool {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard stableTaskIdentifierHasInstanceEvidence(normalized) else {
+            return false
+        }
+        return ["thread", "task", "conversation", "chat"].contains {
+            normalized.contains($0)
+        }
+    }
+
+    static func exactMainComposerWindowIdentityMatches(
+        capturedTitle: String?,
+        capturedDocument: String?,
+        capturedIdentifier: String?,
+        currentTitle: String?,
+        currentDocument: String?,
+        currentIdentifier: String?
+    ) -> Bool {
+        guard exactMainComposerWindowIdentityIsUsable(
+            windowTitle: capturedTitle,
+            windowDocument: capturedDocument,
+            windowIdentifier: capturedIdentifier
+        ) else {
+            return false
+        }
+        return (capturedTitle == nil || capturedTitle == currentTitle)
+            && (capturedDocument == nil || capturedDocument == currentDocument)
+            && (capturedIdentifier == nil || capturedIdentifier == currentIdentifier)
+    }
+
+    static func exactMainComposerCaptureEvidenceMatches(
+        surface: SemanticSendSurface,
+        description: String?,
+        placeholder: String?,
+        windowIsModal: Bool,
+        hasDisallowedSecondaryAncestor: Bool
+    ) -> Bool {
+        !windowIsModal
+            && !hasDisallowedSecondaryAncestor
+            && recordingStartComposerEvidenceMatches(
+                surface: surface,
+                description: description,
+                placeholder: placeholder
+            )
+    }
+
+    private func applicationFallbackIdentity(
+        for window: AXUIElement?,
+        sourceElement: AXUIElement?,
+        bundleIdentifier: String?,
+        applicationBundleName: String?,
+        scanDeadlineInterval: TimeInterval = 0.060,
+        scanNodeBudget: Int = 900
+    ) -> ApplicationFallbackIdentity? {
+        guard let window,
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: bundleIdentifier,
+                applicationBundleName: applicationBundleName
+              ) else { return nil }
+        let captureStarted = ProcessInfo.processInfo.systemUptime
+        let scopes: [ApplicationFallbackScopeIdentity]
+        if let floatingComposer = floatingComposerScopeIdentity(
+            for: window,
+            surface: surface
+        ) {
+            scopes = [floatingComposer]
+        } else {
+            let scan = selectedTaskScopeIdentities(
+                in: window,
+                sourceElement: sourceElement,
+                surface: surface,
+                deadline: captureStarted + scanDeadlineInterval,
+                nodeBudget: scanNodeBudget
+            )
+            guard Self.recordingStartScopeScanIsAcceptable(
+                completed: scan.completed,
+                matchingScopeCount: scan.scopes.count
+            ) else {
+                logger.notice("Recording-start selected-task scope rejected incomplete or ambiguous scan bundle=\(bundleIdentifier ?? "nil", privacy: .public) surface=\(surface.rawValue, privacy: .public) completed=\(scan.completed, privacy: .public) matchingScopes=\(scan.scopes.count, privacy: .public) nodesVisited=\(scan.visitedCount, privacy: .public)")
+                return nil
+            }
+            scopes = scan.scopes
+        }
+        guard scopes.count == 1 else { return nil }
+        logger.info("Captured recording-start application scope bundle=\(bundleIdentifier ?? "nil", privacy: .public) kind=\(String(describing: scopes[0].kind), privacy: .public) scopeCount=\(scopes.count, privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - captureStarted) * 1_000), privacy: .public)")
+        return ApplicationFallbackIdentity(
+            capturedAtUptime: captureStarted,
+            windowTitle: nonEmptyStringAttribute(kAXTitleAttribute, from: window),
+            windowDocument: nonEmptyStringAttribute(kAXDocumentAttribute, from: window),
+            windowIdentifier: nonEmptyStringAttribute(kAXIdentifierAttribute, from: window),
+            scopes: scopes,
+            // A completed selected-task scan has already proven one uniquely keyed
+            // selected control. Use that proof immediately: Electron may rename the
+            // task/window while microphone startup is in flight. Floating panels have
+            // no task key and therefore retain strict title/document validation.
+            validationPhase: scopes.contains(where: {
+                $0.kind == .selectedTask
+            }) ? .promotedStableSelection : .captureStrict
+        )
+    }
+
+    private func applicationFallbackWindowMatches(
+        _ target: Target,
+        window: AXUIElement,
+        requireFreshCapture: Bool,
+        requireUniqueSelectedTaskRescan: Bool = false
+    ) -> Bool {
+        guard let captured = target.applicationFallbackIdentity,
+              target.window.map({ CFEqual($0, window) }) == true else {
+            return false
+        }
+        if requireFreshCapture,
+           ProcessInfo.processInfo.systemUptime - captured.capturedAtUptime > 2.5 {
+            return false
+        }
+        if captured.scopes.contains(where: { $0.kind == .windowMainComposer }),
+           !Self.exactMainComposerWindowIdentityMatches(
+            capturedTitle: captured.windowTitle,
+            capturedDocument: captured.windowDocument,
+            capturedIdentifier: captured.windowIdentifier,
+            currentTitle: nonEmptyStringAttribute(kAXTitleAttribute, from: window),
+            currentDocument: nonEmptyStringAttribute(
+                kAXDocumentAttribute,
+                from: window
+            ),
+            currentIdentifier: nonEmptyStringAttribute(
+                kAXIdentifierAttribute,
+                from: window
+            )
+           ) {
+            return false
+        }
+        let checks: [(String?, String)] = switch captured.validationPhase {
+        case .captureStrict:
+            [
+                (captured.windowTitle, kAXTitleAttribute),
+                (captured.windowDocument, kAXDocumentAttribute),
+                (captured.windowIdentifier, kAXIdentifierAttribute)
+            ]
+        case .promotedStableSelection:
+            // Task names and window titles can change automatically while the same
+            // task remains selected. Stable document/window identifiers remain hard
+            // boundaries; the selected task key below proves task ownership.
+            [
+                (captured.windowDocument, kAXDocumentAttribute),
+                (captured.windowIdentifier, kAXIdentifierAttribute)
+            ]
+        }
+        guard checks.allSatisfy({ expected, attribute in
+            expected == nil
+                || nonEmptyStringAttribute(attribute, from: window) == expected
+        }) else {
+            return false
+        }
+        guard captured.scopes.allSatisfy({
+            applicationFallbackScopeMatches(
+                $0,
+                in: window,
+                validationPhase: captured.validationPhase
+            )
+        }) else {
+            return false
+        }
+        guard requireUniqueSelectedTaskRescan else { return true }
+        return captured.scopes.allSatisfy {
+            $0.kind != .selectedTask
+                || selectedTaskScopeStillUniquelyMatches($0, in: window)
+        }
+    }
+
+    /// Retained Electron rows can be virtualized and reused for another task. Cheap
+    /// wrapper/key checks are suitable between traversal yields, but every promotion
+    /// and every later delivery boundary must re-scan the current selected-task tree
+    /// and prove the captured task key remains the sole selected match.
+    private func selectedTaskScopeStillUniquelyMatches(
+        _ captured: ApplicationFallbackScopeIdentity,
+        in window: AXUIElement
+    ) -> Bool {
+        guard captured.kind == .selectedTask,
+              let capturedKey = captured.stableTaskKey else {
+            return false
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        let scan = selectedTaskScopeIdentities(
+            in: window,
+            sourceElement: nil,
+            surface: captured.surface,
+            deadline: started + 0.060,
+            nodeBudget: 900
+        )
+        guard scan.completed,
+              scan.scopes.count == 1,
+              let current = scan.scopes.first,
+              current.stableTaskKey == capturedKey,
+              CFEqual(current.element, captured.element) else {
+            return false
+        }
+        return true
+    }
+
+    private func identityAfterSuccessfulComposerPromotion(
+        _ captured: ApplicationFallbackIdentity
+    ) -> ApplicationFallbackIdentity? {
+        let hasSelectedTask = captured.scopes.contains {
+            $0.kind == .selectedTask
+        }
+        if hasSelectedTask,
+           captured.scopes.contains(where: {
+               $0.kind == .selectedTask && $0.stableTaskKey == nil
+           }) {
+            return nil
+        }
+        return ApplicationFallbackIdentity(
+            capturedAtUptime: captured.capturedAtUptime,
+            windowTitle: captured.windowTitle,
+            windowDocument: captured.windowDocument,
+            windowIdentifier: captured.windowIdentifier,
+            scopes: captured.scopes,
+            validationPhase: hasSelectedTask
+                ? .promotedStableSelection
+                : .captureStrict
+        )
+    }
+
+    private func floatingComposerScopeIdentity(
+        for window: AXUIElement,
+        surface: SemanticSendSurface
+    ) -> ApplicationFallbackScopeIdentity? {
+        let subrole = nonEmptyStringAttribute(kAXSubroleAttribute, from: window)
+        let isModal = boolAttribute(kAXModalAttribute, from: window) == true
+        guard Self.recordingStartFloatingPanelEvidenceMatches(
+            surface: surface,
+            subrole: subrole,
+            isModal: isModal
+        ) else { return nil }
+        return applicationFallbackScopeIdentity(
+            kind: .floatingQuickComposer,
+            surface: surface,
+            element: window,
+            in: window,
+            containerDescriptor: applicationFallbackScopeLabel(for: window)
+        )
+    }
+
+    static func recordingStartFloatingPanelEvidenceMatches(
+        surface: SemanticSendSurface,
+        subrole: String?,
+        isModal: Bool
+    ) -> Bool {
+        // The only accepted no-task-list panel is ChatGPT's Option-Space quick composer.
+        // A generic dialog/modal is a secondary surface and may contain its own textarea
+        // plus Send button, so window-wrapper identity alone must never promote it.
+        surface == .openAIChatGPT
+            && subrole == "AXFloatingWindow"
+            && !isModal
+    }
+
+    static func recordingStartScopeScanIsAcceptable(
+        completed: Bool,
+        matchingScopeCount: Int
+    ) -> Bool {
+        completed && matchingScopeCount == 1
+    }
+
+    /// Capture only actual selected task/tab controls. A generic focused group or the
+    /// ambient message text is deliberately insufficient because both can survive a
+    /// task switch inside one Electron window. The scan is small and deadline-bounded
+    /// so recorder appearance cannot regress behind an unbounded AX tree walk.
+    private func selectedTaskScopeIdentities(
+        in window: AXUIElement,
+        sourceElement: AXUIElement?,
+        surface: SemanticSendSurface,
+        deadline: TimeInterval,
+        nodeBudget: Int
+    ) -> SelectedTaskScopeScanResult {
+        var queue: [(AXUIElement, Int)] = [(window, 0)]
+        if let sourceElement, !CFEqual(sourceElement, window) {
+            queue.insert((sourceElement, 0), at: 0)
+        }
+        var cursor = 0
+        var visited = 0
+        var seen = Set<CFHashCode>()
+        var matches: [ApplicationFallbackScopeIdentity] = []
+        var identifierCounts: [String: Int] = [:]
+        var domIdentifierCounts: [String: Int] = [:]
+        var truncated = false
+        let candidateRoles = Self.selectedTaskRoles(for: surface)
+        while cursor < queue.count,
+              visited < nodeBudget,
+              ProcessInfo.processInfo.systemUptime < deadline {
+            let (element, depth) = queue[cursor]
+            cursor += 1
+            guard seen.insert(CFHash(element)).inserted else { continue }
+            visited += 1
+
+            let role = stringAttribute(kAXRoleAttribute, from: element)
+            if let role, candidateRoles.contains(role) {
+                // Cross-process AX reads dominate this capture-time deadline. Only a
+                // task-like row/cell/tab can contribute task identity, so do not read
+                // selection, labels, or an 18-level ancestor chain for every generic
+                // group in ChatGPT's renderer. Count UUID evidence across every task
+                // control—not merely the selected one—so the uniqueness boundary is
+                // unchanged while recorder startup remains bounded.
+                let selected = boolAttribute(kAXSelectedAttribute, from: element)
+                let identifier = nonEmptyStringAttribute(
+                    kAXIdentifierAttribute,
+                    from: element
+                )
+                let domIdentifier = nonEmptyStringAttribute(
+                    "AXDOMIdentifier",
+                    from: element
+                )
+                if let identifier {
+                    identifierCounts[identifier, default: 0] += 1
+                }
+                if let domIdentifier {
+                    domIdentifierCounts[domIdentifier, default: 0] += 1
+                }
+                if selected == true {
+                    let label = applicationFallbackScopeLabel(for: element)
+                    let containerDescriptor = taskSelectionContainerDescriptor(
+                        for: element,
+                        stoppingAt: window
+                    )
+                    if Self.selectedTaskScopeEvidenceMatches(
+                        surface: surface,
+                        role: role,
+                        selected: selected,
+                        identifier: identifier,
+                        domIdentifier: domIdentifier,
+                        label: label,
+                        containerDescriptor: containerDescriptor
+                    ), owningWindow(
+                        for: element,
+                        allowFocusedApplicationFallback: false
+                    ).map({ CFEqual($0, window) }) == true,
+                       !matches.contains(where: { CFEqual($0.element, element) }),
+                       let identity = applicationFallbackScopeIdentity(
+                        kind: .selectedTask,
+                        surface: surface,
+                        element: element,
+                        in: window,
+                        containerDescriptor: containerDescriptor
+                       ) {
+                        matches.append(identity)
+                        // Two independently selected task-like controls are already
+                        // ambiguous; no further traversal can make one exact.
+                        if matches.count > 1 {
+                            return SelectedTaskScopeScanResult(
+                                scopes: matches,
+                                completed: true,
+                                visitedCount: visited
+                            )
+                        }
+                    }
+                }
+            }
+
+            let descendants = traversalChildren(of: element)
+            guard depth < 14 else {
+                if !descendants.isEmpty { truncated = true }
+                continue
+            }
+            let remaining = max(0, nodeBudget - visited - (queue.count - cursor))
+            if descendants.count > remaining { truncated = true }
+            queue.append(contentsOf: descendants.prefix(remaining).map {
+                ($0, depth + 1)
+            })
+        }
+        let completed = cursor >= queue.count && !truncated
+        let uniquelyIdentifiedMatches = completed ? matches.compactMap {
+            scope -> ApplicationFallbackScopeIdentity? in
+            guard let stableTaskKey = Self.uniqueStableTaskKey(
+                identifier: scope.identifier,
+                domIdentifier: scope.domIdentifier,
+                identifierOccurrences: scope.identifier.map {
+                    identifierCounts[$0, default: 0]
+                } ?? 0,
+                domIdentifierOccurrences: scope.domIdentifier.map {
+                    domIdentifierCounts[$0, default: 0]
+                } ?? 0
+            ) else {
+                return nil
+            }
+            var scope = scope
+            scope.stableTaskKey = stableTaskKey
+            return scope
+        } : matches
+        return SelectedTaskScopeScanResult(
+            scopes: uniquelyIdentifiedMatches,
+            completed: completed,
+            visitedCount: visited
+        )
+    }
+
+    static func uniqueStableTaskKey(
+        identifier: String?,
+        domIdentifier: String?,
+        identifierOccurrences: Int,
+        domIdentifierOccurrences: Int
+    ) -> String? {
+        if let domIdentifier,
+           domIdentifierOccurrences == 1,
+           stableTaskIdentifierHasInstanceEvidence(domIdentifier) {
+            return "dom:\(domIdentifier)"
+        }
+        if let identifier,
+           identifierOccurrences == 1,
+           stableTaskIdentifierHasInstanceEvidence(identifier) {
+            return "ax:\(identifier)"
+        }
+        return nil
+    }
+
+    /// Uniqueness in one virtualized AX snapshot is not enough: a generic retained
+    /// row id can stay unique while Electron swaps the task represented by that row.
+    /// Require a canonical UUID before an identifier can outlive task-title drift.
+    /// Short or long opaque row ids can belong to a virtualized wrapper rather than
+    /// the task it currently renders, so they fail closed even when unique once.
+    static func stableTaskIdentifierHasInstanceEvidence(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count >= 20 else { return false }
+        return normalized.range(
+            of: #"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    /// A DOM/AX id such as `prompt-textarea` can be perfectly stable while a renderer
+    /// reuses it for every task or browser tab. It may help match structure only when
+    /// readable context or a separately revalidated task scope already proves the
+    /// document. Renderer bundles still require a revalidated task/document scope even
+    /// when the id contains a UUID; this helper is only the stricter fallback for native
+    /// inputs whose app does not reuse one renderer wrapper across documents.
+    static func exactInputIdentifierHasInstanceEvidence(
+        identifier: String?,
+        domIdentifier: String?
+    ) -> Bool {
+        identifier.map(stableTaskIdentifierHasInstanceEvidence) == true
+            || domIdentifier.map(stableTaskIdentifierHasInstanceEvidence) == true
+    }
+
+    static func selectedTaskScopeEvidenceMatches(
+        surface: SemanticSendSurface,
+        role: String?,
+        selected: Bool?,
+        identifier: String?,
+        domIdentifier: String?,
+        label: String?,
+        containerDescriptor: String?
+    ) -> Bool {
+        guard selected == true,
+              let role,
+              selectedTaskRoles(for: surface).contains(role),
+              identifier != nil || domIdentifier != nil,
+              let containerDescriptor else {
+            return false
+        }
+        let normalizedLabel = label?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let labelIsSpecific = normalizedLabel.map {
+            !$0.isEmpty
+                && !["selected", "tab", "task", "conversation"].contains($0)
+        } == true
+        let containerTokens = normalizedEvidenceTokens(containerDescriptor)
+        return labelIsSpecific
+            && !containerTokens.isDisjoint(with: selectedTaskContainerTokens(for: surface))
+    }
+
+    private static func selectedTaskRoles(
+        for surface: SemanticSendSurface
+    ) -> Set<String> {
+        switch surface {
+        case .openAIChatGPT, .openAICodex:
+            return ["AXRow", "AXCell", "AXTab"]
+        case .claudeDesktop:
+            return ["AXRow", "AXCell"]
+        case .telegramForegroundOnly:
+            return []
+        }
+    }
+
+    private static func selectedTaskContainerTokens(
+        for surface: SemanticSendSurface
+    ) -> Set<String> {
+        switch surface {
+        case .openAIChatGPT:
+            return ["chat", "chats", "conversation", "conversations", "history", "thread", "threads"]
+        case .openAICodex:
+            return ["conversation", "conversations", "session", "sessions", "task", "tasks", "thread", "threads"]
+        case .claudeDesktop:
+            return ["chat", "chats", "conversation", "conversations", "history", "recent", "recents"]
+        case .telegramForegroundOnly:
+            return []
+        }
+    }
+
+    private static func normalizedEvidenceTokens(_ value: String) -> Set<String> {
+        Set(value.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+    }
+
+    private func taskSelectionContainerDescriptor(
+        for element: AXUIElement,
+        stoppingAt window: AXUIElement
+    ) -> String? {
+        var current = elementAttribute(kAXParentAttribute, from: element)
+        for _ in 0..<18 {
+            guard let candidate = current,
+                  !CFEqual(candidate, window) else { return nil }
+            switch stringAttribute(kAXRoleAttribute, from: candidate) {
+            case "AXList", "AXOutline", "AXTabGroup", "AXTable":
+                let descriptor = [
+                    nonEmptyStringAttribute(kAXIdentifierAttribute, from: candidate),
+                    nonEmptyStringAttribute("AXDOMIdentifier", from: candidate),
+                    nonEmptyStringAttribute(kAXTitleAttribute, from: candidate),
+                    nonEmptyStringAttribute(kAXDescriptionAttribute, from: candidate),
+                    nonEmptyStringAttribute(kAXHelpAttribute, from: candidate)
+                ].compactMap { $0 }.joined(separator: " ")
+                if !descriptor.isEmpty {
+                    return String(descriptor.prefix(240))
+                }
+                current = elementAttribute(kAXParentAttribute, from: candidate)
+            default:
+                current = elementAttribute(kAXParentAttribute, from: candidate)
+            }
+        }
+        return nil
+    }
+
+    private func applicationFallbackScopeIdentity(
+        kind: ApplicationFallbackScopeKind,
+        surface: SemanticSendSurface,
+        element: AXUIElement,
+        in window: AXUIElement,
+        containerDescriptor: String?
+    ) -> ApplicationFallbackScopeIdentity? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        return ApplicationFallbackScopeIdentity(
+            kind: kind,
+            surface: surface,
+            element: element,
+            role: stringAttribute(kAXRoleAttribute, from: element),
+            subrole: stringAttribute(kAXSubroleAttribute, from: element),
+            identifier: nonEmptyStringAttribute(kAXIdentifierAttribute, from: element),
+            domIdentifier: nonEmptyStringAttribute("AXDOMIdentifier", from: element),
+            stableTaskKey: nil,
+            label: applicationFallbackScopeLabel(for: element),
+            containerDescriptor: containerDescriptor,
+            relativeFrame: relativeFrame(of: element, in: window),
+            ancestorPath: ancestorPath(from: element, through: window)
+        )
+    }
+
+    private func applicationFallbackScopeLabel(
+        for element: AXUIElement
+    ) -> String? {
+        [
+            kAXTitleAttribute,
+            kAXDescriptionAttribute,
+            kAXValueAttribute
+        ].lazy.compactMap {
+            self.nonEmptyStringAttribute($0, from: element)
+        }.first.map { String($0.prefix(180)) }
+    }
+
+    private func applicationFallbackScopeMatches(
+        _ scope: ApplicationFallbackScopeIdentity,
+        in window: AXUIElement,
+        validationPhase: ApplicationFallbackValidationPhase
+    ) -> Bool {
+        if validationPhase == .promotedStableSelection,
+           scope.kind == .selectedTask {
+            let sameWindow = owningWindow(
+                for: scope.element,
+                allowFocusedApplicationFallback: false
+            ).map({ CFEqual($0, window) }) == true
+            let roleMatches =
+                stringAttribute(kAXRoleAttribute, from: scope.element)
+                    == scope.role
+                && stringAttribute(kAXSubroleAttribute, from: scope.element)
+                    == scope.subrole
+            let stableKeyMatches = scope.stableTaskKey.map {
+                currentStableTaskKey(
+                    for: scope.element,
+                    capturedKey: $0
+                ) == $0
+            } == true
+            guard Self.promotedStableSelectionMatches(
+                sameWindow: sameWindow,
+                sameRetainedWrapper: true,
+                selected: boolAttribute(
+                    kAXSelectedAttribute,
+                    from: scope.element
+                ) == true,
+                roleMatches: roleMatches,
+                stableTaskKeyMatches: stableKeyMatches
+            ) else {
+                return false
+            }
+            return true
+        }
+
+        switch scope.kind {
+        case .floatingQuickComposer:
+            guard CFEqual(scope.element, window),
+                  Self.recordingStartFloatingPanelEvidenceMatches(
+                    surface: scope.surface,
+                    subrole: nonEmptyStringAttribute(
+                        kAXSubroleAttribute,
+                        from: window
+                    ),
+                    isModal: boolAttribute(kAXModalAttribute, from: window) == true
+                  ) else { return false }
+        case .windowMainComposer:
+            guard CFEqual(scope.element, window),
+                  Self.exactMainComposerWindowIdentityIsUsable(
+                    windowTitle: nonEmptyStringAttribute(
+                        kAXTitleAttribute,
+                        from: window
+                    ),
+                    windowDocument: nonEmptyStringAttribute(
+                        kAXDocumentAttribute,
+                        from: window
+                    ),
+                    windowIdentifier: nonEmptyStringAttribute(
+                        kAXIdentifierAttribute,
+                        from: window
+                    )
+                  ) else {
+                return false
+            }
+        case .selectedTask:
+            let currentContainerDescriptor = taskSelectionContainerDescriptor(
+                for: scope.element,
+                stoppingAt: window
+            )
+            guard Self.selectedTaskScopeEvidenceMatches(
+                    surface: scope.surface,
+                    role: stringAttribute(kAXRoleAttribute, from: scope.element),
+                    selected: boolAttribute(kAXSelectedAttribute, from: scope.element),
+                    identifier: nonEmptyStringAttribute(
+                        kAXIdentifierAttribute,
+                        from: scope.element
+                    ),
+                    domIdentifier: nonEmptyStringAttribute(
+                        "AXDOMIdentifier",
+                        from: scope.element
+                    ),
+                    label: applicationFallbackScopeLabel(for: scope.element),
+                    containerDescriptor: currentContainerDescriptor
+                  ),
+                  currentContainerDescriptor == scope.containerDescriptor,
+                  owningWindow(
+                    for: scope.element,
+                    allowFocusedApplicationFallback: false
+                  ).map({ CFEqual($0, window) }) == true else {
+                return false
+            }
+        }
+        var pid: pid_t = 0
+        var windowPID: pid_t = 0
+        guard AXUIElementGetPid(scope.element, &pid) == .success,
+              AXUIElementGetPid(window, &windowPID) == .success,
+              pid == windowPID,
+              stringAttribute(kAXRoleAttribute, from: scope.element) == scope.role,
+              stringAttribute(kAXSubroleAttribute, from: scope.element) == scope.subrole,
+              scope.identifier.map({
+                nonEmptyStringAttribute(kAXIdentifierAttribute, from: scope.element) == $0
+              }) ?? true,
+              scope.domIdentifier.map({
+                nonEmptyStringAttribute("AXDOMIdentifier", from: scope.element) == $0
+              }) ?? true,
+              scope.label.map({
+                applicationFallbackScopeLabel(for: scope.element) == $0
+              }) ?? true,
+              ancestorPath(from: scope.element, through: window) == scope.ancestorPath else {
+            return false
+        }
+        return Self.elementGeometryMatches(
+            isSameRetainedWrapper: true,
+            expectedFrame: scope.relativeFrame,
+            currentFrame: relativeFrame(of: scope.element, in: window)
+        )
+    }
+
+    private func currentStableTaskKey(
+        for element: AXUIElement,
+        capturedKey: String
+    ) -> String? {
+        if capturedKey.hasPrefix("dom:"),
+           let value = nonEmptyStringAttribute(
+            "AXDOMIdentifier",
+            from: element
+           ) {
+            return "dom:\(value)"
+        }
+        if capturedKey.hasPrefix("ax:"),
+           let value = nonEmptyStringAttribute(
+            kAXIdentifierAttribute,
+            from: element
+           ) {
+            return "ax:\(value)"
+        }
+        return nil
+    }
+
+    static func promotedStableSelectionMatches(
+        sameWindow: Bool,
+        sameRetainedWrapper: Bool,
+        selected: Bool,
+        roleMatches: Bool,
+        stableTaskKeyMatches: Bool
+    ) -> Bool {
+        sameWindow
+            && sameRetainedWrapper
+            && selected
+            && roleMatches
+            && stableTaskKeyMatches
     }
 
     func showRecordingStartInput(_ target: Target?) {
@@ -266,6 +2407,10 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    /// Foreground-only legacy/workspace helper. It may activate the target app and
+    /// rewrite its focused element, so background exact delivery and same-app/
+    /// different-input delivery must never call it; those routes are non-activating
+    /// and fail closed when the saved input cannot be addressed directly.
     func restoreFocus(to target: Target, allowApplicationFallback: Bool = false) async -> Bool {
         guard AXIsProcessTrusted() else {
             logger.error("Focused input restore failed because Accessibility is not trusted")
@@ -513,13 +2658,14 @@ final class FocusLockService: ObservableObject {
 
         try? await Task.sleep(nanoseconds: 50_000_000)
         guard telegramDeliveryBoundaryMatches(session) else {
-            let currentContext = contextFingerprint(
+            let currentContextResult = contextFingerprint(
                 in: window,
                 region: identity.contextRegion,
                 excluding: element,
                 bundleIdentifier: target.bundleIdentifier
             )
-            logger.notice("Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat pid=\(target.pid, privacy: .public) capturedPrimary=\(identity.primaryContextAnchors.count, privacy: .public) capturedSecondary=\(identity.contextAnchors.count, privacy: .public) currentPrimary=\(currentContext.primary.count, privacy: .public) currentSecondary=\(currentContext.secondary.count, privacy: .public)")
+            let currentContext = currentContextResult.selection
+            logger.notice("Telegram retained-input preparation rejected hidden, changed, internally unfocused, or incompletely scanned chat pid=\(target.pid, privacy: .public) capturedPrimary=\(identity.primaryContextAnchors.count, privacy: .public) capturedSecondary=\(identity.contextAnchors.count, privacy: .public) currentPrimary=\(currentContext.primary.count, privacy: .public) currentSecondary=\(currentContext.secondary.count, privacy: .public) contextComplete=\(currentContextResult.completed, privacy: .public)")
             if preparedTargetFocusBoundaryIsSafe(session) {
                 CursorPaster.endTargetedInputSession(pid: target.pid)
             }
@@ -700,11 +2846,82 @@ final class FocusLockService: ObservableObject {
     }
 
     func targetOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
-        guard let element = target.element,
-              let focused = systemFocusedElement() else {
+        if !target.hasExactInput {
+            return retainedInputOwnsSystemKeyboardFocus(target)
+        }
+        guard let focused = systemFocusedElement(),
+              focused.pid == target.pid,
+              let element = resolvedExactElement(for: target) else {
             return false
         }
-        return focused.pid == target.pid && CFEqual(focused.element, element)
+        // Electron may replace the composer AX wrapper while preserving the same
+        // verified task/input. Compare system focus with the safely re-resolved live
+        // element, never only the stale capture-time wrapper. Resolution still fails
+        // closed when context/task identity cannot prove a replacement.
+        return CFEqual(focused.element, element)
+    }
+
+    /// Process-only foreground boundary for the explicit base-VoiceInk compatibility
+    /// mode. This intentionally exposes no AX wrapper or saved-input identity: legacy
+    /// delivery must follow the real current cursor, not quietly rebuild the exact
+    /// destination engine. The PID is still enough to cancel Cmd-V/Return if Ethan
+    /// switches apps (including leaving a non-activating ChatGPT panel) mid-sequence.
+    func systemKeyboardFocusedProcessIdentifier() -> pid_t? {
+        systemFocusedElement()?.pid
+    }
+
+    /// Cheap irreversible-boundary guard used after one full route decision. It never
+    /// discovers a replacement wrapper and therefore cannot authorize background
+    /// delivery. The exact capture-time editor must still own system keyboard focus,
+    /// remain editable, and still belong to the capture-time window.
+    func retainedInputOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
+        guard !target.app.isTerminated,
+              let element = target.element,
+              let window = target.window,
+              let focused = systemFocusedElement(),
+              focused.pid == target.pid,
+              CFEqual(focused.element, element),
+              isEditableInput(
+                role: stringAttribute(kAXRoleAttribute, from: element),
+                subrole: stringAttribute(kAXSubroleAttribute, from: element)
+              ),
+              owningWindow(
+                for: element,
+                allowFocusedApplicationFallback: Self.isTelegram(
+                    bundleIdentifier: target.bundleIdentifier
+                )
+              ).map({ CFEqual($0, window) }) == true else {
+            return false
+        }
+        let hardenedScopeMatches = target.applicationFallbackIdentity != nil
+            && applicationFallbackWindowMatches(
+                target,
+                window: window,
+                requireFreshCapture: false,
+                requireUniqueSelectedTaskRescan: true
+            )
+        let rendererRequiresIdentityOrContext = target.bundleIdentifier.map(
+            Self.exactWrapperRequiresIdentityOrContextBundleIdentifiers.contains
+        ) == true
+        guard Self.retainedForegroundInputBoundaryAllowed(
+            rendererRequiresIdentityOrContext:
+                rendererRequiresIdentityOrContext,
+            hasExactIdentity: target.identity != nil,
+            hasHardenedApplicationScope: hardenedScopeMatches
+        ) else {
+            return false
+        }
+        return true
+    }
+
+    static func retainedForegroundInputBoundaryAllowed(
+        rendererRequiresIdentityOrContext: Bool,
+        hasExactIdentity: Bool,
+        hasHardenedApplicationScope: Bool
+    ) -> Bool {
+        !rendererRequiresIdentityOrContext
+            || hasExactIdentity
+            || hasHardenedApplicationScope
     }
 
     /// Cheap foreground paste-settlement read. This never authorizes delivery: callers
@@ -712,11 +2929,8 @@ final class FocusLockService: ObservableObject {
     /// It only avoids repeatedly walking an Electron/Telegram AX tree while waiting for
     /// a just-issued foreground paste to appear in the exact still-focused wrapper.
     func focusedExactInputTextFast(_ target: Target) -> String? {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
-              let element = target.element,
-              let focused = systemFocusedElement(),
-              focused.pid == target.pid,
-              CFEqual(focused.element, element) else {
+        guard retainedInputOwnsSystemKeyboardFocus(target),
+              let element = target.element else {
             return nil
         }
         return stringAttribute(kAXValueAttribute, from: element)
@@ -776,6 +2990,19 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    /// A session prepared through the exact-input path can still be the user's current
+    /// foreground or Option-Space composer. Only that pre-decided
+    /// `alreadyKeyboardFocused` mode may use one ordinary global HID Return when an
+    /// explicit semantic Send control is unavailable. Re-run the complete saved
+    /// document/task boundary here; process identity or frontmost status alone is never
+    /// sufficient and no focus mutation is permitted.
+    func backgroundInputOwnsSystemKeyboardFocus(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        session.focusMode == .alreadyKeyboardFocused
+            && backgroundDeliveryBoundaryMatches(session)
+    }
+
     private func backgroundDeliveryBoundaryMatches(
         _ session: BackgroundDeliverySession
     ) -> Bool {
@@ -796,6 +3023,167 @@ final class FocusLockService: ObservableObject {
     static func supportsSemanticSend(bundleIdentifier: String?) -> Bool {
         guard let bundleIdentifier else { return false }
         return semanticSendBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    static func supportsBackgroundSemanticSend(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return backgroundSemanticSendBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    static func supportsRecordingStartMainComposer(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return recordingStartMainComposerBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// `com.openai.codex` is shared by the separately installed ChatGPT and Codex
+    /// applications. Preserve their bundle URL identity instead of pretending the
+    /// bundle identifier alone proves which real surface was inspected. Telegram is
+    /// deliberately foreground-only: its visible Send slot is a private custom view,
+    /// not a labelled AXButton that can be pressed safely in a saved background chat.
+    static func semanticSendSurface(
+        bundleIdentifier: String?,
+        applicationBundleName: String?
+    ) -> SemanticSendSurface? {
+        switch bundleIdentifier {
+        case "com.openai.codex", "com.openai.chat":
+            switch applicationBundleName {
+            case openAIChatGPTApplicationName:
+                return .openAIChatGPT
+            case openAICodexApplicationName:
+                return .openAICodex
+            default:
+                return nil
+            }
+        case "com.anthropic.claudefordesktop":
+            return .claudeDesktop
+        case "ru.keepcoder.Telegram":
+            return .telegramForegroundOnly
+        default:
+            return nil
+        }
+    }
+
+    /// The exact audited ChatGPT and Codex builds render their idle composer action as
+    /// an enabled HTML button with no aria-label; React supplies only the visual tooltip
+    /// "Send". The same slot acquires an explicit "Stop" aria-label while a turn runs.
+    /// That means the old explicit-label-only rule can never submit either audited app,
+    /// while accepting an arbitrary unlabelled square across versions could press a
+    /// future Stop control. Permit the unlabelled idle shape only for an exact inspected
+    /// bundle tuple. Any app update or changed Chromium base fails closed until audited.
+    static func versionedUnlabelledOpenAISendIsAllowed(
+        surface: SemanticSendSurface,
+        applicationBundleName: String?,
+        marketingVersion: String?,
+        buildNumber: String?,
+        chromiumBaseVersion: String?
+    ) -> Bool {
+        switch surface {
+        case .openAIChatGPT:
+            return applicationBundleName == openAIChatGPTApplicationName
+                && marketingVersion == "26.715.21425"
+                && buildNumber == "5488"
+                && chromiumBaseVersion == "150.0.7871.124"
+        case .openAICodex:
+            return applicationBundleName == openAICodexApplicationName
+                && marketingVersion == "26.707.31428"
+                && buildNumber == "5059"
+                && chromiumBaseVersion == "150.0.7871.101"
+        case .claudeDesktop, .telegramForegroundOnly:
+            return false
+        }
+    }
+
+    private func versionedUnlabelledOpenAISendIsAllowed(
+        pid: pid_t,
+        surface: SemanticSendSurface
+    ) -> Bool {
+        guard let application = NSRunningApplication(processIdentifier: pid),
+              let bundleURL = application.bundleURL,
+              let bundle = Bundle(url: bundleURL) else {
+            return false
+        }
+        return Self.versionedUnlabelledOpenAISendIsAllowed(
+            surface: surface,
+            applicationBundleName: bundleURL.lastPathComponent,
+            marketingVersion: bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String,
+            buildNumber: bundle.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String,
+            chromiumBaseVersion: bundle.object(
+                forInfoDictionaryKey: "ChromiumBaseVersion"
+            ) as? String
+        )
+    }
+
+    /// Main-composer capture must not depend on whether the adjacent action currently
+    /// says Send or Stop: Ethan often starts dictating while an agent is still running.
+    /// These are known per-surface composer semantics, not the old permissive rule that
+    /// accepted any textarea whose description happened to equal its placeholder. The
+    /// caller must additionally prove one selected-task/floating-panel scope, unique
+    /// composer geometry, and no secondary/modal ancestor. A labelled Send/Stop adds
+    /// evidence when available but is not required for capture: current OpenAI builds
+    /// can expose that action as an unlabelled custom control while an agent runs.
+    static func recordingStartComposerEvidenceMatches(
+        surface: SemanticSendSurface,
+        description: String?,
+        placeholder: String?
+    ) -> Bool {
+        let normalizedDescription = description?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let normalizedPlaceholder = placeholder?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch surface {
+        case .openAIChatGPT:
+            guard let normalizedDescription,
+                  !normalizedDescription.isEmpty else {
+                return false
+            }
+            let descriptionIsMainComposer = normalizedDescription == "message chatgpt"
+                || normalizedDescription == "ask chatgpt"
+                || normalizedDescription.hasPrefix("message chatgpt ")
+            // Electron removes AXPlaceholderValue as soon as the composer contains a
+            // draft. The stable app-owned AXDescription still identifies that same
+            // main composer; if a placeholder remains, require it to agree.
+            return descriptionIsMainComposer
+                && (normalizedPlaceholder == nil
+                    || normalizedDescription == normalizedPlaceholder)
+        case .openAICodex:
+            guard let normalizedDescription else {
+                return false
+            }
+            let descriptionIsMainComposer = [
+                "ask for follow-up changes",
+                "do anything",
+                "ask codex",
+                "message codex"
+            ].contains(normalizedDescription)
+            return descriptionIsMainComposer
+                && (normalizedPlaceholder == nil
+                    || normalizedDescription == normalizedPlaceholder)
+        case .claudeDesktop:
+            return normalizedDescription == "prompt"
+                && (normalizedPlaceholder == nil
+                    || normalizedPlaceholder == "reply to claude"
+                    || normalizedPlaceholder == "message claude")
+        case .telegramForegroundOnly:
+            return false
+        }
+    }
+
+    static func recordingStartComposerContainmentAllowed(
+        scopeKind: ApplicationFallbackScopeKind,
+        windowIsModal: Bool,
+        hasDisallowedSecondaryAncestor: Bool
+    ) -> Bool {
+        guard !windowIsModal, !hasDisallowedSecondaryAncestor else { return false }
+        switch scopeKind {
+        case .selectedTask, .floatingQuickComposer, .windowMainComposer:
+            return true
+        }
     }
 
     static func prefersAccessibilityTextInsertion(bundleIdentifier: String?) -> Bool {
@@ -846,7 +3234,8 @@ final class FocusLockService: ObservableObject {
               exactStructureMatches(
                 session.element,
                 identity: identity,
-                in: session.window
+                in: session.window,
+                bundleIdentifier: session.bundleIdentifier
               ) else {
             return false
         }
@@ -865,12 +3254,14 @@ final class FocusLockService: ObservableObject {
         } == true && internalWindow.map {
             CFEqual($0, session.window)
         } == true
-        let currentContext = contextFingerprint(
+        let currentContextResult = contextFingerprint(
             in: session.window,
             region: identity.contextRegion,
             excluding: session.element,
             bundleIdentifier: session.bundleIdentifier
         )
+        guard currentContextResult.completed else { return false }
+        let currentContext = currentContextResult.selection
         return Self.telegramRetainedInputAllowed(
             capturedPrimaryContextAnchors: identity.primaryContextAnchors,
             capturedContextAnchors: identity.contextAnchors,
@@ -891,7 +3282,10 @@ final class FocusLockService: ObservableObject {
                 == session.inputRole,
               stringAttribute(kAXSubroleAttribute, from: session.element)
                 == session.inputSubrole,
-              owningWindow(for: session.element).map({
+              owningWindow(
+                for: session.element,
+                allowFocusedApplicationFallback: true
+              ).map({
                 CFEqual($0, session.window)
               }) == true else {
             return false
@@ -1069,25 +3463,419 @@ final class FocusLockService: ObservableObject {
         session.app.executableURL?.path ?? session.app.bundleURL?.path
     }
 
+    /// The recordingStart/Next route may intentionally begin from ChatGPT, Codex, or
+    /// Claude while its main composer has no caret. Capture stores the proven app and
+    /// focused window, then the already-visible recorder start path promotes that
+    /// app-level fallback to exactly one visible main AXTextArea without activating the
+    /// app. If the capture-time control still owns focus, it also makes one bounded
+    /// in-place focus attempt; failure cannot invalidate the frozen exact target and no
+    /// compensating focus rewrite is attempted. Delivery never retries
+    /// discovery. Primary normal stop and second chance never call this resolver.
+    /// Ambiguity fails closed.
+    func resolveRecordingStartMainComposer(
+        for target: Target
+    ) async -> Target? {
+        if target.hasForegroundInput, !target.hasExactInput {
+            return await enrichRecordingStartRetainedInput(for: target)
+        }
+        guard !target.hasExactInput,
+              Self.supportsRecordingStartMainComposer(
+                bundleIdentifier: target.bundleIdentifier
+              ),
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: target.bundleIdentifier,
+                applicationBundleName: target.app.bundleURL?.lastPathComponent
+              ),
+              surface != .telegramForegroundOnly,
+              let fallbackIdentity = target.applicationFallbackIdentity,
+              fallbackIdentity.scopes.count == 1,
+              let applicationScope = fallbackIdentity.scopes.first,
+              applicationScope.surface == surface,
+              !target.app.isTerminated else {
+            return nil
+        }
+
+        // Never choose a delivery-time/current window. This resolver is valid only for
+        // the cheap application fallback captured immediately before this recording;
+        // if it cannot be promoted now, recordingStart fails visibly instead of later
+        // discovering a different task after Ethan has switched tabs or inputs.
+        guard let window = target.window,
+              applicationFallbackWindowMatches(
+                target,
+                window: window,
+                requireFreshCapture: true,
+                requireUniqueSelectedTaskRescan: true
+              ),
+              let windowFrame = frame(of: window) else {
+            logger.notice("Recording-start main-composer promotion has no saved/focused window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        var windowPID: pid_t = 0
+        guard AXUIElementGetPid(window, &windowPID) == .success,
+              windowPID == target.pid else {
+            return nil
+        }
+
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + 0.35
+        let traversalState = BoundedTraversalState(nodeBudget: 1_600)
+        let captureScopeStillMatches = {
+            self.applicationFallbackWindowMatches(
+                target,
+                window: window,
+                requireFreshCapture: true
+            )
+        }
+        let composerRegion = CGRect(
+            x: windowFrame.minX,
+            y: windowFrame.midY - 100,
+            width: windowFrame.width,
+            height: windowFrame.height / 2 + 100
+        )
+        let windowIsModal = boolAttribute(kAXModalAttribute, from: window) == true
+        var contextElements: [AXUIElement] = []
+        var candidates: [AXUIElement] = []
+        let traversal = await visitBoundedDescendants(
+            of: window,
+            maximumDepth: 24,
+            state: traversalState,
+            deadline: deadline,
+            boundary: captureScopeStillMatches,
+            shouldDescend: { element, depth in
+                guard depth > 0,
+                      let elementFrame = self.frame(of: element) else {
+                    return true
+                }
+                return elementFrame.intersects(composerRegion)
+            },
+            visitor: { element, _ in
+                contextElements.append(element)
+                guard self.stringAttribute(kAXRoleAttribute, from: element)
+                        == kAXTextAreaRole else {
+                    return true
+                }
+                var candidatePID: pid_t = 0
+                guard AXUIElementGetPid(element, &candidatePID) == .success,
+                      candidatePID == target.pid,
+                      self.boolAttribute(kAXEnabledAttribute, from: element) != false,
+                      self.boolAttribute("AXVisible", from: element) != false,
+                      let candidateFrame = self.frame(of: element),
+                      candidateFrame.width >= 160,
+                      candidateFrame.height >= 24,
+                      candidateFrame.intersects(composerRegion),
+                      self.owningWindow(for: element).map({
+                        CFEqual($0, window)
+                      }) == true,
+                      Self.recordingStartComposerContainmentAllowed(
+                        scopeKind: applicationScope.kind,
+                        windowIsModal: windowIsModal,
+                        hasDisallowedSecondaryAncestor:
+                            self.hasDisallowedSecondaryComposerAncestor(
+                                element,
+                                stoppingAt: window
+                            )
+                      ),
+                      Self.recordingStartComposerEvidenceMatches(
+                        surface: surface,
+                        description: self.nonEmptyStringAttribute(
+                            kAXDescriptionAttribute,
+                            from: element
+                        ),
+                        placeholder: self.nonEmptyStringAttribute(
+                            kAXPlaceholderValueAttribute,
+                            from: element
+                        )
+                      ) else {
+                    return true
+                }
+                if !candidates.contains(where: { CFEqual($0, element) }) {
+                    candidates.append(element)
+                }
+                return candidates.count < 2
+            }
+        )
+        guard traversal.completion == BoundedTraversalCompletion.completed,
+              candidates.count == 1,
+              let element = candidates.first,
+              captureScopeStillMatches() else {
+            logger.notice("Recording-start main-composer promotion was not semantically unique or its bounded scan did not complete pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) composerCandidates=\(candidates.count, privacy: .public) nodesVisited=\(traversal.visitedCount, privacy: .public) traversal=\(String(describing: traversal.completion), privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), privacy: .public)")
+            return nil
+        }
+
+        // A feedback/modal textarea can have plausible placeholder text, so ambiguity
+        // in the app-specific action topology still fails closed. Current OpenAI builds
+        // can expose their real Send/Stop square as an unlabelled custom control while
+        // an agent is running. Missing topology is therefore not a capture failure once
+        // the unique composer, selected task/floating panel, geometry, semantic
+        // description, and disallowed-ancestor checks above all agree. Submission is a
+        // separate decision: it normally requires an explicit Send label. The sole
+        // exception is the exact audited ChatGPT build whose idle unlabelled button is
+        // revalidated as still unlabelled at the irreversible AXPress boundary.
+        switch await nearbySubmitButtonLookup(
+            element: element,
+            pid: target.pid,
+            surface: surface,
+            allowStopForComposerTopology: true,
+            boundary: captureScopeStillMatches
+        ) {
+        case .ready, .disabled:
+            break
+        case .unavailable:
+            logger.notice("Recording-start main-composer promotion continuing without labelled action topology after unique semantic composer proof pid=\(target.pid, privacy: .public) surface=\(surface.rawValue, privacy: .public)")
+        case .ambiguous:
+            logger.notice("Recording-start main-composer promotion rejected ambiguous composer action topology pid=\(target.pid, privacy: .public) surface=\(surface.rawValue, privacy: .public)")
+            return nil
+        }
+        guard captureScopeStillMatches() else { return nil }
+
+        guard let identity = await exactInputIdentityBounded(
+            for: element,
+            in: window,
+            bundleIdentifier: target.bundleIdentifier,
+            contextElements: contextElements,
+            deadline: ProcessInfo.processInfo.systemUptime + 0.12,
+            hasHardenedApplicationScope: true,
+            boundary: captureScopeStillMatches
+        ), !Task.isCancelled,
+              captureScopeStillMatches(),
+              applicationFallbackWindowMatches(
+                target,
+                window: window,
+                requireFreshCapture: true,
+                requireUniqueSelectedTaskRescan: true
+              ) else {
+            logger.notice("Recording-start main-composer promotion could not freeze its exact composer inside the capture-time task scope pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let promotedFallbackIdentity =
+                identityAfterSuccessfulComposerPromotion(fallbackIdentity) else {
+            logger.notice("Recording-start main-composer promotion lacked one scan-proven stable selected-task key pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        let focusedPromotedComposer = await focusRecordingStartComposerIfSafe(
+            element,
+            for: target,
+            in: window,
+            boundary: captureScopeStillMatches
+        )
+        logger.info("Promoted recording-start application fallback to one frozen main composer without activation pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public) focusedWithinActiveSurface=\(focusedPromotedComposer, privacy: .public) nodesVisited=\(traversal.visitedCount, privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), privacy: .public)")
+        return Target(
+            element: element,
+            window: window,
+            identity: identity,
+            applicationFallbackIdentity: promotedFallbackIdentity,
+            app: target.app,
+            pid: target.pid,
+            terminalAutomationTarget: target.terminalAutomationTarget,
+            captureID: target.captureID,
+            capturedAtUptime: target.capturedAtUptime,
+            captureFocusedElement: target.captureFocusedElement,
+            bundleIdentifier: target.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: target.displayInfo.applicationName,
+                inputName: inputDisplayName(for: element),
+                applicationIcon: target.displayInfo.applicationIcon
+            )
+        )
+    }
+
+    /// Ethan may start recording from the active Codex/ChatGPT/Claude page while its
+    /// main composer has no caret. Once the capture-time task scope has yielded exactly
+    /// one composer, try to focus that editor in place. This never activates an app: the
+    /// original non-editable control must still own system focus, the same window/task
+    /// boundary must still match, and the macOS frontmost app must remain unchanged.
+    /// If Ethan clicks elsewhere while the bounded scan runs, no focus mutation occurs.
+    /// There is no compensating focus rewrite after the attempt: a rollback cannot prove
+    /// whether a later focus on the composer belongs to VoiceInk++ or to Ethan.
+    private func focusRecordingStartComposerIfSafe(
+        _ composer: AXUIElement,
+        for target: Target,
+        in window: AXUIElement,
+        boundary: () -> Bool
+    ) async -> Bool {
+        guard let captureFocusedElement = target.captureFocusedElement,
+              let focusedBefore = systemFocusedElement(),
+              focusedBefore.pid == target.pid,
+              CFEqual(focusedBefore.element, captureFocusedElement),
+              owningWindow(
+                for: captureFocusedElement,
+                allowFocusedApplicationFallback: false
+              ).map({ CFEqual($0, window) }) == true,
+              boundary() else {
+            return false
+        }
+        let frontmostPIDBefore = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(
+            composer,
+            kAXFocusedAttribute as CFString,
+            &settable
+        ) == .success,
+              settable.boolValue,
+              boundary(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == frontmostPIDBefore,
+              let immediateFocus = systemFocusedElement(),
+              immediateFocus.pid == target.pid,
+              CFEqual(immediateFocus.element, captureFocusedElement) else {
+            return false
+        }
+        guard AXUIElementSetAttributeValue(
+            composer,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success else {
+            return false
+        }
+        for _ in 0..<6 {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    != frontmostPIDBefore {
+                break
+            }
+            if let focused = systemFocusedElement(),
+               focused.pid == target.pid,
+               CFEqual(focused.element, composer),
+               boundary() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return false
+    }
+
+    /// A focused editor can be the exact recording-start decision even when its first
+    /// bounded history scan cannot build a replay-safe identity. Enrich that retained
+    /// wrapper once, while it still owns system focus and the capture-time app/window/
+    /// task boundary remains true. This is deliberately the same session-owned task as
+    /// no-caret main-composer promotion: if Ethan switches before it completes, the
+    /// target fails closed instead of following a reused renderer wrapper into another
+    /// task or tab.
+    private func enrichRecordingStartRetainedInput(
+        for target: Target
+    ) async -> Target? {
+        guard let element = target.element,
+              let window = target.window,
+              !target.app.isTerminated else {
+            return nil
+        }
+        let rendererRequiresIdentityOrContext = target.bundleIdentifier.map(
+            Self.exactWrapperRequiresIdentityOrContextBundleIdentifiers.contains
+        ) == true
+        let hasHardenedApplicationScope = target.applicationFallbackIdentity != nil
+        let captureBoundaryMatches = {
+            guard !Task.isCancelled,
+                  ProcessInfo.processInfo.systemUptime - target.capturedAtUptime <= 2.5,
+                  !target.app.isTerminated,
+                  self.recordingStartNonFrontmostFallbackIsAllowed(
+                    app: target.app,
+                    window: window
+                  ),
+                  let focused = self.systemFocusedElement(),
+                  focused.pid == target.pid,
+                  CFEqual(focused.element, element),
+                  self.owningWindow(
+                    for: element,
+                    allowFocusedApplicationFallback: Self.isTelegram(
+                        bundleIdentifier: target.bundleIdentifier
+                    )
+                  ).map({ CFEqual($0, window) }) == true else {
+                return false
+            }
+            if hasHardenedApplicationScope {
+                return self.applicationFallbackWindowMatches(
+                    target,
+                    window: window,
+                    requireFreshCapture: true,
+                    requireUniqueSelectedTaskRescan: true
+                )
+            }
+            // Renderer wrappers are known to survive task/tab changes. Without a
+            // capture-time selected-task scope, a later async walk cannot prove that
+            // the same wrapper still represents the original decision.
+            return !rendererRequiresIdentityOrContext
+        }
+        guard captureBoundaryMatches() else { return nil }
+
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + 0.35
+        let traversalState = BoundedTraversalState(nodeBudget: 1_600)
+        var contextElements: [AXUIElement] = []
+        let traversal = await visitBoundedDescendants(
+            of: window,
+            maximumDepth: 24,
+            state: traversalState,
+            deadline: deadline,
+            boundary: captureBoundaryMatches,
+            visitor: { candidate, _ in
+                contextElements.append(candidate)
+                return true
+            }
+        )
+        guard traversal.completion == .completed,
+              captureBoundaryMatches(),
+              let identity = await exactInputIdentityBounded(
+                for: element,
+                in: window,
+                bundleIdentifier: target.bundleIdentifier,
+                contextElements: contextElements,
+                deadline: ProcessInfo.processInfo.systemUptime + 0.12,
+                hasHardenedApplicationScope: hasHardenedApplicationScope,
+                boundary: captureBoundaryMatches
+              ),
+              captureBoundaryMatches() else {
+            logger.notice("Recording-start retained input enrichment failed closed pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) traversal=\(String(describing: traversal.completion), privacy: .public) nodesVisited=\(traversal.visitedCount, privacy: .public)")
+            return nil
+        }
+        logger.info("Enriched recording-start retained input with replay-safe identity pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) nodesVisited=\(traversal.visitedCount, privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), privacy: .public)")
+        return Target(
+            element: element,
+            window: window,
+            identity: identity,
+            applicationFallbackIdentity: target.applicationFallbackIdentity,
+            app: target.app,
+            pid: target.pid,
+            terminalAutomationTarget: target.terminalAutomationTarget,
+            captureID: target.captureID,
+            capturedAtUptime: target.capturedAtUptime,
+            captureFocusedElement: target.captureFocusedElement,
+            bundleIdentifier: target.bundleIdentifier,
+            displayInfo: target.displayInfo
+        )
+    }
+
     func pressNearbySubmitButton(
         for session: BackgroundDeliverySession
-    ) -> NearbySubmitButtonResult {
+    ) async -> NearbySubmitButtonResult {
         guard AXIsProcessTrusted(),
-              Self.supportsSemanticSend(bundleIdentifier: session.bundleIdentifier),
+              Self.supportsBackgroundSemanticSend(
+                bundleIdentifier: session.bundleIdentifier
+              ),
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: session.bundleIdentifier,
+                applicationBundleName: session.app.bundleURL?.lastPathComponent
+              ),
               !session.app.isTerminated,
               backgroundDeliveryBoundaryMatches(session) else {
             return .unavailable
         }
-        var result = pressNearbySubmitButton(
+
+        let result = await pressNearbySubmitButton(
             element: session.element,
             pid: session.processIdentifier,
+            surface: surface,
+            preserveSystemFocusAcrossAction:
+                session.focusMode == .directExactElement,
+            // A truly backgrounded composer has no safe key fallback, so briefly wait
+            // for React to expose its semantic Send control. Option-Space/current-input
+            // sessions can use one exact-focus HID Return and should not pay the full
+            // unavailable-button deadline first; an observed disabled button still waits.
+            waitForUnavailableCandidate:
+                session.focusMode != .alreadyKeyboardFocused,
             preflight: {
                 self.backgroundDeliveryBoundaryMatches(session)
             }
         )
-        if result == .unavailable {
-            result = pressRetainedSubmitButton(for: session)
-        }
         if !backgroundFocusBoundaryIsSafe(
             session,
             allowReplacementAfterSubmission: true
@@ -1095,54 +3883,7 @@ final class FocusLockService: ObservableObject {
             logger.error("Semantic Send violated the exact user-focus boundary pid=\(session.processIdentifier, privacy: .public)")
             return .failed(AXError.cannotComplete.rawValue)
         }
-        if Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
-           !telegramDeliveryBoundaryMatches(session) {
-            logger.error("Telegram semantic Send lost readable matching chat context after its one action pid=\(session.processIdentifier, privacy: .public)")
-            return .failed(AXError.cannotComplete.rawValue)
-        }
         return result
-    }
-
-    private func pressRetainedSubmitButton(
-        for session: BackgroundDeliverySession
-    ) -> NearbySubmitButtonResult {
-        guard let button = session.target.retainedSubmitButton,
-              let capturedFrame = session.target.retainedSubmitButtonFrame,
-              let currentFrame = frame(of: button) else {
-            return .unavailable
-        }
-        var pid: pid_t = 0
-        let pidMatches = AXUIElementGetPid(button, &pid) == .success
-            && pid == session.processIdentifier
-        let geometryMatches = abs(currentFrame.origin.x - capturedFrame.origin.x)
-            + abs(currentFrame.origin.y - capturedFrame.origin.y)
-            + abs(currentFrame.size.width - capturedFrame.size.width)
-            + abs(currentFrame.size.height - capturedFrame.size.height) <= 8
-            && currentFrame.width >= 14
-            && currentFrame.width <= 96
-            && currentFrame.height >= 14
-            && currentFrame.height <= 96
-        return Self.performProvenSemanticSend(
-            isUnambiguous: true,
-            pidMatches: pidMatches,
-            windowMatches: owningWindow(for: button).map({
-                CFEqual($0, session.window)
-            }) == true,
-            geometryMatches: geometryMatches,
-            roleMatches: stringAttribute(kAXRoleAttribute, from: button)
-                == kAXButtonRole,
-            enabled: boolAttribute(kAXEnabledAttribute, from: button) != false,
-            label: submitLabel(for: button),
-            hasPressAction: actionNames(from: button).contains(kAXPressAction),
-            boundaryMatches: backgroundDeliveryBoundaryMatches(session)
-        ) {
-            let retainedResult = AXUIElementPerformAction(
-                button,
-                kAXPressAction as CFString
-            )
-            logger.info("Retained exact submit-button press attempted pid=\(session.processIdentifier, privacy: .public) bundle=\(session.bundleIdentifier ?? "nil", privacy: .public) result=\(retainedResult.rawValue, privacy: .public)")
-            return retainedResult.rawValue
-        }
     }
 
     /// Read the live editor text for bounded delivery verification. This is not used
@@ -1168,20 +3909,28 @@ final class FocusLockService: ObservableObject {
     }
 
     /// Some chat editors expose an Accessibility button explicitly labelled Send even
-    /// when their text area ignores synthetic Return. Restrict discovery to proven chat
-    /// bundles and the nearest small shared composer container. Never treat an unlabelled
-    /// square as Send: the same OpenAI slot becomes Stop while an agent is running.
+    /// when their text area ignores synthetic Return. Discovery is intentionally
+    /// surface-specific: Claude exposes a direct sibling; current OpenAI builds place
+    /// FooterActions in a sibling branch several wrappers away; Telegram's visual slot
+    /// is not an Accessibility button and therefore remains foreground-Return-only.
+    /// Never treat an arbitrary unlabelled square as Send: OpenAI reuses that slot as
+    /// Stop. One exact audited ChatGPT build may use its idle unlabelled button only
+    /// after version, uniqueness, geometry, state, and action-time label revalidation.
     func pressNearbySubmitButton(
         for target: Target,
         allowApplicationFallback: Bool = false
-    ) -> NearbySubmitButtonResult {
+    ) async -> NearbySubmitButtonResult {
         guard AXIsProcessTrusted() else {
             return .failed(AXError.apiDisabled.rawValue)
         }
         guard !target.app.isTerminated,
               Self.supportsSemanticSend(bundleIdentifier: target.bundleIdentifier),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
-              (!target.hasExactInput || targetOwnsSystemKeyboardFocus(target)),
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: target.bundleIdentifier,
+                applicationBundleName: target.app.bundleURL?.lastPathComponent
+              ),
+              target.hasForegroundInput,
+              targetOwnsSystemKeyboardFocus(target),
               let element = liveElement(
                 for: target,
                 allowApplicationFallback: allowApplicationFallback
@@ -1189,13 +3938,17 @@ final class FocusLockService: ObservableObject {
             return .unavailable
         }
 
-        return pressNearbySubmitButton(
+        return await pressNearbySubmitButton(
             element: element,
             pid: target.pid,
+            surface: surface,
+            preserveSystemFocusAcrossAction: false,
+            // The exact target already owns system keyboard focus. If no labelled Send
+            // exists, return promptly to the one-shot normal-HID fallback; only an
+            // observed disabled Send warrants readiness polling.
+            waitForUnavailableCandidate: false,
             preflight: {
-                NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid
-                    && (!target.hasExactInput
-                        || self.targetOwnsSystemKeyboardFocus(target))
+                self.targetOwnsSystemKeyboardFocus(target)
             }
         )
     }
@@ -1203,17 +3956,129 @@ final class FocusLockService: ObservableObject {
     private func pressNearbySubmitButton(
         element: AXUIElement,
         pid: pid_t,
+        surface: SemanticSendSurface,
+        preserveSystemFocusAcrossAction: Bool,
+        waitForUnavailableCandidate: Bool,
         preflight: () -> Bool
-    ) -> NearbySubmitButtonResult {
-        guard let candidate = nearbySubmitButtonCandidate(element: element, pid: pid),
-              let editorWindow = owningWindow(for: element),
-              let editorFrame = frame(of: element),
-              let candidateFrame = frame(of: candidate.element) else {
-            logger.notice("Nearby submit button unavailable or failed its final boundary pid=\(pid, privacy: .public)")
+    ) async -> NearbySubmitButtonResult {
+        guard surface != .telegramForegroundOnly else {
+            // Telegram 12.9 renders the microphone/Send slot as a custom TGUIKit view
+            // with no AXButton/AXPress surface. A coordinate click cannot identify the
+            // frozen chat while backgrounded. Foreground delivery may instead issue one
+            // exact-focus-gated normal Return; background delivery fails closed.
             return .unavailable
         }
+
+        // React may add the Send button after insertion, flip a disabled wrapper, or
+        // replace wrapper A with ready wrapper B. Poll the complete surface-specific
+        // relationship—not one retained disabled AX object—through the bounded
+        // readiness window. Ambiguity, cancellation, or a lost exact-input boundary
+        // stops immediately and no action is issued.
+        let readinessDeadline = ProcessInfo.processInfo.systemUptime + 0.8
+        var readyCandidate: NearbySubmitButtonCandidate?
+        var loggedReadinessWait = false
+        repeat {
+            guard preflight(), !Task.isCancelled else { return .unavailable }
+            let lookup = await nearbySubmitButtonLookup(
+                element: element,
+                pid: pid,
+                surface: surface,
+                boundary: preflight
+            )
+            let observation: SemanticSendReadinessObservation = switch lookup {
+            case .ready: .ready
+            case .disabled: .disabled
+            case .unavailable: .unavailable
+            case .ambiguous: .ambiguous
+            }
+            switch Self.semanticSendReadinessDecision(
+                for: observation,
+                waitForUnavailable: waitForUnavailableCandidate
+            ) {
+            case .press:
+                guard case .ready(let candidate) = lookup else {
+                    return .unavailable
+                }
+                readyCandidate = candidate
+            case .wait:
+                if !loggedReadinessWait,
+                   case .disabled(let candidate) = lookup {
+                    logger.info("Waiting for verified semantic Send readiness pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public) label=\(candidate.label, privacy: .public) labelAttribute=\(candidate.labelAttribute, privacy: .public)")
+                    loggedReadinessWait = true
+                } else if !loggedReadinessWait {
+                    logger.info("Waiting for transiently unavailable semantic Send pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public)")
+                    loggedReadinessWait = true
+                }
+            case .stop:
+                if observation == .unavailable,
+                   !waitForUnavailableCandidate {
+                    logger.info("Semantic Send unavailable for exact-focus target; returning immediately to one-shot HID fallback pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public)")
+                } else {
+                    logger.notice("Semantic Send lookup was ambiguous or its exact boundary was lost; no action issued pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public)")
+                }
+                return .unavailable
+            }
+            if readyCandidate != nil { break }
+            guard ProcessInfo.processInfo.systemUptime < readinessDeadline else {
+                logger.notice("Semantic Send remained unavailable or disabled through readiness deadline pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public)")
+                return .unavailable
+            }
+            try? await Task.sleep(nanoseconds: focusPollInterval)
+        } while true
+
+        // React may replace or reparent a control while its enabled state settles.
+        // Re-resolve the surface-specific relationship immediately before AXPress and
+        // require one currently ready candidate; never hard-code stale ambiguity=true.
+        guard readyCandidate != nil,
+              preflight(),
+              !Task.isCancelled else { return .unavailable }
+        let finalCandidate: NearbySubmitButtonCandidate
+        switch await nearbySubmitButtonLookup(
+            element: element,
+            pid: pid,
+            surface: surface,
+            boundary: preflight
+        ) {
+        case .ready(let readyCandidate):
+            finalCandidate = readyCandidate
+        case .disabled, .unavailable, .ambiguous:
+            return .unavailable
+        }
+        return pressVerifiedSubmitButton(
+            finalCandidate,
+            editor: element,
+            pid: pid,
+            preserveSystemFocusAcrossAction: preserveSystemFocusAcrossAction,
+            preflight: preflight
+        )
+    }
+
+    private func pressVerifiedSubmitButton(
+        _ candidate: NearbySubmitButtonCandidate,
+        editor: AXUIElement,
+        pid: pid_t,
+        preserveSystemFocusAcrossAction: Bool,
+        preflight: () -> Bool
+    ) -> NearbySubmitButtonResult {
+        guard let editorWindow = owningWindow(for: editor),
+              let editorFrame = frame(of: editor),
+              let candidateFrame = frame(of: candidate.element) else {
+            return .unavailable
+        }
+        let currentLabelEvidence = submitLabelEvidence(for: candidate.element)
+        // Re-evaluate the exact app build and absence of every accepted label at the
+        // irreversible boundary. If React changed the unlabelled idle Send into its
+        // labelled Stop control after discovery, this becomes false and AXPress is
+        // never attempted.
+        let currentVersionedUnlabelledOpenAIContract =
+            candidate.usesVersionedUnlabelledOpenAIContract
+            && currentLabelEvidence == nil
+            && versionedUnlabelledOpenAISendIsAllowed(
+                pid: pid,
+                surface: candidate.surface
+            )
         var candidatePID: pid_t = 0
-        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        var focusStayedUnchanged = true
         let result = Self.performProvenSemanticSend(
             isUnambiguous: true,
             pidMatches: AXUIElementGetPid(candidate.element, &candidatePID) == .success
@@ -1221,156 +4086,371 @@ final class FocusLockService: ObservableObject {
             windowMatches: owningWindow(for: candidate.element).map({
                 CFEqual($0, editorWindow)
             }) == true,
-            geometryMatches: candidateFrame.width >= 14
-                && candidateFrame.width <= 96
-                && candidateFrame.height >= 14
-                && candidateFrame.height <= 96
-                && editorFrame.insetBy(dx: -100, dy: -100).contains(center),
+            geometryMatches: Self.semanticSendGeometryMatches(
+                surface: candidate.surface,
+                editorFrame: editorFrame,
+                candidateFrame: candidateFrame
+            ),
             roleMatches: stringAttribute(kAXRoleAttribute, from: candidate.element)
                 == kAXButtonRole,
             enabled: boolAttribute(kAXEnabledAttribute, from: candidate.element)
-                != false,
-            label: submitLabel(for: candidate.element),
+                == true,
+            label: currentLabelEvidence?.label,
+            labelAttribute: currentLabelEvidence?.attribute,
+            allowsVersionedUnlabelledOpenAISend:
+                currentVersionedUnlabelledOpenAIContract,
             hasPressAction: actionNames(from: candidate.element)
                 .contains(kAXPressAction),
-            boundaryMatches: preflight()
+            boundaryMatches: !Task.isCancelled && preflight()
         ) {
+            guard !Task.isCancelled, preflight() else {
+                return AXError.cannotComplete.rawValue
+            }
+            let focusBeforeAction = preserveSystemFocusAcrossAction
+                ? systemFocusedElement()
+                : nil
+            guard !preserveSystemFocusAcrossAction
+                    || focusBeforeAction != nil else {
+                return AXError.cannotComplete.rawValue
+            }
             let actionResult = AXUIElementPerformAction(
                 candidate.element,
                 kAXPressAction as CFString
             )
-            logger.info("Nearby submit-button press attempted pid=\(pid, privacy: .public) label=\(candidate.label, privacy: .public) result=\(actionResult.rawValue, privacy: .public)")
+            if let focusBeforeAction {
+                let focusAfterAction = systemFocusedElement()
+                focusStayedUnchanged = focusAfterAction?.pid
+                    == focusBeforeAction.pid
+                    && focusAfterAction.map {
+                        CFEqual($0.element, focusBeforeAction.element)
+                    } == true
+            }
+            let deltaX = Int(candidateFrame.midX - editorFrame.maxX)
+            let deltaY = Int(candidateFrame.midY - editorFrame.maxY)
+            logger.info("Verified semantic Send press attempted pid=\(pid, privacy: .public) surface=\(candidate.surface.rawValue, privacy: .public) label=\(candidate.label, privacy: .public) labelAttribute=\(candidate.labelAttribute, privacy: .public) ancestorIndex=\(candidate.ancestorIndex, privacy: .public) discoveredDepth=\(candidate.discoveredDepth, privacy: .public) deltaX=\(deltaX, privacy: .public) deltaY=\(deltaY, privacy: .public) result=\(actionResult.rawValue, privacy: .public)")
             return actionResult.rawValue
         }
+        guard focusStayedUnchanged else {
+            logger.error("Semantic Send changed Ethan's current system-focused input during direct exact delivery pid=\(pid, privacy: .public) surface=\(candidate.surface.rawValue, privacy: .public)")
+            return .failed(AXError.cannotComplete.rawValue)
+        }
         if result == .unavailable {
-            logger.notice("Nearby submit button changed identity, label, geometry, or exact-input boundary immediately before press pid=\(pid, privacy: .public)")
+            logger.notice("Semantic Send changed identity, label, enabled state, geometry, or exact-input boundary immediately before press pid=\(pid, privacy: .public) surface=\(candidate.surface.rawValue, privacy: .public)")
         }
         return result
     }
 
-    /// Resolve exactly one explicitly labelled Send button from the nearest shared
-    /// composer container. The bounded ancestor/depth/geometry search keeps unrelated
-    /// window controls out, and ambiguity fails closed rather than guessing.
-    private func nearbySubmitButtonCandidate(
+    private func nearbySubmitButtonLookup(
         element: AXUIElement,
         pid: pid_t,
-        requireEnabled: Bool = true
-    ) -> NearbySubmitButtonCandidate? {
-        guard let editorFrame = frame(of: element),
+        surface: SemanticSendSurface,
+        allowStopForComposerTopology: Bool = false,
+        boundary: () -> Bool = { true }
+    ) async -> NearbySubmitButtonLookup {
+        guard boundary() else { return .unavailable }
+        switch surface {
+        case .claudeDesktop:
+            return claudeSubmitButtonLookup(
+                element: element,
+                pid: pid,
+                allowStopForComposerTopology: allowStopForComposerTopology,
+                boundary: boundary
+            )
+        case .openAIChatGPT, .openAICodex:
+            return await openAISubmitButtonLookup(
+                element: element,
+                pid: pid,
+                surface: surface,
+                allowStopForComposerTopology: allowStopForComposerTopology,
+                boundary: boundary
+            )
+        case .telegramForegroundOnly:
+            return .unavailable
+        }
+    }
+
+    /// Claude Desktop 1.21459.3 exposes the exact Prompt AXTextArea and a single Send
+    /// AXButton as direct siblings in one 44-point composer group. Its React can-send
+    /// state can lag the AXValue mutation briefly, so lookup returns the disabled
+    /// candidate for bounded readiness polling instead of broad-scanning the window.
+    private func claudeSubmitButtonLookup(
+        element: AXUIElement,
+        pid: pid_t,
+        allowStopForComposerTopology: Bool,
+        boundary: () -> Bool
+    ) -> NearbySubmitButtonLookup {
+        guard boundary(),
+              let parent = elementAttribute(kAXParentAttribute, from: element),
+              let editorWindow = owningWindow(for: element),
+              let editorFrame = frame(of: element) else {
+            return .unavailable
+        }
+        let candidates = elementArrayAttribute(kAXChildrenAttribute, from: parent)
+            .compactMap {
+                semanticSendCandidate(
+                    $0,
+                    editor: element,
+                    editorWindow: editorWindow,
+                    editorFrame: editorFrame,
+                    pid: pid,
+                    surface: .claudeDesktop,
+                    ancestorIndex: 0,
+                    discoveredDepth: 1,
+                    allowStopForComposerTopology: allowStopForComposerTopology
+                )
+            }
+        return boundary() ? semanticSendLookup(from: candidates) : .unavailable
+    }
+
+    /// ChatGPT and Codex place FooterActions in a sibling branch of the editor's
+    /// ancestor chain. The v2.0.211 framed-container/editor±100 search visited only 24
+    /// nodes and never reached that real branch. Walk only sibling subtrees as the exact
+    /// editor ascends—never its chat-history subtree or the whole AXWindow—and stop at
+    /// the nearest ancestor containing exactly one explicit Send AXButton. Delivery can
+    /// overlap a newer recording, so the bounded walk yields cooperatively below rather
+    /// than monopolizing MainActor and delaying recorder/shortcut updates.
+    private func openAISubmitButtonLookup(
+        element: AXUIElement,
+        pid: pid_t,
+        surface: SemanticSendSurface,
+        allowStopForComposerTopology: Bool,
+        boundary: () -> Bool
+    ) async -> NearbySubmitButtonLookup {
+        guard boundary(),
+              let editorFrame = frame(of: element),
               let editorWindow = owningWindow(for: element) else {
-            return nil
+            return .unavailable
         }
 
         let searchStarted = ProcessInfo.processInfo.systemUptime
-        let timeBudget: TimeInterval = requireEnabled ? 0.075 : 0.030
-        let deadline = searchStarted + timeBudget
-        var remainingNodeBudget = requireEnabled ? 600 : 240
-        var visitedNodeHashes = Set<CFHashCode>()
+        let deadline = searchStarted + 0.35
+        let traversalState = BoundedTraversalState(nodeBudget: 1_600)
+        let allowsVersionedUnlabelledOpenAISend =
+            versionedUnlabelledOpenAISendIsAllowed(
+                pid: pid,
+                surface: surface
+            )
         var visitedNodeCount = 0
+        var editorBranch = element
         var ancestor = elementAttribute(kAXParentAttribute, from: element)
-        // Codex's current React composer nests FooterAction/Send several wrapper
-        // levels away from the AXTextArea. Keep this search inside the nearest
-        // composer-sized ancestors so recording capture stays cheap, but allow enough
-        // depth to reach the app's real explicitly labelled Send button. A whole-window
-        // scan here would regress recorder start/stop latency on large chat histories.
-        for ancestorIndex in 0..<10 {
-            guard remainingNodeBudget > 0,
-                  ProcessInfo.processInfo.systemUptime < deadline else {
+        for ancestorIndex in 0..<16 {
+            guard traversalState.remainingNodeBudget > 0,
+                  ProcessInfo.processInfo.systemUptime < deadline,
+                  boundary() else {
                 break
             }
-            guard let container = ancestor else { break }
+            guard let container = ancestor,
+                  !CFEqual(container, editorWindow) else { break }
             ancestor = elementAttribute(kAXParentAttribute, from: container)
-            // Frameless Electron wrappers can represent huge virtual subtrees. Never
-            // traverse one: doing so made a bounded ancestor count effectively become a
-            // whole-window scan and delayed the recorder even when the button was Stop.
-            guard let containerFrame = frame(of: container),
-                  containerFrame.intersects(editorFrame),
-                  containerFrame.width <= editorFrame.width + 240,
-                  containerFrame.height <= editorFrame.height + 240 else {
-                continue
-            }
 
             var candidates: [NearbySubmitButtonCandidate] = []
-            let descendants = boundedDescendants(
-                of: container,
-                maximumDepth: 8,
-                remainingNodeBudget: &remainingNodeBudget,
-                visitedNodeHashes: &visitedNodeHashes,
-                deadline: deadline
-            )
-            visitedNodeCount += descendants.count
-            for (candidateElement, discoveredDepth) in descendants {
-                var candidatePID: pid_t = 0
-                guard !CFEqual(candidateElement, element),
-                      AXUIElementGetPid(candidateElement, &candidatePID) == .success,
-                      candidatePID == pid,
-                      owningWindow(for: candidateElement).map({
-                        CFEqual($0, editorWindow)
-                      }) == true,
-                      stringAttribute(kAXRoleAttribute, from: candidateElement)
-                        == kAXButtonRole,
-                      (!requireEnabled
-                        || boolAttribute(kAXEnabledAttribute, from: candidateElement) != false),
-                      let candidateFrame = frame(of: candidateElement),
-                      candidateFrame.width >= 14,
-                      candidateFrame.width <= 96,
-                      candidateFrame.height >= 14,
-                      candidateFrame.height <= 96 else {
-                    continue
-                }
-
-                let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
-                guard editorFrame.insetBy(dx: -100, dy: -100).contains(center),
-                      let label = submitLabel(for: candidateElement),
-                      Self.isProvenSemanticSendLabel(label) else {
-                    continue
-                }
-                let candidate = NearbySubmitButtonCandidate(
-                    element: candidateElement,
-                    label: label,
-                    score: abs(center.x - editorFrame.maxX)
-                        + abs(center.y - editorFrame.maxY),
-                    discoveredDepth: discoveredDepth
-                )
-                if let existingIndex = candidates.firstIndex(where: {
-                    CFEqual($0.element, candidateElement)
-                }) {
-                    if candidate.score < candidates[existingIndex].score {
-                        candidates[existingIndex] = candidate
+            let siblingBranches = traversalChildren(of: container)
+                .filter { !CFEqual($0, editorBranch) }
+            var traversalCompleted = true
+            for sibling in siblingBranches {
+                let traversal = await visitBoundedDescendants(
+                    of: sibling,
+                    maximumDepth: 10,
+                    state: traversalState,
+                    deadline: deadline,
+                    boundary: boundary,
+                    visitor: { candidateElement, discoveredDepth in
+                        if let candidate = self.semanticSendCandidate(
+                            candidateElement,
+                            editor: element,
+                            editorWindow: editorWindow,
+                            editorFrame: editorFrame,
+                            pid: pid,
+                            surface: surface,
+                            ancestorIndex: ancestorIndex,
+                            discoveredDepth: discoveredDepth,
+                            allowStopForComposerTopology:
+                                allowStopForComposerTopology,
+                            allowsVersionedUnlabelledOpenAISend:
+                                allowsVersionedUnlabelledOpenAISend
+                        ) {
+                            candidates.append(candidate)
+                        }
+                        // Two distinct explicit Send controls in the same nearest
+                        // composer ancestor are ambiguous; stop before walking more.
+                        return self.semanticSendUniqueCount(candidates) < 2
                     }
-                } else {
-                    candidates.append(candidate)
+                )
+                visitedNodeCount += traversal.visitedCount
+                switch traversal.completion {
+                case .completed:
+                    break
+                case .stoppedByVisitor:
+                    return .ambiguous
+                case .exhausted, .cancelled, .boundaryChanged:
+                    traversalCompleted = false
                 }
+                guard traversalCompleted else { break }
             }
 
-            let ranked = candidates.sorted { $0.score < $1.score }
-            if ranked.count == 1, let candidate = ranked.first {
+            guard traversalCompleted else { break }
+
+            let lookup = semanticSendLookup(from: candidates)
+            switch lookup {
+            case .ready(let candidate), .disabled(let candidate):
                 let elapsedMilliseconds = Int(
                     (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
                 )
-                logger.info("Resolved explicitly labelled Send button in nearest composer container pid=\(pid, privacy: .public) label=\(candidate.label, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) discoveredDepth=\(candidate.discoveredDepth, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-                return candidate
-            }
-            if ranked.count > 1 {
+                logger.info("Resolved OpenAI FooterActions Send sibling pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public) label=\(candidate.label, privacy: .public) labelAttribute=\(candidate.labelAttribute, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) discoveredDepth=\(candidate.discoveredDepth, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return lookup
+            case .ambiguous:
                 let elapsedMilliseconds = Int(
                     (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
                 )
-                logger.notice("Nearest composer container had ambiguous Send buttons pid=\(pid, privacy: .public) candidates=\(ranked.count, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-                return nil
+                logger.notice("OpenAI shared composer ancestor had ambiguous Send buttons pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .ambiguous
+            case .unavailable:
+                break
             }
+            editorBranch = container
         }
 
         let elapsedMilliseconds = Int(
             (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
         )
-        logger.notice("Bounded nearby Send search found no candidate pid=\(pid, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) remainingNodeBudget=\(remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-        return nil
+        logger.notice("Bounded OpenAI FooterActions sibling search found no candidate pid=\(pid, privacy: .public) surface=\(surface.rawValue, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) remainingNodeBudget=\(traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+        return .unavailable
+    }
+
+    private func semanticSendCandidate(
+        _ candidateElement: AXUIElement,
+        editor: AXUIElement,
+        editorWindow: AXUIElement,
+        editorFrame: CGRect,
+        pid: pid_t,
+        surface: SemanticSendSurface,
+        ancestorIndex: Int,
+        discoveredDepth: Int,
+        allowStopForComposerTopology: Bool,
+        allowsVersionedUnlabelledOpenAISend: Bool = false
+    ) -> NearbySubmitButtonCandidate? {
+        var candidatePID: pid_t = 0
+        let labelEvidence = submitLabelEvidence(for: candidateElement)
+        // The exact audited ChatGPT build omits an aria-label only for idle Send and
+        // adds an explicit Stop label when the same slot changes state. Treat absence
+        // of all accepted label attributes as versioned evidence, never as a generic
+        // button rule. Final action re-reads both the app build and label so a live
+        // Send-to-Stop transition cannot cross this boundary.
+        let usesVersionedUnlabelledOpenAIContract =
+            labelEvidence == nil
+            && allowsVersionedUnlabelledOpenAISend
+            && !allowStopForComposerTopology
+        guard !CFEqual(candidateElement, editor),
+              AXUIElementGetPid(candidateElement, &candidatePID) == .success,
+              candidatePID == pid,
+              stringAttribute(kAXRoleAttribute, from: candidateElement)
+                == kAXButtonRole,
+              ((labelEvidence.map {
+                    Self.isExplicitSemanticSendEvidence(
+                        label: $0.label,
+                        attribute: $0.attribute
+                    )
+                 } == true)
+                || (allowStopForComposerTopology
+                    && labelEvidence.map {
+                        Self.isExplicitSemanticStopEvidence(
+                            label: $0.label,
+                            attribute: $0.attribute
+                        )
+                    } == true)
+                || usesVersionedUnlabelledOpenAIContract),
+              actionNames(from: candidateElement).contains(kAXPressAction),
+              owningWindow(for: candidateElement).map({
+                CFEqual($0, editorWindow)
+              }) == true,
+              let candidateFrame = frame(of: candidateElement),
+              Self.semanticSendGeometryMatches(
+                surface: surface,
+                editorFrame: editorFrame,
+                candidateFrame: candidateFrame
+              ) else {
+            return nil
+        }
+        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        return NearbySubmitButtonCandidate(
+            element: candidateElement,
+            label: labelEvidence?.label ?? "versioned-unlabelled-send",
+            labelAttribute: labelEvidence?.attribute ?? "OpenAIBundleContract",
+            usesVersionedUnlabelledOpenAIContract:
+                usesVersionedUnlabelledOpenAIContract,
+            score: abs(center.x - editorFrame.maxX)
+                + abs(center.y - editorFrame.maxY),
+            ancestorIndex: ancestorIndex,
+            discoveredDepth: discoveredDepth,
+            surface: surface,
+            enabled: boolAttribute(kAXEnabledAttribute, from: candidateElement)
+        )
+    }
+
+    private func semanticSendLookup(
+        from candidates: [NearbySubmitButtonCandidate]
+    ) -> NearbySubmitButtonLookup {
+        var unique: [NearbySubmitButtonCandidate] = []
+        for candidate in candidates.sorted(by: { $0.score < $1.score }) {
+            guard !unique.contains(where: {
+                CFEqual($0.element, candidate.element)
+            }) else { continue }
+            unique.append(candidate)
+        }
+        guard unique.count == 1, let candidate = unique.first else {
+            return unique.isEmpty ? .unavailable : .ambiguous
+        }
+        switch candidate.enabled {
+        case true:
+            return .ready(candidate)
+        case false:
+            return .disabled(candidate)
+        case nil:
+            return .unavailable
+        }
+    }
+
+    private func semanticSendUniqueCount(
+        _ candidates: [NearbySubmitButtonCandidate]
+    ) -> Int {
+        var unique: [AXUIElement] = []
+        for candidate in candidates where !unique.contains(where: {
+            CFEqual($0, candidate.element)
+        }) {
+            unique.append(candidate.element)
+            if unique.count == 2 { break }
+        }
+        return unique.count
+    }
+
+    static func semanticSendGeometryMatches(
+        surface: SemanticSendSurface,
+        editorFrame: CGRect,
+        candidateFrame: CGRect
+    ) -> Bool {
+        guard candidateFrame.width >= 14,
+              candidateFrame.width <= 96,
+              candidateFrame.height >= 14,
+              candidateFrame.height <= 96 else {
+            return false
+        }
+        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        switch surface {
+        case .claudeDesktop:
+            return editorFrame.insetBy(dx: -100, dy: -100).contains(center)
+        case .openAIChatGPT, .openAICodex:
+            return editorFrame.insetBy(dx: -360, dy: -320).contains(center)
+        case .telegramForegroundOnly:
+            return false
+        }
     }
 
     /// Bring a known application to the foreground and verify that macOS actually
-    /// made it frontmost. `NSRunningApplication.activate` returned `false` for Codex
-    /// and VS Code during real cross-app delivery, so both destination activation and
-    /// post-delivery workspace restoration share the `NSWorkspace` fallback here.
+    /// made it frontmost. This is restricted to explicit foreground/legacy fallbacks
+    /// and post-delivery workspace restoration. Saved background targets and same-app/
+    /// different-input delivery must never call it. `NSRunningApplication.activate`
+    /// returned `false` for Codex and VS Code, so the permitted foreground callers and
+    /// workspace restoration share the `NSWorkspace` fallback here.
     func activateApplication(_ application: NSRunningApplication) async -> Bool {
         let pid = application.processIdentifier
         guard !application.isTerminated else {
@@ -1691,7 +4771,12 @@ final class FocusLockService: ObservableObject {
               pid == session.processIdentifier,
               stringAttribute(kAXRoleAttribute, from: element) == session.inputRole,
               stringAttribute(kAXSubroleAttribute, from: element) == session.inputSubrole,
-              owningWindow(for: element).map({
+              owningWindow(
+                for: element,
+                allowFocusedApplicationFallback: Self.isTelegram(
+                    bundleIdentifier: session.bundleIdentifier
+                )
+              ).map({
                 CFEqual($0, session.window)
               }) == true else {
             return false
@@ -1782,6 +4867,9 @@ final class FocusLockService: ObservableObject {
         for target: Target,
         allowApplicationFallback: Bool
     ) -> AXUIElement? {
+        if retainedInputOwnsSystemKeyboardFocus(target) {
+            return target.element
+        }
         if let element = resolvedExactElement(for: target) {
             return element
         }
@@ -1795,34 +4883,119 @@ final class FocusLockService: ObservableObject {
 
     private func resolvedExactElement(for target: Target) -> AXUIElement? {
         let savedWindow = liveWindow(for: target, resolvedElement: nil)
-        let directContextMatches = target.identity.map { identity in
-            let currentContext = savedWindow.map {
-                contextFingerprint(
-                    in: $0,
+        let hardenedApplicationScopeMatches: Bool
+        if target.applicationFallbackIdentity != nil {
+            guard let savedWindow,
+                  applicationFallbackWindowMatches(
+                    target,
+                    window: savedWindow,
+                    requireFreshCapture: false,
+                    requireUniqueSelectedTaskRescan: true
+                  ) else {
+                // A no-caret recordingStart capture is promoted only inside the exact
+                // saved task/window. A later tab/task change invalidates that promoted
+                // composer even if Electron reused the same editor geometry or wrapper.
+                return nil
+            }
+            hardenedApplicationScopeMatches = true
+        } else {
+            hardenedApplicationScopeMatches = false
+        }
+        // A revalidated task/panel scope plus the retained wrapper's exact structure
+        // is already the stronger document boundary. Skip the extra 45 ms history
+        // fingerprint in that case so foreground paste and recorder stop stay snappy.
+        // Targets without that scope still require their ordinary context proof.
+        let scopedRetainedWrapperMayIgnoreContextDrift =
+            Self.scopedRetainedWrapperMayIgnoreContextDrift(
+                hasHardenedApplicationScope:
+                    target.applicationFallbackIdentity != nil,
+                captureScopeStillMatches: hardenedApplicationScopeMatches
+            )
+        let directContextMatches: Bool
+        if scopedRetainedWrapperMayIgnoreContextDrift {
+            directContextMatches = true
+        } else {
+            directContextMatches = target.identity.map { identity in
+                guard let savedWindow else { return false }
+                let currentContextResult = contextFingerprint(
+                    in: savedWindow,
                     region: identity.contextRegion,
-                    excluding: Self.isTelegram(bundleIdentifier: target.bundleIdentifier)
-                        ? target.element
-                        : nil,
+                    excluding: Self.isTelegram(
+                        bundleIdentifier: target.bundleIdentifier
+                    ) ? target.element : nil,
                     bundleIdentifier: target.bundleIdentifier
                 )
-            } ?? ContextAnchorSelection(primary: [], secondary: [])
-            return Self.directCapturedElementContextAllowed(
-                bundleIdentifier: target.bundleIdentifier,
-                hasStableIdentifier: identity.identifier != nil
-                    || identity.domIdentifier != nil,
-                capturedPrimaryContextAnchors: identity.primaryContextAnchors,
-                capturedContextAnchors: identity.contextAnchors,
-                currentPrimaryContextAnchors: currentContext.primary,
-                currentContextAnchors: currentContext.secondary
-            )
-        } ?? true
-
+                let hasInstanceSpecificIdentifier = Self
+                    .exactInputIdentifierHasInstanceEvidence(
+                        identifier: identity.identifier,
+                        domIdentifier: identity.domIdentifier
+                    )
+                if !currentContextResult.completed {
+                    return !Self.isTelegram(
+                        bundleIdentifier: target.bundleIdentifier
+                    )
+                        && identity.primaryContextAnchors.isEmpty
+                        && identity.contextAnchors.isEmpty
+                        && hasInstanceSpecificIdentifier
+                }
+                let currentContext = currentContextResult.selection
+                return Self.directCapturedElementContextAllowed(
+                    bundleIdentifier: target.bundleIdentifier,
+                    hasInstanceSpecificIdentifier:
+                        hasInstanceSpecificIdentifier,
+                    capturedPrimaryContextAnchors: identity.primaryContextAnchors,
+                    capturedContextAnchors: identity.contextAnchors,
+                    currentPrimaryContextAnchors: currentContext.primary,
+                    currentContextAnchors: currentContext.secondary
+                )
+            } ?? true
+        }
+        // Context beside an OpenAI/Claude composer can legitimately change while a
+        // response streams. Ignore that drift only for the exact retained AX wrapper
+        // and only after the capture-time selected-task/floating-panel scope above was
+        // revalidated. This remains safe while backgrounded: the selected task proves
+        // document ownership, exactStructureMatches below proves the same composer,
+        // and the delivery boundary separately forbids app activation/focus theft.
+        // A replaced wrapper still requires its normal context/identity proof.
         if let element = target.element,
            let identity = target.identity,
            let savedWindow,
            directContextMatches,
-           exactStructureMatches(element, identity: identity, in: savedWindow) {
+           exactStructureMatches(
+            element,
+            identity: identity,
+            in: savedWindow,
+            bundleIdentifier: target.bundleIdentifier,
+            requireAncestorPathMatch: !Self
+                .retainedFocusedAncestorDriftAllowed(
+                    isTelegram: Self.isTelegram(
+                        bundleIdentifier: target.bundleIdentifier
+                    ),
+                    retainedInputOwnsSystemKeyboardFocus:
+                        retainedInputOwnsSystemKeyboardFocus(target),
+                    directContextMatches: directContextMatches,
+                    hasHardenedApplicationScope:
+                        hardenedApplicationScopeMatches
+                )
+           ) {
             return element
+        }
+
+        // Electron can replace the AXTextArea wrapper when a paste updates a focused
+        // composer. A freshly revalidated selected-task/floating/window scope plus the
+        // app's one internally focused semantic main composer is sufficient to adopt
+        // that replacement without a descendant search or any focus mutation. This is
+        // deliberately unavailable to generic editors, Telegram, modal/search/rename
+        // fields, and any task/window whose capture-bound identity drifted.
+        if hardenedApplicationScopeMatches,
+           let identity = target.identity,
+           let savedWindow,
+           let replacement = scopedMainComposerReplacement(
+            for: target,
+            identity: identity,
+            in: savedWindow
+           ) {
+            return replacement
         }
 
         guard let identity = target.identity,
@@ -1891,6 +5064,66 @@ final class FocusLockService: ObservableObject {
         return labelMatches.count == 1 ? labelMatches[0] : nil
     }
 
+    private func scopedMainComposerReplacement(
+        for target: Target,
+        identity: ExactInputIdentity,
+        in window: AXUIElement
+    ) -> AXUIElement? {
+        guard !Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
+              let surface = Self.semanticSendSurface(
+                bundleIdentifier: target.bundleIdentifier,
+                applicationBundleName: target.applicationBundleName
+              ),
+              surface != .telegramForegroundOnly else {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(target.pid)
+        guard let focusedWindow = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ), CFEqual(focusedWindow, window),
+              let candidate = elementAttribute(
+                kAXFocusedUIElementAttribute,
+                from: appElement
+              ),
+              target.element.map({ !CFEqual($0, candidate) }) == true,
+              exactStructureMatches(
+                candidate,
+                identity: identity,
+                in: window,
+                bundleIdentifier: target.bundleIdentifier,
+                requireAncestorPathMatch: false
+              ),
+              Self.elementGeometryMatches(
+                isSameRetainedWrapper: false,
+                expectedFrame: identity.relativeFrame,
+                currentFrame: relativeFrame(of: candidate, in: window)
+              ),
+              Self.exactMainComposerCaptureEvidenceMatches(
+                surface: surface,
+                description: nonEmptyStringAttribute(
+                    kAXDescriptionAttribute,
+                    from: candidate
+                ),
+                placeholder: nonEmptyStringAttribute(
+                    kAXPlaceholderValueAttribute,
+                    from: candidate
+                ),
+                windowIsModal: boolAttribute(
+                    kAXModalAttribute,
+                    from: window
+                ) == true,
+                hasDisallowedSecondaryAncestor:
+                    hasDisallowedSecondaryComposerAncestor(
+                        candidate,
+                        stoppingAt: window
+                    )
+              ) else {
+            return nil
+        }
+        return candidate
+    }
+
     /// Failure telemetry intentionally reports only booleans, counts, roles, and AX
     /// hashes—never chat titles or message text. This distinguishes an empty/mismatched
     /// Telegram context from a stale window, replaced wrapper, or ambiguous editor tree
@@ -1898,7 +5131,7 @@ final class FocusLockService: ObservableObject {
     private func exactInputResolutionDiagnostics(for target: Target) -> String {
         let savedWindow = liveWindow(for: target, resolvedElement: nil)
         let identity = target.identity
-        let currentContext: ContextAnchorSelection = if let savedWindow, let identity {
+        let currentContextResult: ContextFingerprintResult? = if let savedWindow, let identity {
             contextFingerprint(
                 in: savedWindow,
                 region: identity.contextRegion,
@@ -1908,12 +5141,19 @@ final class FocusLockService: ObservableObject {
                 bundleIdentifier: target.bundleIdentifier
             )
         } else {
-            ContextAnchorSelection(primary: [], secondary: [])
+            nil
         }
+        let currentContext = currentContextResult?.selection
+            ?? ContextAnchorSelection(primary: [], secondary: [])
         let directContextMatches = identity.map {
-            Self.directCapturedElementContextAllowed(
+            currentContextResult?.completed == true
+                && Self.directCapturedElementContextAllowed(
                 bundleIdentifier: target.bundleIdentifier,
-                hasStableIdentifier: $0.identifier != nil || $0.domIdentifier != nil,
+                hasInstanceSpecificIdentifier: Self
+                    .exactInputIdentifierHasInstanceEvidence(
+                        identifier: $0.identifier,
+                        domIdentifier: $0.domIdentifier
+                    ),
                 capturedPrimaryContextAnchors: $0.primaryContextAnchors,
                 capturedContextAnchors: $0.contextAnchors,
                 currentPrimaryContextAnchors: currentContext.primary,
@@ -1927,7 +5167,12 @@ final class FocusLockService: ObservableObject {
         let directStructureMatches = if let element = target.element,
                                         let identity,
                                         let savedWindow {
-            exactStructureMatches(element, identity: identity, in: savedWindow)
+            exactStructureMatches(
+                element,
+                identity: identity,
+                in: savedWindow,
+                bundleIdentifier: target.bundleIdentifier
+            )
         } else {
             false
         }
@@ -1948,18 +5193,27 @@ final class FocusLockService: ObservableObject {
         } else {
             false
         }
-        return "bundle=\(target.bundleIdentifier ?? "nil") savedWindow=\(savedWindow != nil) identity=\(identity != nil) capturedPrimary=\(identity?.primaryContextAnchors.count ?? 0) currentPrimary=\(currentContext.primary.count) capturedSecondary=\(identity?.contextAnchors.count ?? 0) currentSecondary=\(currentContext.secondary.count) matchedSecondary=\(contextMatchCount) directContext=\(directContextMatches) directStructure=\(directStructureMatches) roleCandidates=\(matchingRoleCandidateCount) currentFocusPid=\(focused?.pid ?? -1) currentFocusMatchesSaved=\(currentFocusMatchesSaved)"
+        return "bundle=\(target.bundleIdentifier ?? "nil") savedWindow=\(savedWindow != nil) identity=\(identity != nil) contextComplete=\(currentContextResult?.completed == true) capturedPrimary=\(identity?.primaryContextAnchors.count ?? 0) currentPrimary=\(currentContext.primary.count) capturedSecondary=\(identity?.contextAnchors.count ?? 0) currentSecondary=\(currentContext.secondary.count) matchedSecondary=\(contextMatchCount) directContext=\(directContextMatches) directStructure=\(directStructureMatches) roleCandidates=\(matchingRoleCandidateCount) currentFocusPid=\(focused?.pid ?? -1) currentFocusMatchesSaved=\(currentFocusMatchesSaved)"
     }
 
     private func exactStructureMatches(
         _ element: AXUIElement,
         identity: ExactInputIdentity,
-        in window: AXUIElement
+        in window: AXUIElement,
+        bundleIdentifier: String?,
+        requireAncestorPathMatch: Bool = true
     ) -> Bool {
         guard stringAttribute(kAXRoleAttribute, from: element) == identity.role,
               stringAttribute(kAXSubroleAttribute, from: element) == identity.subrole,
-              owningWindow(for: element).map({ CFEqual($0, window) }) == true,
-              ancestorPath(from: element, through: window) == identity.ancestorPath,
+              owningWindow(
+                for: element,
+                allowFocusedApplicationFallback: Self.isTelegram(
+                    bundleIdentifier: bundleIdentifier
+                )
+              ).map({ CFEqual($0, window) }) == true,
+              (!requireAncestorPathMatch
+                || ancestorPath(from: element, through: window)
+                    == identity.ancestorPath),
               isEditableInput(role: identity.role, subrole: identity.subrole) else {
             return false
         }
@@ -1974,12 +5228,36 @@ final class FocusLockService: ObservableObject {
         return true
     }
 
+    /// Electron may reparent the exact same, still-system-focused composer when the
+    /// modifier macro arrives. Ancestor drift alone is harmless only for that retained
+    /// wrapper after current context or a freshly revalidated task/panel scope proves
+    /// ownership. A stable AX/DOM identifier is deliberately not required here: the
+    /// retained-wrapper equality plus live system keyboard focus is the stronger
+    /// foreground proof, and v2.0.211 showed that Codex may expose no such identifier
+    /// while merely reparenting its real composer. Replacement wrappers and Telegram
+    /// remain fully structural.
+    static func retainedFocusedAncestorDriftAllowed(
+        isTelegram: Bool,
+        retainedInputOwnsSystemKeyboardFocus: Bool,
+        directContextMatches: Bool,
+        hasHardenedApplicationScope: Bool
+    ) -> Bool {
+        !isTelegram
+            && retainedInputOwnsSystemKeyboardFocus
+            && (directContextMatches || hasHardenedApplicationScope)
+    }
+
     private func liveWindow(
         for target: Target,
         resolvedElement: AXUIElement?
     ) -> AXUIElement? {
         if let resolvedElement,
-           let window = owningWindow(for: resolvedElement) {
+           let window = owningWindow(
+            for: resolvedElement,
+            allowFocusedApplicationFallback: Self.isTelegram(
+                bundleIdentifier: target.bundleIdentifier
+            )
+           ) {
             return window
         }
         if let window = target.window,
@@ -1992,21 +5270,150 @@ final class FocusLockService: ObservableObject {
     private func exactInputIdentity(
         for element: AXUIElement,
         in window: AXUIElement,
-        bundleIdentifier: String?
+        bundleIdentifier: String?,
+        hasHardenedApplicationScope: Bool = false
     ) -> ExactInputIdentity? {
         guard let role = stringAttribute(kAXRoleAttribute, from: element) else { return nil }
-        let contextRegion = contentRegion(for: element, in: window)
-        let context = contextFingerprint(
-            in: window,
-            region: contextRegion,
-            excluding: element,
-            bundleIdentifier: bundleIdentifier
+        let identifier = nonEmptyStringAttribute(
+            kAXIdentifierAttribute,
+            from: element
         )
+        let domIdentifier = nonEmptyStringAttribute(
+            "AXDOMIdentifier",
+            from: element
+        )
+        let contextRegion = contentRegion(for: element, in: window)
+        let context: ContextAnchorSelection
+        if hasHardenedApplicationScope {
+            // The selected task/panel is already a stronger boundary than volatile
+            // nearby message text. Keep context empty so resolution can use this
+            // identity only for the retained, still-system-focused wrapper; replacement
+            // or background recovery remains fail-closed unless stable IDs exist.
+            context = ContextAnchorSelection(primary: [], secondary: [])
+        } else {
+            let contextResult = contextFingerprint(
+                in: window,
+                region: contextRegion,
+                excluding: element,
+                bundleIdentifier: bundleIdentifier
+            )
+            if contextResult.completed {
+                context = contextResult.selection
+                if context.primary.isEmpty,
+                   context.secondary.isEmpty,
+                   bundleIdentifier.map(
+                        Self.exactWrapperRequiresIdentityOrContextBundleIdentifiers
+                            .contains
+                   ) == true {
+                    logger.notice("Exact-input capture rejected empty context without a hardened renderer task/document scope bundle=\(bundleIdentifier ?? "nil", privacy: .public)")
+                    return nil
+                }
+            } else if !Self.isTelegram(bundleIdentifier: bundleIdentifier),
+                      bundleIdentifier.map(
+                        Self.exactWrapperRequiresIdentityOrContextBundleIdentifiers
+                            .contains
+                      ) != true,
+                      Self.exactInputIdentifierHasInstanceEvidence(
+                        identifier: identifier,
+                        domIdentifier: domIdentifier
+                      ) {
+                // Only an instance-bearing AX/DOM ID can stand in for an exhausted
+                // context scan. Generic ids such as `prompt-textarea` are reused across
+                // tasks/tabs and therefore remain foreground-only. Telegram is always
+                // excluded because readable chat identity is mandatory there.
+                context = ContextAnchorSelection(primary: [], secondary: [])
+                logger.notice("Exact-input capture retained instance-bearing identifier after bounded context exhaustion bundle=\(bundleIdentifier ?? "nil", privacy: .public)")
+            } else {
+                logger.notice("Exact-input capture rejected incomplete bounded context fingerprint bundle=\(bundleIdentifier ?? "nil", privacy: .public)")
+                return nil
+            }
+        }
         return ExactInputIdentity(
             role: role,
             subrole: stringAttribute(kAXSubroleAttribute, from: element),
-            identifier: nonEmptyStringAttribute(kAXIdentifierAttribute, from: element),
-            domIdentifier: nonEmptyStringAttribute("AXDOMIdentifier", from: element),
+            identifier: identifier,
+            domIdentifier: domIdentifier,
+            title: nonEmptyStringAttribute(kAXTitleAttribute, from: element),
+            description: nonEmptyStringAttribute(kAXDescriptionAttribute, from: element),
+            placeholder: nonEmptyStringAttribute(kAXPlaceholderValueAttribute, from: element),
+            relativeFrame: relativeFrame(of: element, in: window),
+            ancestorPath: ancestorPath(from: element, through: window),
+            contextRegion: contextRegion,
+            primaryContextAnchors: context.primary,
+            contextAnchors: context.secondary
+        )
+    }
+
+    private func exactInputIdentityBounded(
+        for element: AXUIElement,
+        in window: AXUIElement,
+        bundleIdentifier: String?,
+        contextElements: [AXUIElement],
+        deadline: TimeInterval,
+        hasHardenedApplicationScope: Bool = false,
+        boundary: () -> Bool
+    ) async -> ExactInputIdentity? {
+        guard !Task.isCancelled,
+              boundary(),
+              ProcessInfo.processInfo.systemUptime < deadline,
+              let role = stringAttribute(kAXRoleAttribute, from: element) else {
+            return nil
+        }
+        let contextRegion = contentRegion(for: element, in: window)
+        var candidates: [ContextAnchorCandidate] = []
+        for (index, candidateElement) in contextElements.enumerated() {
+            guard !Task.isCancelled,
+                  boundary(),
+                  ProcessInfo.processInfo.systemUptime < deadline else {
+                return nil
+            }
+            if index > 0, index.isMultiple(of: 24) {
+                guard !Task.isCancelled, boundary() else { return nil }
+                await Task.yield()
+                guard !Task.isCancelled,
+                      boundary(),
+                      ProcessInfo.processInfo.systemUptime < deadline else {
+                    return nil
+                }
+            }
+            if let candidate = contextAnchorCandidate(
+                for: candidateElement,
+                in: window,
+                region: contextRegion,
+                excluding: element,
+                bundleIdentifier: bundleIdentifier
+            ) {
+                candidates.append(candidate)
+            }
+        }
+        guard Self.boundedIdentityEvidenceIsComplete(
+            traversalCompleted: true,
+            withinDeadline: ProcessInfo.processInfo.systemUptime < deadline,
+            boundaryMatches: boundary(),
+            isCancelled: Task.isCancelled
+        ) else { return nil }
+        let context = Self.selectContextAnchors(candidates, limit: 16)
+        let identifier = nonEmptyStringAttribute(
+            kAXIdentifierAttribute,
+            from: element
+        )
+        let domIdentifier = nonEmptyStringAttribute(
+            "AXDOMIdentifier",
+            from: element
+        )
+        if !hasHardenedApplicationScope,
+           context.primary.isEmpty,
+           context.secondary.isEmpty,
+           bundleIdentifier.map(
+                Self.exactWrapperRequiresIdentityOrContextBundleIdentifiers.contains
+           ) == true {
+            return nil
+        }
+        return ExactInputIdentity(
+            role: role,
+            subrole: stringAttribute(kAXSubroleAttribute, from: element),
+            identifier: identifier,
+            domIdentifier: domIdentifier,
             title: nonEmptyStringAttribute(kAXTitleAttribute, from: element),
             description: nonEmptyStringAttribute(kAXDescriptionAttribute, from: element),
             placeholder: nonEmptyStringAttribute(kAXPlaceholderValueAttribute, from: element),
@@ -2025,12 +5432,14 @@ final class FocusLockService: ObservableObject {
     ) -> Bool {
         if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
             guard !identity.primaryContextAnchors.isEmpty else { return false }
-            let current = contextFingerprint(
+            let currentResult = contextFingerprint(
                 in: window,
                 region: identity.contextRegion,
                 excluding: nil,
                 bundleIdentifier: bundleIdentifier
             )
+            guard currentResult.completed else { return false }
+            let current = currentResult.selection
             return Self.telegramContextFingerprintMatches(
                 capturedPrimary: identity.primaryContextAnchors,
                 capturedSecondary: identity.contextAnchors,
@@ -2039,19 +5448,26 @@ final class FocusLockService: ObservableObject {
             )
         }
         if identity.contextAnchors.isEmpty {
-            // Stable AX/DOM identifiers can safely re-resolve without document text.
-            // With neither identifiers nor context, an existing exact AX wrapper is
-            // still usable, but frame/path-only stale-wrapper recovery is unsafe: a
-            // switched Codex/browser tab can expose a lookalike composer in the same
-            // place.
-            return identity.identifier != nil || identity.domIdentifier != nil
+            // Renderer inputs can reuse even UUID-bearing wrapper IDs across tasks and
+            // tabs. Their empty context is valid only through the separately revalidated
+            // task/document scope that bypasses this function. For simpler native apps,
+            // an instance-bearing id may still identify one stable field.
+            if bundleIdentifier.map(
+                Self.exactWrapperRequiresIdentityOrContextBundleIdentifiers.contains
+            ) == true {
+                return false
+            }
+            return Self.exactInputIdentifierHasInstanceEvidence(
+                identifier: identity.identifier,
+                domIdentifier: identity.domIdentifier
+            )
         }
-        let currentContext = contextAnchors(
+        guard let currentContext = contextAnchors(
             in: window,
             region: identity.contextRegion,
             excluding: nil,
             bundleIdentifier: bundleIdentifier
-        )
+        ) else { return false }
         return Self.contextFingerprintMatches(
             captured: identity.contextAnchors,
             current: currentContext
@@ -2060,7 +5476,7 @@ final class FocusLockService: ObservableObject {
 
     static func directCapturedElementContextAllowed(
         bundleIdentifier: String?,
-        hasStableIdentifier: Bool = false,
+        hasInstanceSpecificIdentifier: Bool = false,
         capturedPrimaryContextAnchors: [String] = [],
         capturedContextAnchors: [String],
         currentPrimaryContextAnchors: [String] = [],
@@ -2079,7 +5495,9 @@ final class FocusLockService: ObservableObject {
             if exactWrapperRequiresIdentityOrContextBundleIdentifiers.contains(
                 bundleIdentifier
             ) {
-                return hasStableIdentifier
+                // Even a UUID-bearing editor wrapper is not a task identity. A hardened
+                // task/document scope is checked by the caller before reaching here.
+                return false
             }
             return true
         }
@@ -2101,19 +5519,46 @@ final class FocusLockService: ObservableObject {
         return matchCount >= min(2, captured.count)
     }
 
+    static func boundedIdentityEvidenceIsComplete(
+        traversalCompleted: Bool,
+        withinDeadline: Bool,
+        boundaryMatches: Bool,
+        isCancelled: Bool
+    ) -> Bool {
+        traversalCompleted
+            && withinDeadline
+            && boundaryMatches
+            && !isCancelled
+    }
+
+    nonisolated static func exactInputCaptureIsUsable(
+        hasElement: Bool,
+        hasIdentity: Bool
+    ) -> Bool {
+        hasElement && hasIdentity
+    }
+
+    static func scopedRetainedWrapperMayIgnoreContextDrift(
+        hasHardenedApplicationScope: Bool,
+        captureScopeStillMatches: Bool
+    ) -> Bool {
+        hasHardenedApplicationScope && captureScopeStillMatches
+    }
+
     private func contextAnchors(
         in window: AXUIElement,
         region: CGRect?,
         excluding excludedElement: AXUIElement?,
         bundleIdentifier: String?
-    ) -> [String] {
+    ) -> [String]? {
         let fingerprint = contextFingerprint(
             in: window,
             region: region,
             excluding: excludedElement,
             bundleIdentifier: bundleIdentifier
         )
-        return fingerprint.primary + fingerprint.secondary
+        guard fingerprint.completed else { return nil }
+        return fingerprint.selection.primary + fingerprint.selection.secondary
     }
 
     private func contextFingerprint(
@@ -2121,55 +5566,88 @@ final class FocusLockService: ObservableObject {
         region: CGRect?,
         excluding excludedElement: AXUIElement?,
         bundleIdentifier: String?
-    ) -> ContextAnchorSelection {
-        var candidates: [ContextAnchorCandidate] = []
-        for element in descendants(of: window) {
-            if let excludedElement, CFEqual(element, excludedElement) { continue }
-            let elementFrame = relativeFrame(of: element, in: window)
-            if let region {
-                guard let elementFrame, region.intersects(elementFrame) else {
-                    continue
-                }
-            }
-            let role = stringAttribute(kAXRoleAttribute, from: element)
-            switch role {
-            case kAXStaticTextRole, kAXTextAreaRole, kAXTextFieldRole:
-                break
-            default:
-                continue
-            }
-            let rawValue = stringAttribute(kAXValueAttribute, from: element)
-                ?? stringAttribute(kAXTitleAttribute, from: element)
-            guard let rawValue else { continue }
-            let normalized = rawValue
-                .split(whereSeparator: { $0.isWhitespace })
-                .joined(separator: " ")
-            guard Self.contextAnchorIsEligible(
-                    normalized,
-                    role: role,
-                    bundleIdentifier: bundleIdentifier
-                  ),
-                  normalized != "Ask for follow-up changes",
-                  normalized != "Do anything" else {
-                continue
-            }
-            let anchor = String(normalized.prefix(180))
-            let isTelegramPrimary = Self.isTelegram(
+    ) -> ContextFingerprintResult {
+        // Capture and foreground verification run on MainActor. An unbounded walk of a
+        // long Telegram/OpenAI history delayed recorder appearance and stop delivery by
+        // hundreds of milliseconds. Visible breadth-first traversal keeps the selected
+        // header/composer region early, then fails closed with the anchors gathered
+        // inside a strict node/time budget instead of monopolizing the UI thread.
+        let isTelegram = Self.isTelegram(bundleIdentifier: bundleIdentifier)
+        let traversal = boundedVisibleDescendants(
+            of: window,
+            maximumDepth: 32,
+            nodeBudget: isTelegram ? 900 : 650,
+            deadline: ProcessInfo.processInfo.systemUptime
+                + (isTelegram ? 0.060 : 0.045),
+            region: isTelegram ? nil : region,
+            relativeTo: window
+        )
+        let candidates = traversal.elements.compactMap {
+            contextAnchorCandidate(
+                for: $0,
+                in: window,
+                region: region,
+                excluding: excludedElement,
                 bundleIdentifier: bundleIdentifier
             )
-                && role == kAXStaticTextRole
-                && elementFrame != nil
-                && !hasAncestor(
-                    element,
-                    role: kAXScrollAreaRole,
-                    stoppingAt: window
-                )
-            candidates.append(ContextAnchorCandidate(
-                value: anchor,
-                isPrimary: isTelegramPrimary
-            ))
         }
-        return Self.selectContextAnchors(candidates, limit: 16)
+        return ContextFingerprintResult(
+            selection: Self.selectContextAnchors(candidates, limit: 16),
+            completion: traversal.completed ? .completed : .exhausted
+        )
+    }
+
+    private func contextAnchorCandidate(
+        for element: AXUIElement,
+        in window: AXUIElement,
+        region: CGRect?,
+        excluding excludedElement: AXUIElement?,
+        bundleIdentifier: String?
+    ) -> ContextAnchorCandidate? {
+        if let excludedElement, CFEqual(element, excludedElement) { return nil }
+        let elementFrame = relativeFrame(of: element, in: window)
+        if let region {
+            guard let elementFrame, region.intersects(elementFrame) else {
+                return nil
+            }
+        }
+        let role = stringAttribute(kAXRoleAttribute, from: element)
+        switch role {
+        case kAXStaticTextRole, kAXTextAreaRole, kAXTextFieldRole:
+            break
+        default:
+            return nil
+        }
+        let rawValue = stringAttribute(kAXValueAttribute, from: element)
+            ?? stringAttribute(kAXTitleAttribute, from: element)
+        guard let rawValue else { return nil }
+        let normalized = rawValue
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        guard Self.contextAnchorIsEligible(
+                normalized,
+                role: role,
+                bundleIdentifier: bundleIdentifier
+              ),
+              normalized != "Ask for follow-up changes",
+              normalized != "Do anything" else {
+            return nil
+        }
+        let anchor = String(normalized.prefix(180))
+        let isTelegramPrimary = Self.isTelegram(
+            bundleIdentifier: bundleIdentifier
+        )
+            && role == kAXStaticTextRole
+            && elementFrame != nil
+            && !hasAncestor(
+                element,
+                role: kAXScrollAreaRole,
+                stoppingAt: window
+            )
+        return ContextAnchorCandidate(
+            value: anchor,
+            isPrimary: isTelegramPrimary
+        )
     }
 
     /// Reserve bounded slots for non-scroll Telegram header/title text before sorting
@@ -2278,6 +5756,52 @@ final class FocusLockService: ObservableObject {
         return false
     }
 
+    /// A textarea in feedback, search, rename, comment, dialog, or popover chrome can
+    /// expose the same placeholder and its own Send button. Those are secondary editors,
+    /// not the task composer selected at recording start. The ChatGPT Option-Space panel
+    /// is admitted separately by `recordingStartFloatingPanelEvidenceMatches` and is not
+    /// a modal, so this rejection does not disable that intentional floating surface.
+    private func hasDisallowedSecondaryComposerAncestor(
+        _ element: AXUIElement,
+        stoppingAt window: AXUIElement
+    ) -> Bool {
+        let disallowedRoles: Set<String> = [
+            "AXDialog", "AXDrawer", "AXMenu", "AXPopover", "AXSheet", "AXSystemDialog"
+        ]
+        let disallowedTokens: Set<String> = [
+            "comment", "comments", "dialog", "feedback", "modal", "popover",
+            "preferences", "rename", "search", "settings", "sheet"
+        ]
+        var current = elementAttribute(kAXParentAttribute, from: element)
+        for _ in 0..<30 {
+            guard let candidate = current,
+                  !CFEqual(candidate, window) else { return false }
+            if boolAttribute(kAXModalAttribute, from: candidate) == true {
+                return true
+            }
+            let role = stringAttribute(kAXRoleAttribute, from: candidate)
+            let subrole = stringAttribute(kAXSubroleAttribute, from: candidate)
+            if role.map(disallowedRoles.contains) == true
+                || subrole.map(disallowedRoles.contains) == true {
+                return true
+            }
+            let descriptor = [
+                nonEmptyStringAttribute(kAXIdentifierAttribute, from: candidate),
+                nonEmptyStringAttribute("AXDOMIdentifier", from: candidate),
+                nonEmptyStringAttribute(kAXTitleAttribute, from: candidate),
+                nonEmptyStringAttribute(kAXDescriptionAttribute, from: candidate),
+                nonEmptyStringAttribute(kAXHelpAttribute, from: candidate)
+            ].compactMap { $0 }.joined(separator: " ")
+            if !Self.normalizedEvidenceTokens(descriptor).isDisjoint(
+                with: disallowedTokens
+            ) {
+                return true
+            }
+            current = elementAttribute(kAXParentAttribute, from: candidate)
+        }
+        return true // An unbounded/invalid parent chain never proves main-composer containment.
+    }
+
     private func contentRegion(
         for element: AXUIElement,
         in window: AXUIElement
@@ -2301,7 +5825,10 @@ final class FocusLockService: ObservableObject {
         return best
     }
 
-    private func owningWindow(for element: AXUIElement) -> AXUIElement? {
+    private func owningWindow(
+        for element: AXUIElement,
+        allowFocusedApplicationFallback: Bool = false
+    ) -> AXUIElement? {
         if let window = elementAttribute(kAXWindowAttribute, from: element) {
             return window
         }
@@ -2313,7 +5840,37 @@ final class FocusLockService: ObservableObject {
             }
             current = elementAttribute(kAXParentAttribute, from: candidate)
         }
-        return nil
+
+        // Telegram 12.9 can expose its real message AXTextArea without either an
+        // AXWindow attribute or a parent chain that reaches AXWindow. Accept the app's
+        // focused window only while that same app reports this exact wrapper as its own
+        // internally focused element. This repairs foreground primary-stop paste and
+        // also keeps every later Telegram chat-context boundary tied to the same editor;
+        // a stale/background wrapper or a different input cannot borrow the fallback.
+        // The caller must opt in from a Telegram-specific boundary. Applying this
+        // focused-window shortcut generically would let any app borrow an unrelated
+        // window when its true owning-window chain is missing.
+        guard allowFocusedApplicationFallback else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        let appElement = AXUIElementCreateApplication(pid)
+        guard elementAttribute(kAXFocusedUIElementAttribute, from: appElement).map({
+            CFEqual($0, element)
+        }) == true,
+              let focusedWindow = elementAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+              ),
+              stringAttribute(kAXRoleAttribute, from: focusedWindow)
+                == kAXWindowRole else {
+            return nil
+        }
+        var windowPID: pid_t = 0
+        guard AXUIElementGetPid(focusedWindow, &windowPID) == .success,
+              windowPID == pid else {
+            return nil
+        }
+        return focusedWindow
     }
 
     private func descendants(of root: AXUIElement, maximumDepth: Int = 40) -> [AXUIElement] {
@@ -2334,38 +5891,192 @@ final class FocusLockService: ObservableObject {
         return result
     }
 
-    /// Traverse only new nodes inside the semantic-Send search's shared node/time
-    /// budget. Outer composer ancestors overlap inner ones heavily; the cross-ancestor
-    /// hash set prevents repeatedly walking the same React subtree while still allowing
-    /// a larger framed ancestor to contribute previously unseen sibling controls.
-    private func boundedDescendants(
+    private func boundedVisibleDescendants(
         of root: AXUIElement,
         maximumDepth: Int,
-        remainingNodeBudget: inout Int,
-        visitedNodeHashes: inout Set<CFHashCode>,
-        deadline: TimeInterval
-    ) -> [(AXUIElement, Int)] {
-        var result: [(AXUIElement, Int)] = []
+        nodeBudget: Int,
+        deadline: TimeInterval,
+        region: CGRect? = nil,
+        relativeTo regionWindow: AXUIElement? = nil
+    ) -> (elements: [AXUIElement], completed: Bool) {
+        var result: [AXUIElement] = []
         var queue: [(AXUIElement, Int)] = [(root, 0)]
         var cursor = 0
+        var seen = Set<CFHashCode>()
+        var truncated = false
         while cursor < queue.count,
-              remainingNodeBudget > 0,
+              result.count < nodeBudget,
               ProcessInfo.processInfo.systemUptime < deadline {
             let (element, depth) = queue[cursor]
             cursor += 1
+            guard seen.insert(CFHash(element)).inserted else { continue }
+            result.append(element)
+            let allChildren = traversalChildren(of: element)
+            // Context identity is local to the saved content pane. Pruning visibly
+            // disjoint branches avoids rejecting a genuinely focused composer merely
+            // because a long sidebar/history makes a whole-window walk exceed its
+            // strict shortcut-time budget. Frameless containers remain traversable so
+            // Accessibility grouping cannot hide an in-region descendant.
+            let children = allChildren.filter { child in
+                guard let region, let regionWindow,
+                      let childFrame = relativeFrame(
+                        of: child,
+                        in: regionWindow
+                      ) else {
+                    return true
+                }
+                return childFrame.intersects(region)
+            }
+            guard depth < maximumDepth else {
+                if !children.isEmpty { truncated = true }
+                continue
+            }
+            let pendingCount = queue.count - cursor
+            let availableSlots = max(
+                0,
+                nodeBudget - result.count - pendingCount
+            )
+            if children.count > availableSlots { truncated = true }
+            queue.append(contentsOf: children.prefix(availableSlots).map {
+                ($0, depth + 1)
+            })
+        }
+        return (
+            result,
+            cursor >= queue.count
+                && !truncated
+                && ProcessInfo.processInfo.systemUptime < deadline
+        )
+    }
+
+    /// Visit each new node inside one shared node/time budget. Candidate matching runs
+    /// *during* traversal: collecting first and filtering afterward let the deadline
+    /// expire with the real Send already collected but zero nodes ever evaluated. The
+    /// cross-ancestor hash set avoids rewalking overlapping React sibling subtrees.
+    private func visitBoundedDescendants(
+        of root: AXUIElement,
+        maximumDepth: Int,
+        state: BoundedTraversalState,
+        deadline: TimeInterval,
+        boundary: () -> Bool = { true },
+        shouldDescend: (AXUIElement, Int) -> Bool = { _, _ in true },
+        visitor: (AXUIElement, Int) -> Bool
+    ) async -> BoundedTraversalResult {
+        var queue: [(AXUIElement, Int)] = [(root, 0)]
+        var cursor = 0
+        var visitedCount = 0
+        var truncated = false
+        while cursor < queue.count {
+            guard boundary() else {
+                return BoundedTraversalResult(
+                    visitedCount: visitedCount,
+                    completion: .boundaryChanged
+                )
+            }
+            guard !Task.isCancelled else {
+                return BoundedTraversalResult(
+                    visitedCount: visitedCount,
+                    completion: .cancelled
+                )
+            }
+            guard state.remainingNodeBudget > 0,
+                  ProcessInfo.processInfo.systemUptime < deadline else {
+                return BoundedTraversalResult(
+                    visitedCount: visitedCount,
+                    completion: .exhausted
+                )
+            }
+            let (element, depth) = queue[cursor]
+            cursor += 1
             let hash = CFHash(element)
-            guard visitedNodeHashes.insert(hash).inserted else {
+            guard state.visitedNodeHashes.insert(hash).inserted else {
                 // A prior, nearer ancestor already traversed this whole bounded subtree.
                 continue
             }
-            remainingNodeBudget -= 1
-            result.append((element, depth))
-            guard depth < maximumDepth else { continue }
-            for child in elementArrayAttribute(kAXChildrenAttribute, from: element) {
+            state.remainingNodeBudget -= 1
+            visitedCount += 1
+            guard visitor(element, depth) else {
+                return BoundedTraversalResult(
+                    visitedCount: visitedCount,
+                    completion: .stoppedByVisitor
+                )
+            }
+            // Delivery can overlap the start of a newer recording. Yield frequently
+            // while reading a React AX sibling subtree so a slow renderer cannot stall
+            // the recorder panels or shortcut handling on MainActor.
+            if visitedCount.isMultiple(of: 24) {
+                guard boundary() else {
+                    return BoundedTraversalResult(
+                        visitedCount: visitedCount,
+                        completion: .boundaryChanged
+                    )
+                }
+                guard !Task.isCancelled else {
+                    return BoundedTraversalResult(
+                        visitedCount: visitedCount,
+                        completion: .cancelled
+                    )
+                }
+                await Task.yield()
+                guard boundary() else {
+                    return BoundedTraversalResult(
+                        visitedCount: visitedCount,
+                        completion: .boundaryChanged
+                    )
+                }
+                guard !Task.isCancelled else {
+                    return BoundedTraversalResult(
+                        visitedCount: visitedCount,
+                        completion: .cancelled
+                    )
+                }
+                guard ProcessInfo.processInfo.systemUptime < deadline else {
+                    return BoundedTraversalResult(
+                        visitedCount: visitedCount,
+                        completion: .exhausted
+                    )
+                }
+            }
+            guard shouldDescend(element, depth) else { continue }
+            let children = traversalChildren(of: element)
+            guard depth < maximumDepth else {
+                if !children.isEmpty { truncated = true }
+                continue
+            }
+            let pendingCount = queue.count - cursor
+            let availableQueueSlots = max(
+                0,
+                state.remainingNodeBudget - pendingCount
+            )
+            if children.count > availableQueueSlots { truncated = true }
+            guard availableQueueSlots > 0 else { continue }
+            for child in children.prefix(availableQueueSlots) {
                 queue.append((child, depth + 1))
             }
         }
-        return result
+        guard boundary() else {
+            return BoundedTraversalResult(
+                visitedCount: visitedCount,
+                completion: .boundaryChanged
+            )
+        }
+        guard !Task.isCancelled else {
+            return BoundedTraversalResult(
+                visitedCount: visitedCount,
+                completion: .cancelled
+            )
+        }
+        guard !truncated,
+              ProcessInfo.processInfo.systemUptime < deadline else {
+            return BoundedTraversalResult(
+                visitedCount: visitedCount,
+                completion: .exhausted
+            )
+        }
+        return BoundedTraversalResult(
+            visitedCount: visitedCount,
+            completion: .completed
+        )
     }
 
     private func ancestorPath(
@@ -2405,6 +6116,13 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    private func frameDistance(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        abs(lhs.origin.x - rhs.origin.x)
+            + abs(lhs.origin.y - rhs.origin.y)
+            + abs(lhs.size.width - rhs.size.width)
+            + abs(lhs.size.height - rhs.size.height)
+    }
+
     private func frame(of element: AXUIElement) -> CGRect? {
         guard let position = pointAttribute(kAXPositionAttribute, from: element),
               let size = sizeAttribute(kAXSizeAttribute, from: element) else {
@@ -2433,6 +6151,36 @@ final class FocusLockService: ObservableObject {
         return elements
     }
 
+    /// Chromium can publish a real subtree exclusively through
+    /// `AXChildrenInNavigationOrder`. Prefer the ordinary visible/children routes when
+    /// either is populated, then use navigation order only as a last-resort equivalent
+    /// child list. This keeps every existing bounded/depth/geometry guard intact while
+    /// allowing Codex FooterActions and selected-task controls to remain discoverable.
+    static func preferredTraversalChildren<Element>(
+        visible: [Element],
+        ordinary: @autoclosure () -> [Element],
+        navigationOrder: @autoclosure () -> [Element]
+    ) -> [Element] {
+        guard visible.isEmpty else { return visible }
+        let ordinary = ordinary()
+        guard ordinary.isEmpty else { return ordinary }
+        return navigationOrder()
+    }
+
+    private func traversalChildren(of element: AXUIElement) -> [AXUIElement] {
+        Self.preferredTraversalChildren(
+            visible: elementArrayAttribute(
+                kAXVisibleChildrenAttribute,
+                from: element
+            ),
+            ordinary: elementArrayAttribute(kAXChildrenAttribute, from: element),
+            navigationOrder: elementArrayAttribute(
+                "AXChildrenInNavigationOrder",
+                from: element
+            )
+        )
+    }
+
     private func actionNames(from element: AXUIElement) -> [String] {
         var names: CFArray?
         guard AXUIElementCopyActionNames(element, &names) == .success,
@@ -2450,16 +6198,45 @@ final class FocusLockService: ObservableObject {
         return value as? Bool
     }
 
+    private func numberAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> NSNumber? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success else {
+            return nil
+        }
+        return value as? NSNumber
+    }
+
     private func submitLabel(for element: AXUIElement) -> String? {
+        submitLabelEvidence(for: element)?.label
+    }
+
+    private func submitLabelEvidence(
+        for element: AXUIElement
+    ) -> (label: String, attribute: String)? {
         [
-            kAXDescriptionAttribute,
-            kAXTitleAttribute,
-            kAXHelpAttribute,
-            kAXIdentifierAttribute
+            (kAXDescriptionAttribute, "AXDescription"),
+            (kAXTitleAttribute, "AXTitle"),
+            (kAXHelpAttribute, "AXHelp")
         ]
             .lazy
-            .compactMap { self.stringAttribute($0, from: element) }
-            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .compactMap { attribute, name -> (String, String)? in
+                guard let value = self.stringAttribute(attribute, from: element),
+                      !value.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                      ).isEmpty else {
+                    return nil
+                }
+                return (value, name)
+            }
+            .first
+            .map { (label: $0.0, attribute: $0.1) }
     }
 
     static func isProvenSemanticSendLabel(_ label: String?) -> Bool {
@@ -2472,11 +6249,46 @@ final class FocusLockService: ObservableObject {
         }
     }
 
+    static func isExplicitSemanticSendEvidence(
+        label: String?,
+        attribute: String?
+    ) -> Bool {
+        explicitSemanticLabelAttributes.contains(attribute ?? "")
+            && isProvenSemanticSendLabel(label)
+    }
+
+    /// Stop is valid evidence that an inspected textarea is the real agent composer,
+    /// but it never authorizes submission. This helper is used only by no-caret
+    /// recording-start capture; every actual AXPress gate still requires Send.
+    static func isProvenSemanticStopLabel(_ label: String?) -> Bool {
+        guard let label else { return false }
+        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "stop", "stop generating", "stop response", "stop-button", "stopbutton":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func isExplicitSemanticStopEvidence(
+        label: String?,
+        attribute: String?
+    ) -> Bool {
+        explicitSemanticLabelAttributes.contains(attribute ?? "")
+            && isProvenSemanticStopLabel(label)
+    }
+
+    private static let explicitSemanticLabelAttributes: Set<String> = [
+        "AXDescription", "AXHelp", "AXTitle"
+    ]
+
     /// The final semantic-Send gate owns the action closure, making it impossible for
-    /// an ambiguous, stale, wrong-process, wrong-window, unlabelled, or boundary-lost
-    /// candidate to invoke AXPress. Production supplies AXUIElementPerformAction;
-    /// regression tests supply a counter and assert rejected candidates perform zero
-    /// side effects.
+    /// an ambiguous, stale, wrong-process, wrong-window, unaudited-unlabelled, or
+    /// boundary-lost candidate to invoke AXPress. The one unlabelled exception is the
+    /// exact versioned OpenAI contract re-proven by the caller at action time; a label
+    /// appearing (especially Stop) invalidates it. Production supplies
+    /// AXUIElementPerformAction; regression tests supply a counter and assert rejected
+    /// candidates perform zero side effects.
     static func performProvenSemanticSend(
         isUnambiguous: Bool,
         pidMatches: Bool,
@@ -2485,6 +6297,8 @@ final class FocusLockService: ObservableObject {
         roleMatches: Bool,
         enabled: Bool,
         label: String?,
+        labelAttribute: String?,
+        allowsVersionedUnlabelledOpenAISend: Bool = false,
         hasPressAction: Bool,
         boundaryMatches: Bool,
         action: () -> Int32
@@ -2495,7 +6309,13 @@ final class FocusLockService: ObservableObject {
               geometryMatches,
               roleMatches,
               enabled,
-              isProvenSemanticSendLabel(label),
+              (isExplicitSemanticSendEvidence(
+                    label: label,
+                    attribute: labelAttribute
+               )
+                || (allowsVersionedUnlabelledOpenAISend
+                    && label == nil
+                    && labelAttribute == nil)),
               hasPressAction,
               boundaryMatches else {
             return .unavailable

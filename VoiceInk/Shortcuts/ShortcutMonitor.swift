@@ -11,6 +11,52 @@ final class ShortcutMonitor {
         case flagsChanged
     }
 
+    struct ModifierOnlySequenceTransition: Equatable {
+        let isDown: Bool
+        let suppressDownstream: Bool
+        let dispatchKeyDown: Bool
+        let dispatchKeyUp: Bool
+    }
+
+    /// Pure reducer for the G HUB modifier sequence. The app may see the partial
+    /// Shift/Control prefix, but it must never receive the complete recording chord:
+    /// Codex/ChatGPT replace their focused composer after that last modifier arrives.
+    /// Suppress the completed down plus full-flags repeats, but pass every release so
+    /// the partial modifiers already delivered downstream cannot remain logically stuck.
+    static func modifierOnlySequenceTransition(
+        shortcut: Shortcut,
+        wasDown: Bool,
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> ModifierOnlySequenceTransition {
+        let sequenceIsActive = shortcut.modifierSequenceIsActive(
+            keyCode: keyCode,
+            modifierFlags: modifierFlags
+        )
+        if wasDown {
+            let release = shortcut.shouldReleaseModifierEvent(
+                keyCode: keyCode,
+                modifierFlags: modifierFlags
+            )
+            return ModifierOnlySequenceTransition(
+                isDown: !release,
+                suppressDownstream: sequenceIsActive,
+                dispatchKeyDown: false,
+                dispatchKeyUp: release
+            )
+        }
+        let press = shortcut.matchesModifierEvent(
+            keyCode: keyCode,
+            modifierFlags: modifierFlags
+        )
+        return ModifierOnlySequenceTransition(
+            isDown: press,
+            suppressDownstream: press,
+            dispatchKeyDown: press,
+            dispatchKeyUp: false
+        )
+    }
+
     private struct ShortcutState {
         var shortcut: Shortcut
         var isDown = false
@@ -230,22 +276,19 @@ final class ShortcutMonitor {
 
     private func resetPressedShortcutsAfterTapInterruption() {
         let eventTime = ProcessInfo.processInfo.systemUptime
-        let pressedActions = shortcuts.compactMap { action, state in
-            state.isDown ? action : nil
-        }
-
-        guard !pressedActions.isEmpty else {
-            return
-        }
-
-        for action in pressedActions {
-            if var state = shortcuts[action] {
-                state.isDown = false
-                state.pressedAt = nil
-                state.isInterrupted = false
-                shortcuts[action] = state
+        for action in Array(shortcuts.keys) {
+            guard var state = shortcuts[action] else { continue }
+            let wasDown = state.isDown
+            // Dispatch key-up only when VoiceInk++ really emitted a matching shortcut
+            // key-down. Partial modifiers were never latched and their releases continue
+            // downstream normally.
+            state.isDown = false
+            state.pressedAt = nil
+            state.isInterrupted = false
+            shortcuts[action] = state
+            if wasDown {
+                dispatchKeyUp(for: action, eventTime: eventTime)
             }
-            dispatchKeyUp(for: action, eventTime: eventTime)
         }
     }
 
@@ -267,14 +310,14 @@ final class ShortcutMonitor {
             }
 
             if state.shortcut.isModifierOnly {
-                handleModifierOnlyShortcut(
+                shouldSuppress = handleModifierOnlyShortcut(
                     action: action,
                     state: state,
                     kind: kind,
                     keyCode: keyCode,
                     modifierFlags: modifierFlags,
                     eventTime: eventTime
-                )
+                ) || shouldSuppress
                 continue
             }
 
@@ -354,32 +397,39 @@ final class ShortcutMonitor {
         keyCode: UInt16,
         modifierFlags: NSEvent.ModifierFlags,
         eventTime: TimeInterval
-    ) {
+    ) -> Bool {
         var state = state
 
         guard kind == .flagsChanged else {
-            return
+            return false
         }
 
-        if state.isDown {
-            if state.shortcut.shouldReleaseModifierEvent(keyCode: keyCode, modifierFlags: modifierFlags) {
-                state.isDown = false
-                state.pressedAt = nil
-                state.isInterrupted = false
-                shortcuts[action] = state
-                dispatchKeyUp(for: action, eventTime: eventTime)
-            }
+        let transition = Self.modifierOnlySequenceTransition(
+            shortcut: state.shortcut,
+            wasDown: state.isDown,
+            keyCode: keyCode,
+            modifierFlags: modifierFlags
+        )
 
-            return
+        if transition.dispatchKeyUp {
+            state.isDown = false
+            state.pressedAt = nil
+            state.isInterrupted = false
+            shortcuts[action] = state
+            dispatchKeyUp(for: action, eventTime: eventTime)
+            return transition.suppressDownstream
         }
 
-        if state.shortcut.matchesModifierEvent(keyCode: keyCode, modifierFlags: modifierFlags) {
+        if transition.dispatchKeyDown {
             state.isDown = true
             state.pressedAt = eventTime
             state.isInterrupted = false
             shortcuts[action] = state
             dispatchKeyDown(for: action, eventTime: eventTime)
+        } else {
+            shortcuts[action] = state
         }
+        return transition.suppressDownstream
     }
 
     private func handleShortcutInterruptions(keyCode: UInt16, eventTime: TimeInterval) {

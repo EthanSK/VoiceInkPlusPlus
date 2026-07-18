@@ -123,7 +123,10 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var skipPostProcessingBinding: Binding<Bool> {
         Binding(
             get: { stateProvider.skipPostProcessing },
-            set: { stateProvider.skipPostProcessing = $0 }
+            set: {
+                guard stateProvider.canChangeSkipPostProcessing else { return }
+                stateProvider.skipPostProcessing = $0
+            }
         )
     }
 
@@ -196,6 +199,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     // recording / in-flight), bound to the observed session's flag. Mirrors
                     // the mini panel exactly so behaviour is identical across recorder styles.
                     RecorderSkipProcessingButton(isEngaged: skipPostProcessingBinding)
+                        .disabled(!stateProvider.canChangeSkipPostProcessing)
                         .transition(.opacity)
                 }
 
@@ -229,7 +233,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     PasteDestinationIndicator(
                         target: stateProvider.pasteDestinationIndicatorTarget,
                         context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
-                        actionPulseID: stateProvider.lockedDestinationIconActionPulseID
+                        actionPulseID: stateProvider.lockedDestinationIconActionPulseID,
+                        isLocked: stateProvider.pasteDestinationIsLocked
                     ) // Mirrors the mini capsule and stays attached to this session until paste succeeds or visibly fails.
                         .padding(.leading, 8)
                         .transition(.opacity)

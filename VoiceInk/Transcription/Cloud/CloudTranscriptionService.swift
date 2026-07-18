@@ -9,6 +9,7 @@ enum CloudTranscriptionError: Error, LocalizedError {
     case audioFileNotFound
     case apiRequestFailed(statusCode: Int, message: String)
     case networkError(Error)
+    case noSpeechDetected
     case noTranscriptionReturned
     case dataEncodingError
 
@@ -26,11 +27,18 @@ enum CloudTranscriptionError: Error, LocalizedError {
             return String(format: String(localized: "The API request failed with status code %lld: %@"), Int64(statusCode), message)
         case .networkError(let error):
             return String(format: String(localized: "A network error occurred: %@"), error.localizedDescription)
+        case .noSpeechDetected:
+            return String(localized: "No speech was detected in the recording.")
         case .noTranscriptionReturned:
             return String(localized: "The API returned an empty or invalid response.")
         case .dataEncodingError:
             return String(localized: "Failed to encode the request body.")
         }
+    }
+
+    var isNoSpeechDetected: Bool {
+        if case .noSpeechDetected = self { return true }
+        return false
     }
 }
 
@@ -52,7 +60,17 @@ class CloudTranscriptionService: TranscriptionService {
                 guard let customModel = model as? CustomCloudModel else {
                     throw CloudTranscriptionError.unsupportedProvider
                 }
-                return try await openAICompatibleService.transcribe(audioURL: audioURL, model: customModel, context: context)
+                // Custom models bypass `CloudProviderRegistry`, so they must receive the
+                // dictionary here rather than relying on the built-in-provider call below.
+                // Keep this at the routing boundary: otherwise Ethan's OpenAI-compatible
+                // Deepgram proxy gets language/prompt/audio but silently loses every word
+                // saved in VoiceInk++'s Vocabulary screen.
+                return try await openAICompatibleService.transcribe(
+                    audioURL: audioURL,
+                    model: customModel,
+                    context: context,
+                    customVocabulary: getCustomDictionaryTerms()
+                )
             }
 
             guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider) else {

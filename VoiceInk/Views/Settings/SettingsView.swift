@@ -18,6 +18,9 @@ struct SettingsView: View {
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
+    @AppStorage(VoiceInkDeliveryFeatureFlags.exactInputDeliveryDefaultsKey)
+    private var exactInputDeliveryEnabled = VoiceInkDeliveryFeatureFlags
+        .exactInputDeliveryDefault
     @State private var showResetOnboardingAlert = false
     @State private var hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
     @State private var cancelRecordingShortcutRecorderResetID = 0
@@ -141,6 +144,13 @@ struct SettingsView: View {
             }
 
             Section("Pasting") {
+                Toggle(isOn: $exactInputDeliveryEnabled) {
+                    HStack(spacing: 4) {
+                        Text("Exact Saved-Input Delivery")
+                        InfoTip("Off uses base VoiceInk behavior: no saved-input capture, the Mode and transcript follow the current app/input, and Next Track passes through. On enables VoiceInk++ saved-input and Next-button routing.")
+                    }
+                }
+
                 ExpandableSettingsRow(
                     isExpanded: $isRestoreClipboardExpanded,
                     isEnabled: $restoreClipboardAfterPaste,

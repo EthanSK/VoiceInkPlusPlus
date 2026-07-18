@@ -7,6 +7,7 @@ protocol RecorderStateProvider: AnyObject {
     var partialTranscript: String { get }
     var pasteDestinationIndicatorTarget: FocusLockService.Target? { get } // While recording this previews the Next Track destination; after stop it follows the session's actual pending paste target until delivery finishes.
     var iconActionPulse: RecorderIconActionPulse? { get } // Primary normal stop flashes the left/current icon; either accepted Next-button route flashes the right/locked icon.
+    var pasteDestinationIsLocked: Bool { get } // The right icon is only a preview while recording. Once any stop route freezes a real target, keep it outlined until that session resolves.
 
     // VIPP (skip-mode-processing feature): the per-session, one-shot "skip post-processing
     // for THIS recording" flag. SETTABLE here so the recorder's toggle button (which is
@@ -23,6 +24,7 @@ protocol RecorderStateProvider: AnyObject {
     // It is per-session + one-shot: the next recording starts a fresh RecordingSession with
     // the flag back at false.
     var skipPostProcessing: Bool { get set }
+    var canChangeSkipPostProcessing: Bool { get }
 }
 
 extension RecorderStateProvider {

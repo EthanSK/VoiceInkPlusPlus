@@ -265,8 +265,10 @@ struct TranscribingChip: View {
 
             PasteDestinationIndicator(
                 target: session.pasteDestinationIndicatorTarget,
-                context: .pendingPaste
-            ) // A session moved behind a newer recording still owns its target, so its compact chip must keep showing that target until delivery finishes.
+                context: .pendingPaste,
+                actionPulseID: session.lockedDestinationIconActionPulseID,
+                isLocked: session.pasteDestinationIsLocked
+            ) // Moving behind a newer recording does not release the target: its compact chip must preserve both the session-owned pulse and locked outline until delivery resolves.
 
             // Per-card cancel — discards THIS session only.
             RecorderCancelButton(action: onCancel)

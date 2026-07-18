@@ -5,7 +5,7 @@ import AppKit
 
 /// The two-line release identifier shown immediately before Stop. Keeping its
 /// presentation separate from Bundle lookup makes the exact split testable:
-/// `v2.0` is the product version and `.206` is the uniquely released build.
+/// `v2.0` is the product version and `.NNN` is the uniquely released build.
 struct RecorderVersionPresentation: Equatable {
     let topLine: String
     let bottomLine: String?
@@ -541,7 +541,8 @@ struct LiveTranscriptView: View {
 // MARK: - Current App + Paste Destination
 
 /// A short, deliberate confirmation effect for destination actions. The app icon
-/// fades up, lands with two restrained beats, then leaves no persistent decoration.
+/// fades up and lands with two restrained beats. Persistent ownership is rendered by
+/// the separate locked-destination outline below; the pulse itself always settles.
 /// Scale is disabled under Reduce Motion while the useful light confirmation remains.
 private struct RecorderIconActionPulseModifier: ViewModifier {
     let trigger: UUID?
@@ -649,6 +650,31 @@ private extension View {
     }
 }
 
+private struct RecorderLockedDestinationOutlineModifier: ViewModifier {
+    let isLocked: Bool
+
+    private let neon = Color(red: 0.20, green: 0.91, blue: 1.00)
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if isLocked {
+                    RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                        .stroke(neon.opacity(0.88), lineWidth: 1.35)
+                        .shadow(color: neon.opacity(0.48), radius: 3)
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: isLocked)
+    }
+}
+
+private extension View {
+    func recorderLockedDestinationOutline(isLocked: Bool) -> some View {
+        modifier(RecorderLockedDestinationOutlineModifier(isLocked: isLocked))
+    }
+}
+
 struct CurrentFocusApplicationIndicator: View {
     @ObservedObject private var activeWindowService = ActiveWindowService.shared
     let actionPulseID: UUID?
@@ -710,16 +736,19 @@ struct PasteDestinationIndicator: View {
     let target: FocusLockService.Target?
     let context: Context
     let actionPulseID: UUID?
+    let isLocked: Bool
     private let iconSize: CGFloat = 20
 
     init(
         target: FocusLockService.Target?,
         context: Context,
-        actionPulseID: UUID? = nil
+        actionPulseID: UUID? = nil,
+        isLocked: Bool = false
     ) {
         self.target = target
         self.context = context
         self.actionPulseID = actionPulseID
+        self.isLocked = isLocked
     }
 
     private var helpText: String {
@@ -760,9 +789,10 @@ struct PasteDestinationIndicator: View {
             }
         }
         .frame(width: iconSize, height: iconSize)
+        .recorderLockedDestinationOutline(isLocked: isLocked && target != nil)
         .recorderIconActionPulse(trigger: actionPulseID)
         .help(helpText)
-        .accessibilityLabel(Text(helpText))
+        .accessibilityLabel(Text(isLocked ? "Locked destination. \(helpText)" : helpText))
     }
 }
 

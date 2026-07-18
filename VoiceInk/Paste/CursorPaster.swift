@@ -51,7 +51,10 @@ class CursorPaster {
         preflight: (() -> Bool)? = nil
     ) -> Task<PasteResult, Never> {
         Task { @MainActor in
-            await performPasteSession(text, preflight: preflight)
+            await performPasteSession(
+                text,
+                preflight: preflight
+            )
         }
     }
 
@@ -98,7 +101,9 @@ class CursorPaster {
             return .commandNotPosted
         }
 
-        let pasteResult = await postPasteCommand(preflight: preflight)
+        let pasteResult = await postPasteCommand(
+            preflight: preflight
+        )
         return pasteResult
     }
 
@@ -122,7 +127,9 @@ class CursorPaster {
                 ? .commandPosted
                 : .commandNotPosted
         } else {
-            return await pasteFromClipboard(preflight: preflight)
+            return await pasteFromClipboard(
+                preflight: preflight
+            )
         }
     }
 
@@ -225,6 +232,11 @@ class CursorPaster {
             return .commandNotPosted
         }
 
+        // Foreground Cmd-V deliberately uses private event state. Build 215 tried HID
+        // state for OpenAI composers; its synthetic Command-down changed Electron's AX
+        // wrapper before V-down, so the exact-input preflight correctly cancelled the
+        // paste even though Ethan had not moved. Private state preserves both safety
+        // checks without publishing an intermediate modifier state to the target app.
         let source = CGEventSource(stateID: .privateState)
 
         guard let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true),
@@ -409,20 +421,12 @@ class CursorPaster {
 
     // Feature B (robust double-Enter) tunables.
     //
-    // Problem: on a lagging Mac, a SINGLE auto-Enter sometimes doesn't register, so
-    // the message never submits (worse on longer transcripts — the field is busy
-    // settling the just-pasted text when the Enter arrives, so the keystroke gets
-    // dropped). Fix: for a plain Return auto-send, post Return once immediately, then
-    // post a SECOND Return after a short delay.
-    //
-    // Why this is safe (no double-send): after the first Enter submits, the input
-    // field is empty, so a second Return is a harmless no-op. But if the first Enter
-    // was DROPPED under load, the second one still submits. Net = redundancy without
-    // ever sending twice.
-    //
-    // We ONLY double-fire for plain `.enter`. Shift+Enter / Cmd+Enter are typically
-    // "insert newline" / "send" chord variants where a stray second keystroke could
-    // add an unwanted newline, so those stay single-fire.
+    // Historical builds retried plain Return generically when the first event could be
+    // dropped under load. That is not safe for terminals/editors: a handled first Return
+    // can make the second act on a new prompt or surface. Current delivery therefore
+    // leaves this legacy mechanism disabled. The sole permitted retry is orchestrated
+    // separately by TranscriptionDelivery only after a readable unchanged OpenAI
+    // composer proves the first semantic action did not submit.
 
     // Base gap before the redundant Enter (covers ordinary, non-lagging cases).
     private static let doubleEnterBaseDelay: TimeInterval = 0.12   // 120ms
@@ -433,17 +437,16 @@ class CursorPaster {
     // sluggish. ~600ms total keeps it imperceptible-to-snappy in practice.
     private static let doubleEnterMaxDelay: TimeInterval = 0.60     // 600ms
 
-    // `transcriptLength` scales the optional redundant Enter delay. The caller
-    // can choose System Events for a foreground chat composer because a real OpenAI
-    // trace showed it ignoring zero-duration CGEvents while Terminal accepted them. Both
-    // routes remain foreground-only so a Return can never drift into another app.
+    // `transcriptLength` scales the disabled-by-default legacy retry delay. Production
+    // chat delivery uses one humanized HID event with an exact-focus preflight; it never
+    // uses System Events, whose AppleScript execution can drift after a focus change.
     @MainActor
     static func performAutoSend(
         _ key: AutoSendKey,
         transcriptLength: Int = 0,
         expectedFrontmostPID: pid_t,
         method: AutoSendMethod = .cgEvent,
-        sendRedundantEnter: Bool = true,
+        sendRedundantEnter: Bool = false,
         preflight: (() -> Bool)? = nil
     ) async -> AutoSendResult {
         guard key.isEnabled else {
@@ -507,6 +510,28 @@ class CursorPaster {
         }
 
         return .commandPosted
+    }
+
+    /// Issue one ordinary global HID key only while the caller proves that its exact
+    /// saved input owns system keyboard focus. This deliberately has no frontmost-app
+    /// requirement because ChatGPT's Option-Space composer can own keyboard focus while
+    /// its process is nonfrontmost. It is never a process-targeted Return and never
+    /// activates or focuses an app; the preflight is repeated at Return-down.
+    @MainActor
+    static func performExactKeyboardFocusAutoSend(
+        _ key: AutoSendKey,
+        preflight: @escaping () -> Bool
+    ) async -> AutoSendResult {
+        guard key.isEnabled,
+              AXIsProcessTrusted(),
+              preflight() else {
+            logger.error("Refused exact-keyboard-focus auto-send because its saved input no longer owns system focus")
+            return .commandNotPosted
+        }
+        return await issueAutoSendUsingCGEvent(
+            key,
+            preflight: preflight
+        )
     }
 
     @MainActor

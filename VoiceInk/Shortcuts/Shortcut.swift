@@ -114,6 +114,21 @@ struct Shortcut: Codable, Equatable {
         return keyCode == eventKeyCode
     }
 
+    /// Whether this flags-changed event completes this modifier-only shortcut. The event
+    /// tap runs before Electron/Chromium sees that final modifier, so VoiceInk++ can keep
+    /// the app's existing composer focus intact until the ordinary main-loop handler saves
+    /// the destination. Do not suppress a partial modifier: downstream apps must receive
+    /// normal Shift/Control/Option state, and every release must remain balanced.
+    func modifierSequenceIsActive(
+        keyCode eventKeyCode: UInt16,
+        modifierFlags eventModifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        matchesModifierEvent(
+            keyCode: eventKeyCode,
+            modifierFlags: eventModifierFlags
+        )
+    }
+
     func isInterruptedByAdditionalKeyDown(keyCode eventKeyCode: UInt16) -> Bool {
         switch kind {
         case .modifierOnly:

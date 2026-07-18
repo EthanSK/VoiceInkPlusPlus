@@ -78,7 +78,10 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var skipPostProcessingBinding: Binding<Bool> {
         Binding(
             get: { stateProvider.skipPostProcessing },
-            set: { stateProvider.skipPostProcessing = $0 }
+            set: {
+                guard stateProvider.canChangeSkipPostProcessing else { return }
+                stateProvider.skipPostProcessing = $0
+            }
         )
     }
 
@@ -115,6 +118,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     // and collapses out at idle/busy along with Cancel. Bound directly to the
                     // observed session's skipPostProcessing flag (no closure threading needed).
                     RecorderSkipProcessingButton(isEngaged: skipPostProcessingBinding)
+                        .disabled(!stateProvider.canChangeSkipPostProcessing)
                         .transition(.opacity)
                 }
             }
@@ -148,7 +152,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     PasteDestinationIndicator(
                         target: stateProvider.pasteDestinationIndicatorTarget,
                         context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
-                        actionPulseID: stateProvider.lockedDestinationIconActionPulseID
+                        actionPulseID: stateProvider.lockedDestinationIconActionPulseID,
+                        isLocked: stateProvider.pasteDestinationIsLocked
                     ) // Do not hide this at stop: the same per-session icon confirms VoiceInk still owns the target while transcription is loading, and updates if Next Track retargets it.
                         .transition(.opacity)
                 }

@@ -55,13 +55,13 @@ class TranscriptionPipeline {
         transcription: Transcription,
         audioURL: URL,
         transcriptionConfiguration: TranscriptionRuntimeConfiguration,
-        formattingConfiguration resolveFormattingConfiguration: @escaping () -> TranscriptionFormattingConfiguration,
+        formattingConfiguration resolveFormattingConfiguration: @escaping (ModeConfig?) -> TranscriptionFormattingConfiguration,
         session: TranscriptionSession?,
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
-        enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
+        enhancementConfiguration: @escaping (ModeConfig?) -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
-        pasteTarget resolvePasteTarget: @escaping () -> RecordingPasteTarget,
-        outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
+        deliveryDecision resolveDeliveryDecision: @escaping () async -> RecordingDeliveryDecision,
+        outputConfiguration: @escaping (ModeConfig?) -> OutputRuntimeConfiguration,
         // ── VIPP (skip-mode-processing feature) — EXPLICIT bypass flag ──
         // Resolved at pipeline-run time from the owning RecordingSession's one-shot
         // `skipPostProcessing`. We thread it as a plain Bool (NOT only via the
@@ -85,19 +85,14 @@ class TranscriptionPipeline {
         var responseError: String?
         var outputForDelivery: OutputRuntimeConfiguration?
         var responseConfig: EnhancementRuntimeConfiguration?
+        var frozenDeliveryDecision: RecordingDeliveryDecision?
+        var resolvedOutputForDecision: OutputRuntimeConfiguration?
 
-        // ── VIPP (skip-mode-processing feature) — resolve the one-shot bypass ONCE ──
-        // Read the owning session's flag at pipeline-run time (after STOP) so toggling
-        // the button any time before this is honored. We capture it into a local Bool and
-        // use it as the AUTHORITATIVE gate for both bypass points below, instead of relying
-        // solely on the enhancement/output closures' internal checks. This is the fix for
-        // "the script still runs when skip is engaged": even if the outputConfiguration
-        // closure's rewrite were ever lost downstream, this explicit flag forces the
-        // raw-paste branch at delivery.
-        let skipPostProcessingNow = skipPostProcessing()
-        if skipPostProcessingNow {
-            vippLog.info("pipeline: skipPostProcessing RESOLVED=true → will bypass enhancement + force raw .paste (no mode script/respond)")
-        }
+        // The raw/skip toggle remains writable while network transcription is in
+        // flight. Freeze it only at the first post-transcription decision below, then
+        // use that one value for trigger handling, formatting, enhancement and delivery.
+        var skipPostProcessingNow = false
+        var didResolveSkipPostProcessing = false
 
         func finishCanceledTranscription() async {
             await onCancel()
@@ -165,6 +160,12 @@ class TranscriptionPipeline {
 
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
+            skipPostProcessingNow = skipPostProcessing()
+            didResolveSkipPostProcessing = true
+            if skipPostProcessingNow {
+                vippLog.info("pipeline: skipPostProcessing RESOLVED=true → will bypass enhancement + force raw .paste (no mode script/respond)")
+            }
+
             // ── VIPP (skip-mode-processing feature) — trigger-word bypass ──
             // Trigger-word mode-selection can REWRITE the text (strip the trigger word) and
             // SWITCH the active mode as a side effect (selectTriggerWordModeIfNeeded). For a
@@ -177,9 +178,27 @@ class TranscriptionPipeline {
                 text = processedText
             }
 
-            let formattingConfiguration = resolveFormattingConfiguration()
-            let resolvedEnhancementConfiguration = enhancementConfiguration()
-            let resolvedOutputConfiguration = outputConfiguration()
+            // The second-chance Next route stays open while transcription is pending,
+            // but input plus complete Mode must freeze before the first
+            // destination-dependent decision. Trigger words are the one intentional
+            // higher-priority Mode override, so close retargetability immediately after
+            // that selection and before formatting, enhancement, metadata, or output.
+            // Resolving only at delivery allowed a late Next press to change paste/send
+            // while the text had already been processed using the previous destination.
+            let deliveryDecision = await resolveDeliveryDecision()
+            frozenDeliveryDecision = deliveryDecision
+            let frozenPostProcessingMode = deliveryDecision.postProcessingMode
+
+            let formattingConfiguration = resolveFormattingConfiguration(
+                frozenPostProcessingMode
+            )
+            let resolvedEnhancementConfiguration = enhancementConfiguration(
+                frozenPostProcessingMode
+            )
+            let resolvedOutputConfiguration = outputConfiguration(
+                frozenPostProcessingMode
+            )
+            resolvedOutputForDecision = resolvedOutputConfiguration
             let modeMetadata = metadata(
                 for: formattingConfiguration.mode ??
                     resolvedEnhancementConfiguration?.mode ??
@@ -304,15 +323,29 @@ class TranscriptionPipeline {
             transcription.transcriptionStatus = TranscriptionStatus.completed.rawValue
         } catch {
             let errorDescription = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            let noSpeechDetected = (error as? CloudTranscriptionError)?
+                .isNoSpeechDetected == true
             // VIPPDebug: transcription threw. A URLError(.cancelled) here means the
             // upload Task was torn down (the BrokenPipe-500 case at the proxy); any other
             // error is a genuine network/decode failure. Either way the bar will hide
             // with no paste — this line attributes which.
             let isCancelled = (error as? URLError)?.code == .cancelled
-            vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public)")
+            if noSpeechDetected {
+                vippLog.notice("pipeline: transcribe NO_SPEECH_DETECTED; no delivery or paid retry")
+            } else {
+                vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public)")
+            }
 
             let wasIntentionalCancellation = isCancelled && shouldCancel()
-            if !wasIntentionalCancellation {
+            if noSpeechDetected {
+                await MainActor.run {
+                    NotificationManager.shared.showNotification(
+                        title: String(localized: "No speech detected"),
+                        type: .warning,
+                        duration: 5.0
+                    )
+                }
+            } else if !wasIntentionalCancellation {
                 let shortReason = String(errorDescription.prefix(120))
                 await MainActor.run {
                     NotificationManager.shared.showNotification(
@@ -323,7 +356,9 @@ class TranscriptionPipeline {
                 } // Unexpected transcription failures used to live only in logs/history while the bar vanished; always surface the actual reason unless the user deliberately canceled.
             }
 
-            transcription.text = String(format: String(localized: "Transcription Failed: %@"), errorDescription)
+            transcription.text = noSpeechDetected
+                ? String(localized: "No speech detected")
+                : String(format: String(localized: "Transcription Failed: %@"), errorDescription)
             transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
         }
 
@@ -366,14 +401,26 @@ class TranscriptionPipeline {
             }
         }
 
-        let pasteTargetForDelivery = resolvePasteTarget()
-        // Re-resolve after the target is frozen so a second-chance Next-button press
-        // that arrived during transcription/enhancement supplies the latest target's
-        // complete Mode (output action, command, and Return), not just its input. The
-        // one-shot raw path keeps the already-forced neutral output below.
-        let pipelineOutput = skipPostProcessingNow
-            ? (outputForDelivery ?? outputConfiguration())
-            : outputConfiguration()
+        if !didResolveSkipPostProcessing {
+            skipPostProcessingNow = skipPostProcessing()
+            didResolveSkipPostProcessing = true
+        }
+
+        // Successful transcription freezes before post-processing above. A failed
+        // transcription never entered destination-dependent work, so close the route
+        // here solely to keep its terminal cleanup deterministic.
+        let deliveryDecision: RecordingDeliveryDecision
+        if let frozenDeliveryDecision {
+            deliveryDecision = frozenDeliveryDecision
+        } else {
+            deliveryDecision = await resolveDeliveryDecision()
+        }
+        let pasteTargetForDelivery = deliveryDecision.pasteTarget
+        // Output was resolved from the same frozen Mode before enhancement. Never
+        // re-read the mutable session/global Mode here after Ethan has moved on.
+        let pipelineOutput = outputForDelivery
+            ?? resolvedOutputForDecision
+            ?? outputConfiguration(deliveryDecision.postProcessingMode)
         let outputForPasteTarget: OutputRuntimeConfiguration
         if skipPostProcessingNow {
             // The one-shot raw/skip contract is stronger than any destination Mode:
@@ -400,7 +447,7 @@ class TranscriptionPipeline {
                 responseConfig: responseConfig,
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
-                pasteTarget: pasteTargetForDelivery, // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
+                pasteTarget: pasteTargetForDelivery, // Frozen atomically with Mode after transcription/trigger selection and before post-processing; later focus changes cannot retarget already-processed text.
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).

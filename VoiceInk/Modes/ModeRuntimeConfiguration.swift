@@ -63,7 +63,29 @@ enum ModeRuntimeResolver {
         mode: ModeConfig? = nil,
         transcriptionModelManager: TranscriptionModelManager
     ) -> TranscriptionRuntimeConfiguration? {
-        let mode = mode ?? ModeManager.shared.currentEffectiveConfiguration
+        makeTranscriptionConfiguration(
+            mode: mode ?? ModeManager.shared.currentEffectiveConfiguration,
+            transcriptionModelManager: transcriptionModelManager
+        )
+    }
+
+    /// Resolve from an already-bound per-session Mode value. Here nil is deliberately
+    /// neutral and must not fall through to whichever global Mode became current while
+    /// microphone/browser setup was suspended.
+    static func snapshotTranscriptionConfiguration(
+        mode: ModeConfig?,
+        transcriptionModelManager: TranscriptionModelManager
+    ) -> TranscriptionRuntimeConfiguration? {
+        makeTranscriptionConfiguration(
+            mode: mode,
+            transcriptionModelManager: transcriptionModelManager
+        )
+    }
+
+    private static func makeTranscriptionConfiguration(
+        mode: ModeConfig?,
+        transcriptionModelManager: TranscriptionModelManager
+    ) -> TranscriptionRuntimeConfiguration? {
         let model = resolvedModel(
             named: mode?.selectedTranscriptionModelName,
             transcriptionModelManager: transcriptionModelManager
@@ -195,9 +217,22 @@ enum ModeRuntimeResolver {
     /// Destination selection and Mode selection are one atomic per-session decision:
     /// later focus changes must not mix another app's formatting/output/script/Return
     /// behavior into the exact input that will receive this transcript.
-    static func modeSnapshot(forPasteTargetBundleIdentifier bundleIdentifier: String?) -> ModeConfig? {
+    static func modeSnapshot(
+        forPasteTargetBundleIdentifier bundleIdentifier: String?,
+        applicationBundleName: String? = nil
+    ) -> ModeConfig? {
         guard let bundleIdentifier else { return nil }
-        return ModeManager.shared.getConfigurationForApp(bundleIdentifier)
+        // Never consume currentEffectiveConfiguration here. It is mutable global UI
+        // state and can still describe the previous app—or a different tab in the same
+        // browser—when an Accessibility capture has just selected a new exact input.
+        // Exact destination capture does not prove a browser tab identity, so
+        // ActiveWindowService.resolveConfigurationForCapturedTarget deliberately keeps
+        // this app/default snapshot instead of attaching whichever URL is current later.
+        let modeBundleIdentifier = ActiveWindowService.modeLookupBundleIdentifier(
+            capturedBundleIdentifier: bundleIdentifier,
+            applicationBundleName: applicationBundleName
+        )
+        return ModeManager.shared.getConfigurationForApp(modeBundleIdentifier)
             ?? ModeManager.shared.getDefaultConfiguration()
     }
 
