@@ -23,10 +23,13 @@ struct VoiceInkTests {
         #expect(TranscriptionDelivery.pasteDeliveryStrategy(
             exactInputDeliveryEnabled: false
         ) == .legacyCurrentKeyboardInput)
+        #expect(VoiceInkDeliveryFeatureFlags
+            .shouldShowLockedDestinationIndicator(
+                recordingState: .recording
+            ))
         #expect(!VoiceInkDeliveryFeatureFlags
             .shouldShowLockedDestinationIndicator(
-                recordingState: .recording,
-                isExactInputDeliveryEnabled: false
+                recordingState: .idle
             ))
 
         defaults.set(
@@ -40,13 +43,11 @@ struct VoiceInkTests {
         ) == .exactSavedInput)
         #expect(VoiceInkDeliveryFeatureFlags
             .shouldShowLockedDestinationIndicator(
-                recordingState: .recording,
-                isExactInputDeliveryEnabled: true
+                recordingState: .recording
             ))
         #expect(!VoiceInkDeliveryFeatureFlags
             .shouldShowLockedDestinationIndicator(
-                recordingState: .idle,
-                isExactInputDeliveryEnabled: true
+                recordingState: .idle
             ))
 
         defaults.set(
@@ -760,24 +761,71 @@ struct VoiceInkTests {
     @Test func lockedDestinationOutlineAppearsOnlyForFrozenRealTargets() {
         #expect(!RecordingSession.pasteDestinationOutlineIsVisible(
             phase: .recording,
-            hasFrozenInput: true
+            hasFrozenInput: true,
+            exactInputDeliveryEnabled: true
         ))
         #expect(RecordingSession.pasteDestinationOutlineIsVisible(
             phase: .transcribing,
-            hasFrozenInput: true
+            hasFrozenInput: true,
+            exactInputDeliveryEnabled: true
         ))
         #expect(RecordingSession.pasteDestinationOutlineIsVisible(
             phase: .delivering,
-            hasFrozenInput: true
+            hasFrozenInput: true,
+            exactInputDeliveryEnabled: true
         ))
         #expect(!RecordingSession.pasteDestinationOutlineIsVisible(
             phase: .transcribing,
-            hasFrozenInput: false
+            hasFrozenInput: false,
+            exactInputDeliveryEnabled: true
         ))
         #expect(!RecordingSession.pasteDestinationOutlineIsVisible(
             phase: .done,
-            hasFrozenInput: true
+            hasFrozenInput: true,
+            exactInputDeliveryEnabled: true
         ))
+    }
+
+    @MainActor
+    @Test func compatibilityRecorderNeverAdvertisesStaleExactOwnership() {
+        guard let staleTarget = FocusLockService.makeTestingTarget(
+            captureID: UUID(),
+            inputName: "Stale exact composer"
+        ) else {
+            Issue.record("No running application was available for the target seam")
+            return
+        }
+
+        #expect(RecordingSession.pasteDestinationIndicatorTarget(
+            phase: .recording,
+            recordingStartTarget: staleTarget,
+            pendingTarget: staleTarget,
+            exactInputDeliveryEnabled: false
+        ) == nil)
+        #expect(RecordingSession.pasteDestinationIndicatorTarget(
+            phase: .transcribing,
+            recordingStartTarget: staleTarget,
+            pendingTarget: staleTarget,
+            exactInputDeliveryEnabled: false
+        ) == nil)
+        #expect(!RecordingSession.pasteDestinationOutlineIsVisible(
+            phase: .transcribing,
+            hasFrozenInput: true,
+            exactInputDeliveryEnabled: false
+        ))
+
+        #expect(RecordingSession.pasteDestinationIndicatorTarget(
+            phase: .recording,
+            recordingStartTarget: staleTarget,
+            pendingTarget: nil,
+            exactInputDeliveryEnabled: true
+        )?.displayInfo.inputName == staleTarget.displayInfo.inputName)
+        #expect(RecordingSession.pasteDestinationIndicatorTarget(
+            phase: .transcribing,
+            recordingStartTarget: nil,
+            pendingTarget: staleTarget,
+            exactInputDeliveryEnabled: true
+        )?.displayInfo.inputName == staleTarget.displayInfo.inputName)
     }
 
     @MainActor
@@ -1568,6 +1616,42 @@ struct VoiceInkTests {
             description: "Ask ChatGPT anything locally",
             placeholder: "Ask ChatGPT anything locally"
         ) == .chatGPT)
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .openAIChatGPT,
+            composerProduct: .codex
+        ) == [.openAICodex])
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .openAIChatGPT,
+            composerProduct: .chatGPT
+        ) == [.openAIChatGPT])
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .openAIChatGPT,
+            composerProduct: nil
+        ) == [.openAIChatGPT, .openAICodex])
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .openAICodex,
+            composerProduct: .chatGPT
+        ).isEmpty)
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .openAICodex,
+            composerProduct: .codex
+        ) == [.openAICodex])
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .openAICodex,
+            composerProduct: nil
+        ) == [.openAICodex])
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .claudeDesktop,
+            composerProduct: nil
+        ) == [.claudeDesktop])
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .claudeDesktop,
+            composerProduct: .codex
+        ).isEmpty)
+        #expect(FocusLockService.selectedTaskScopeSurfaces(
+            hostSurface: .telegramForegroundOnly,
+            composerProduct: nil
+        ).isEmpty)
         // ChatGPT.app is the audited host artifact for Ethan's current Codex task.
         // Its embedded Codex composer must gain hardened capture scope without being
         // reclassified as Codex.app for the separate versioned Send allowlist.
@@ -1582,6 +1666,73 @@ struct VoiceInkTests {
             placeholder: "Ask Codex to do anything",
             windowIsModal: false,
             hasDisallowedSecondaryAncestor: false
+        ))
+        #expect(FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .selectedTask,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAICodex,
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything"
+        ))
+        #expect(!FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .selectedTask,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAIChatGPT,
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything"
+        ))
+        #expect(!FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .selectedTask,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAICodex,
+            description: "Message ChatGPT",
+            placeholder: "Message ChatGPT"
+        ))
+        // A task-document fast path must retain the captured product just as strictly
+        // as a selected task row. The same stable window may host ChatGPT and Codex.
+        #expect(FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .windowMainComposer,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAICodex,
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything"
+        ))
+        #expect(!FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .windowMainComposer,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAICodex,
+            description: "Message ChatGPT",
+            placeholder: "Message ChatGPT"
+        ))
+        #expect(FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .windowMainComposer,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAIChatGPT,
+            description: "Message ChatGPT",
+            placeholder: "Message ChatGPT"
+        ))
+        // Option-Space is explicitly ChatGPT-only. An embedded Codex composer cannot
+        // borrow its floating-window wrapper even though the installed host is shared.
+        #expect(FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .floatingQuickComposer,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAIChatGPT,
+            description: "Message ChatGPT",
+            placeholder: "Message ChatGPT"
+        ))
+        #expect(!FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .floatingQuickComposer,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAIChatGPT,
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything"
+        ))
+        #expect(!FocusLockService.recordingStartComposerScopeEvidenceMatches(
+            scopeKind: .floatingQuickComposer,
+            hostSurface: .openAIChatGPT,
+            scopeSurface: .openAICodex,
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything"
         ))
         #expect(FocusLockService.recordingStartComposerEvidenceMatches(
             surface: .openAICodex,
@@ -1639,6 +1790,27 @@ struct VoiceInkTests {
             surface: .openAIChatGPT,
             description: "Share feedback",
             placeholder: "Share feedback",
+            windowIsModal: false,
+            hasDisallowedSecondaryAncestor: false
+        ))
+        #expect(!FocusLockService.exactMainComposerCaptureEvidenceMatches(
+            surface: .openAIChatGPT,
+            description: "Ask for follow-up changes",
+            placeholder: "Ask for follow-up changes",
+            windowIsModal: false,
+            hasDisallowedSecondaryAncestor: true
+        ))
+        #expect(!FocusLockService.exactMainComposerCaptureEvidenceMatches(
+            surface: .openAIChatGPT,
+            description: "Ask Codex to do anything",
+            placeholder: "Different modal placeholder",
+            windowIsModal: false,
+            hasDisallowedSecondaryAncestor: false
+        ))
+        #expect(!FocusLockService.exactMainComposerCaptureEvidenceMatches(
+            surface: .openAIChatGPT,
+            description: "Describe this bug",
+            placeholder: "Describe this bug",
             windowIsModal: false,
             hasDisallowedSecondaryAncestor: false
         ))
@@ -1823,6 +1995,35 @@ struct VoiceInkTests {
         ))
         #expect(FocusLockService.selectedTaskScopeEvidenceMatches(
             surface: .openAICodex,
+            role: "AXTab",
+            selected: true,
+            identifier: nil,
+            domIdentifier: "task-tab-42",
+            label: "Disposable task",
+            containerDescriptor: "Tasks"
+        ))
+        // `Conversations` is shared vocabulary. A no-caret union scan records one
+        // match per product and the existing exact-one acceptance gate rejects it.
+        #expect(FocusLockService.selectedTaskScopeEvidenceMatches(
+            surface: .openAIChatGPT,
+            role: "AXRow",
+            selected: true,
+            identifier: "conversation-019f5cec-30d7-7d53-a564-2f73ed8e0784",
+            domIdentifier: nil,
+            label: "Disposable conversation",
+            containerDescriptor: "Conversations"
+        ))
+        #expect(FocusLockService.selectedTaskScopeEvidenceMatches(
+            surface: .openAICodex,
+            role: "AXRow",
+            selected: true,
+            identifier: "conversation-019f5cec-30d7-7d53-a564-2f73ed8e0784",
+            domIdentifier: nil,
+            label: "Disposable conversation",
+            containerDescriptor: "Conversations"
+        ))
+        #expect(!FocusLockService.selectedTaskScopeEvidenceMatches(
+            surface: .openAIChatGPT,
             role: "AXTab",
             selected: true,
             identifier: nil,
@@ -2229,6 +2430,13 @@ struct VoiceInkTests {
         ))
         #expect(!FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
             surface: .openAIChatGPT,
+            applicationBundleName: "Codex.app",
+            marketingVersion: "26.715.31925",
+            buildNumber: "5551",
+            chromiumBaseVersion: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
+            surface: .openAIChatGPT,
             applicationBundleName: "ChatGPT.app",
             marketingVersion: "26.715.21425",
             buildNumber: "5489",
@@ -2258,6 +2466,13 @@ struct VoiceInkTests {
         #expect(FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
             surface: .openAICodex,
             applicationBundleName: "Codex.app",
+            marketingVersion: "26.707.72221",
+            buildNumber: "5307",
+            chromiumBaseVersion: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
+            surface: .openAICodex,
+            applicationBundleName: "ChatGPT.app",
             marketingVersion: "26.707.72221",
             buildNumber: "5307",
             chromiumBaseVersion: "150.0.7871.115"

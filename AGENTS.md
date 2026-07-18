@@ -25,6 +25,14 @@ Ethan's live G502 X LIGHTSPEED `Desktop: Default` profile was sanity-checked on 
 
 ## Non-negotiable Next button contract
 
+The runtime feature flag `VIPPExactInputDeliveryEnabled` selects the delivery engine. While false,
+VoiceInk++ deliberately behaves like base VoiceInk: Primary output follows only the keyboard-focused
+input at delivery, the current app's Mode supplies optional Return, and Next Track passes through.
+The second destination slot remains visible as a warning because no exact input is owned; it must
+not disappear or imply a saved app that compatibility delivery will ignore. This escape hatch is
+not a fourth route and must not delete or reinterpret the exact engine below. While true, all three
+routes below apply.
+
 Use **Next button** as the preferred user-facing term. **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases for the same physical control or its macOS event. They do not create additional routes. Use **second chance** only for route 3 below, and never describe it as a toggle.
 
 VoiceInk++ has three distinct one-click destination routes. Do not merge them, reinterpret them as a toggle, or infer one from another:
@@ -45,6 +53,7 @@ The saved input and its target app's complete Mode are one atomic, per-session d
 - Do not show routine “Recording” text above the waveform; visible text is reserved for real warnings/errors.
 - Mode icon/emoji is left of the waveform.
 - The right side has two separate icons: current focused app first, then the per-session locked destination.
+- Keep both icon slots visible for every active session. When exact delivery is disabled or capture genuinely fails, the second slot shows the warning icon; never hide the slot merely to conceal a missing destination.
 - The locked icon remains visible through transcription and changes immediately after a successful second-chance retarget. Do not replace that visual confirmation with a success toast.
 - Destination actions use the per-session neon confirmation pulse on every mirrored panel: a primary-button normal stop pulses the left/current-focus icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Preserve the non-scaling Reduce Motion variant.
 - The pulse is transient action feedback. Once any stop route has frozen a real exact input, the stable right/locked-destination icon stays outlined until that session succeeds, visibly fails, or is cancelled. A recording-time preview, missing target, and app-only no-caret fallback remain unoutlined until exact-composer promotion succeeds. The live left/current-focus icon is never persistently outlined; it can change after the decision and would misrepresent ownership.

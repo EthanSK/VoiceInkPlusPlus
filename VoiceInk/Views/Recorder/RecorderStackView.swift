@@ -271,7 +271,7 @@ struct TranscribingChip: View {
                     context: .pendingPaste,
                     actionPulseID: session.lockedDestinationIconActionPulseID,
                     isLocked: session.pasteDestinationIsLocked
-                ) // Exact mode keeps ownership visible behind a newer recording; compatibility mode has no saved target and must not fabricate a warning slot.
+                ) // Keep the same two-icon contract behind a newer recording. Exact mode shows ownership; compatibility mode honestly warns that no saved destination exists.
             }
 
             // Per-card cancel — discards THIS session only.

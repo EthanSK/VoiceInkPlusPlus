@@ -25,6 +25,14 @@ When diagnosing the hardware mapping, verify G HUB's active profile and resolved
 
 ## Timing defines the route
 
+The table below applies while **Exact Saved-Input Delivery** is enabled. When the
+runtime feature flag `VIPPExactInputDeliveryEnabled` is off, VoiceInk++ intentionally
+uses base VoiceInk compatibility behavior instead: only the Primary button controls
+recording, no saved-input capture runs at start or stop, finished text and Mode behavior
+follow the current app/input, and Next Track passes through as media. The second recorder
+slot remains visible as a warning because compatibility mode owns no exact destination.
+This is an engine switch, not another timing route or a new meaning for either physical button.
+
 | State before the press | Control pressed | Result | Destination value |
 | --- | --- | --- | --- |
 | Idle | Primary button | Start a new recording and capture its recording-start input | Not yet final |

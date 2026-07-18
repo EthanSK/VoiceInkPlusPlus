@@ -232,7 +232,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                         context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
                         actionPulseID: stateProvider.lockedDestinationIconActionPulseID,
                         isLocked: stateProvider.pasteDestinationIsLocked
-                    ) // Mirrors the mini capsule and stays attached to this session until paste succeeds or visibly fails.
+                    ) // Mirrors the mini capsule: exact ownership stays session-bound through delivery, while compatibility mode keeps the warning slot visible.
                         .padding(.leading, 8)
                         .transition(.opacity)
                 }

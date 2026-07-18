@@ -4,6 +4,25 @@ VoiceInk++ lets the stop action decide which text input receives a recording. Th
 you start dictating in one app, move elsewhere while speaking, and only decide at the end where the
 transcript belongs.
 
+## Delivery engine switch
+
+VoiceInk++ temporarily defaults **Exact Saved-Input Delivery** to off while its background Codex
+compatibility is being repaired and physically re-tested. The switch is in **Settings → Pasting**:
+
+- **Off — base VoiceInk compatibility:** the Primary button records normally, the finished text
+  pastes into whichever input owns keyboard focus at delivery, and the current Mode owns
+  post-processing, output, and optional Return. The Next Track media key passes through. The
+  latency-sensitive start/stop path performs no saved-input Accessibility capture and no saved app
+  is activated or internally focused. The second destination slot stays visible as a warning so
+  the recorder never pretends that compatibility mode owns an exact app/input.
+- **On — VoiceInk++ exact delivery:** all three destination routes and their Next-button behavior
+  below are enabled. The second slot becomes the captured app icon when one exact target is proven;
+  a genuine capture failure remains a visible warning.
+
+The underlying UserDefaults feature flag is `VIPPExactInputDeliveryEnabled`. It is evaluated at each
+delivery/Next-button decision, so the Settings toggle does not require a rebuild. This is a delivery
+engine switch, not a fourth destination route: never merge or reinterpret the three routes below.
+
 ## Terminology
 
 The **primary button** is Ethan's normal/thumb/toggle recording button: the first press starts recording and pressing that same button again performs a normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
@@ -28,7 +47,9 @@ do not add a redundant text popup. The same destination icon remains on a compac
 if a newer recording starts. Hover over either icon to distinguish current focus from the exact
 pending app/input. If Electron/Chromium exposes only an app-level container while the shortcut is
 down, VoiceInk++ saves the owning application. A warning icon and notification appear when neither
-an editable input nor a safe web-app container can be captured.
+an editable input nor a safe web-app container can be captured. The same second-slot warning remains
+visible while compatibility delivery is selected because that engine intentionally owns no exact
+destination; disabling the feature never collapses the two-icon layout.
 
 The icon for the action just taken confirms the route with a brief neon pulse on every monitor. A
 primary-button normal stop pulses the first/current-focus icon. Next while recording pulses the

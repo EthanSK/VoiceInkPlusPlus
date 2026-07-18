@@ -29,15 +29,14 @@ enum VoiceInkDeliveryFeatureFlags {
         return defaults.bool(forKey: exactInputDeliveryDefaultsKey)
     }
 
-    /// The second recorder icon represents a saved exact input and the Next-button
-    /// routes that can act on it. Compatibility mode deliberately captures neither,
-    /// so rendering an empty slot would turn an intentional nil target into a false
-    /// warning. Keep this policy shared by mini, notch, and stacked-session UI.
+    /// Keep the locked-destination slot visible for every active session. In exact
+    /// mode it shows the captured app/input. In compatibility mode there is
+    /// deliberately no saved input, so the warning icon is useful and honest: it
+    /// makes clear that Next-button destination ownership is unavailable instead of
+    /// silently collapsing the two-icon recorder into a different layout.
     static func shouldShowLockedDestinationIndicator(
-        recordingState: RecordingState,
-        isExactInputDeliveryEnabled: Bool = exactInputDeliveryEnabled()
+        recordingState: RecordingState
     ) -> Bool {
-        guard isExactInputDeliveryEnabled else { return false }
         switch recordingState {
         case .starting, .recording, .transcribing, .enhancing:
             return true

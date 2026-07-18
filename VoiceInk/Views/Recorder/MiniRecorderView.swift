@@ -17,6 +17,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let compactWidth: CGFloat = 228
     private let expandedWidth: CGFloat = 344
     private let assistantWidth: CGFloat = 520
+    private let activeDestinationWidth: CGFloat = 292
+    private let sideEdgePadding: CGFloat = 16
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
 
@@ -29,7 +31,11 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var capsuleWidth: CGFloat {
         if hasAssistantResponse { return assistantWidth }
         if hasLiveTranscript { return expandedWidth }
-        return shouldShowPasteDestinationIndicator ? 280 : compactWidth // Active layout also includes the exact build label immediately left of Stop.
+        // The active two-icon layout needs its own width so the deliberate side
+        // breathing room does not squeeze the waveform or controls.
+        return shouldShowPasteDestinationIndicator
+            ? activeDestinationWidth
+            : compactWidth
     }
 
     // true when live transcript is streaming in during recording
@@ -119,7 +125,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                         .transition(.opacity)
                 }
             }
-            .padding(.leading, 10)
+            .padding(.leading, sideEdgePadding)
             .animation(.easeInOut(duration: 0.2), value: shouldShowCancelButton)
 
             Spacer(minLength: 0)
@@ -151,11 +157,11 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                         context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
                         actionPulseID: stateProvider.lockedDestinationIconActionPulseID,
                         isLocked: stateProvider.pasteDestinationIsLocked
-                    ) // Do not hide this at stop: the same per-session icon confirms VoiceInk still owns the target while transcription is loading, and updates if Next Track retargets it.
+                    ) // Keep the slot through stop: exact mode shows and updates the session-owned target, while compatibility mode keeps the honest nil-target warning.
                         .transition(.opacity)
                 }
             }
-            .padding(.trailing, 12)
+            .padding(.trailing, sideEdgePadding)
         }
         .frame(height: controlBarHeight)
     }

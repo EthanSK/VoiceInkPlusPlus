@@ -3,7 +3,13 @@
 This is the permanent compatibility matrix for Ethan's main destinations. Read it before changing
 exact-input capture, background insertion, auto-send, focus restoration, or verification.
 
-**Current rollback state (2026-07-15):** v2.0.207/v2.0.208 were rejected and native source plus the installed app were restored to the signed v2.0.206 baseline. The v2.0.207 rows below are preserved as failed/unavailable evidence and future acceptance gates, not as claims about the running release.
+**Current runtime state (2026-07-18):** signed v2.0.222 is installed with
+`VIPPExactInputDeliveryEnabled=false`. It uses base VoiceInk current-Mode/current-input delivery,
+performs no saved-input Accessibility capture at start or stop, and passes Next Track through. The
+second recorder slot remains visible as a warning because compatibility mode owns no exact target.
+Live traces confirmed current-input paste plus Return in Codex, but this does not pass any exact or
+background-delivery row below. v2.0.207/v2.0.208 remain rejected evidence and v2.0.206 remains the
+accepted exact-location rollback floor until a newer exact build passes a physical trace.
 
 ## Safety invariant
 

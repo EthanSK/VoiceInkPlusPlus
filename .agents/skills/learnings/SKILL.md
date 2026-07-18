@@ -46,6 +46,15 @@ Keep these three routes distinct:
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still transcribing and before post-processing | Second chance: replace that newest pending session's input and complete Mode atomically (`focusedDuringTranscription`) |
 
+First check the runtime delivery-engine flag `VIPPExactInputDeliveryEnabled`. When it
+is false, VoiceInk++ deliberately uses base VoiceInk compatibility delivery: Primary
+follows the current Mode and keyboard-focused input, no exact input is captured at start
+or stop, and Next Track passes through. Keep the recorder's second destination slot
+visible as a warning in this state; returning a stale target would lie about ownership,
+while hiding the slot would conceal that the Next/exact route is unavailable. The flag
+is an escape hatch around delivery, not a fourth route, and must never delete or merge
+the exact three-route contract.
+
 Preserve the recorder's action feedback mapping on every mirrored panel: a primary normal stop pulses the left/current-focus app icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Keep the Reduce Motion variant non-scaling.
 
 Treat transient action feedback and persistent destination ownership as separate UI state. After any stop route freezes a real exact input, keep only the stable right/locked-destination icon outlined through transcription and delivery (including compact background chips) until success, visible failure, or cancellation. Do not outline a recording-time preview, missing target, or app-only no-caret fallback until exact-composer promotion succeeds. Never persistently outline the live left/current-focus icon; it may change after the route decision and cannot represent session ownership.

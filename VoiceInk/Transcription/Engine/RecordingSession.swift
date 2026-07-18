@@ -348,21 +348,47 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     }
 
     var pasteDestinationIndicatorTarget: FocusLockService.Target? {
+        // Compatibility delivery follows the live keyboard input and must never
+        // advertise a stale exact app as owned. The recorder still renders this
+        // nil value in its second slot as the explicit warning icon, so disabling
+        // exact delivery changes the truth shown by the icon—not the two-icon layout.
+        Self.pasteDestinationIndicatorTarget(
+            phase: phase,
+            recordingStartTarget: recordingStartFocusedInput,
+            pendingTarget: pasteTarget.focusedInput,
+            exactInputDeliveryEnabled: VoiceInkDeliveryFeatureFlags
+                .exactInputDeliveryEnabled()
+        )
+    }
+
+    /// Pure policy seam for the recorder's right slot. Compatibility mode keeps the
+    /// slot but must return nil even if this session still carries an older exact
+    /// wrapper; nil is intentionally rendered as the visible warning icon.
+    static func pasteDestinationIndicatorTarget(
+        phase: Phase,
+        recordingStartTarget: FocusLockService.Target?,
+        pendingTarget: FocusLockService.Target?,
+        exactInputDeliveryEnabled: Bool
+    ) -> FocusLockService.Target? {
+        guard exactInputDeliveryEnabled else { return nil }
         switch phase {
         case .recording:
-            recordingStartFocusedInput // Before stop, the icon previews the original input that a Next Track stop will select.
+            return recordingStartTarget // Before stop, the icon previews the original input that a Next Track stop will select.
         case .transcribing, .delivering:
-            pasteTarget.focusedInput // After stop, keep showing the real per-session target until it is delivered, failed, or retargeted.
+            return pendingTarget // After stop, keep showing the real per-session target until it is delivered, failed, or retargeted.
         case .done:
-            nil
+            return nil
         }
     }
 
     static func pasteDestinationOutlineIsVisible(
         phase: Phase,
-        hasFrozenInput: Bool
+        hasFrozenInput: Bool,
+        exactInputDeliveryEnabled: Bool
     ) -> Bool {
-        guard hasFrozenInput else { return false }
+        // Compatibility mode never owns an exact destination. A stale wrapper must
+        // therefore produce neither an app icon nor the persistent ownership outline.
+        guard exactInputDeliveryEnabled, hasFrozenInput else { return false }
         switch phase {
         case .recording:
             return false
@@ -383,7 +409,9 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         Self.pasteDestinationOutlineIsVisible(
             phase: phase,
             hasFrozenInput:
-                pasteTarget.focusedInput?.hasForegroundInput == true
+                pasteTarget.focusedInput?.hasForegroundInput == true,
+            exactInputDeliveryEnabled: VoiceInkDeliveryFeatureFlags
+                .exactInputDeliveryEnabled()
         )
     }
 

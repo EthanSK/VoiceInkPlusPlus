@@ -90,7 +90,13 @@ final class FocusLockService: ObservableObject {
     /// the resolver a cheap capture-boundary check.
     fileprivate struct ApplicationFallbackScopeIdentity {
         let kind: ApplicationFallbackScopeKind
+        /// The installed app artifact. This remains the authority for audited
+        /// irreversible actions such as an unlabelled Send button.
         let surface: SemanticSendSurface
+        /// The product semantics that own a selected task list. ChatGPT.app can host
+        /// a Codex composer under a `Tasks` container, so selected-scope capture and
+        /// every later rescan must not blindly reuse the host's chat/history tokens.
+        let scopeSurface: SemanticSendSurface
         let element: AXUIElement
         let role: String?
         let subrole: String?
@@ -1589,10 +1595,19 @@ final class FocusLockService: ObservableObject {
         ) else {
             return nil
         }
-        let composerProduct = Self.openAIComposerProduct(
+        let openAIComposerProduct = Self.openAIComposerProduct(
             description: composerDescription,
             placeholder: composerPlaceholder
-        )?.rawValue ?? "nonOpenAI"
+        )
+        let composerProduct = openAIComposerProduct?.rawValue ?? "nonOpenAI"
+        let composerScopeSurfaces = Self.selectedTaskScopeSurfaces(
+            hostSurface: surface,
+            composerProduct: openAIComposerProduct
+        )
+        guard composerScopeSurfaces.count == 1,
+              let composerScopeSurface = composerScopeSurfaces.first else {
+            return nil
+        }
         logger.info("Exact main-composer semantics accepted hostSurface=\(surface.rawValue, privacy: .public) composerProduct=\(composerProduct, privacy: .public)")
 
         // A focused main composer already supplies the semantic input proof that a
@@ -1603,7 +1618,8 @@ final class FocusLockService: ObservableObject {
         // falls back to the selected-task scan or a foreground-only wrapper.
         if let windowIdentity = exactMainComposerWindowIdentity(
             for: window,
-            surface: surface
+            surface: surface,
+            scopeSurface: composerScopeSurface
         ) {
             return windowIdentity
         }
@@ -1613,6 +1629,7 @@ final class FocusLockService: ObservableObject {
             sourceElement: element,
             bundleIdentifier: app.bundleIdentifier,
             applicationBundleName: app.bundleURL?.lastPathComponent,
+            selectedTaskScopeSurfaces: composerScopeSurfaces,
             // One complete selected-task scope is the only safe way to let a retained
             // renderer composer survive later focus changes. Give this targeted start-
             // decision scan the same bounded budget as the no-caret path; when it wins,
@@ -1621,6 +1638,15 @@ final class FocusLockService: ObservableObject {
             scanDeadlineInterval: 0.060,
             scanNodeBudget: 900
         ), identity.scopes.count == 1,
+           identity.scopes.allSatisfy({
+               Self.recordingStartComposerScopeEvidenceMatches(
+                   scopeKind: $0.kind,
+                   hostSurface: surface,
+                   scopeSurface: $0.scopeSurface,
+                   description: composerDescription,
+                   placeholder: composerPlaceholder
+               )
+           }),
            let scope = identity.scopes.first,
            Self.recordingStartComposerContainmentAllowed(
             scopeKind: scope.kind,
@@ -1638,7 +1664,8 @@ final class FocusLockService: ObservableObject {
 
     private func exactMainComposerWindowIdentity(
         for window: AXUIElement,
-        surface: SemanticSendSurface
+        surface: SemanticSendSurface,
+        scopeSurface: SemanticSendSurface
     ) -> ApplicationFallbackIdentity? {
         let title = nonEmptyStringAttribute(kAXTitleAttribute, from: window)
         let document = nonEmptyStringAttribute(kAXDocumentAttribute, from: window)
@@ -1650,6 +1677,7 @@ final class FocusLockService: ObservableObject {
         ), let scope = applicationFallbackScopeIdentity(
             kind: .windowMainComposer,
             surface: surface,
+            scopeSurface: scopeSurface,
             element: window,
             in: window,
             containerDescriptor: title ?? document ?? identifier
@@ -1736,6 +1764,7 @@ final class FocusLockService: ObservableObject {
         sourceElement: AXUIElement?,
         bundleIdentifier: String?,
         applicationBundleName: String?,
+        selectedTaskScopeSurfaces explicitScopeSurfaces: [SemanticSendSurface]? = nil,
         scanDeadlineInterval: TimeInterval = 0.060,
         scanNodeBudget: Int = 900
     ) -> ApplicationFallbackIdentity? {
@@ -1752,10 +1781,17 @@ final class FocusLockService: ObservableObject {
         ) {
             scopes = [floatingComposer]
         } else {
+            let scopeSurfaces = explicitScopeSurfaces
+                ?? Self.selectedTaskScopeSurfaces(
+                    hostSurface: surface,
+                    composerProduct: nil
+                )
+            guard !scopeSurfaces.isEmpty else { return nil }
             let scan = selectedTaskScopeIdentities(
                 in: window,
                 sourceElement: sourceElement,
-                surface: surface,
+                hostSurface: surface,
+                scopeSurfaces: scopeSurfaces,
                 deadline: captureStarted + scanDeadlineInterval,
                 nodeBudget: scanNodeBudget
             )
@@ -1769,7 +1805,7 @@ final class FocusLockService: ObservableObject {
             scopes = scan.scopes
         }
         guard scopes.count == 1 else { return nil }
-        logger.info("Captured recording-start application scope bundle=\(bundleIdentifier ?? "nil", privacy: .public) kind=\(String(describing: scopes[0].kind), privacy: .public) scopeCount=\(scopes.count, privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - captureStarted) * 1_000), privacy: .public)")
+        logger.info("Captured recording-start application scope bundle=\(bundleIdentifier ?? "nil", privacy: .public) hostSurface=\(scopes[0].surface.rawValue, privacy: .public) scopeSurface=\(scopes[0].scopeSurface.rawValue, privacy: .public) kind=\(String(describing: scopes[0].kind), privacy: .public) scopeCount=\(scopes.count, privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - captureStarted) * 1_000), privacy: .public)")
         return ApplicationFallbackIdentity(
             capturedAtUptime: captureStarted,
             windowTitle: nonEmptyStringAttribute(kAXTitleAttribute, from: window),
@@ -1871,7 +1907,8 @@ final class FocusLockService: ObservableObject {
         let scan = selectedTaskScopeIdentities(
             in: window,
             sourceElement: nil,
-            surface: captured.surface,
+            hostSurface: captured.surface,
+            scopeSurfaces: [captured.scopeSurface],
             deadline: started + 0.060,
             nodeBudget: 900
         )
@@ -1913,6 +1950,10 @@ final class FocusLockService: ObservableObject {
         for window: AXUIElement,
         surface: SemanticSendSurface
     ) -> ApplicationFallbackScopeIdentity? {
+        // Construction repeats the product boundary instead of relying only on the
+        // evidence helper below. A future widening of that helper must never allow a
+        // Codex task (or another host) to inherit ChatGPT's Option-Space wrapper.
+        guard surface == .openAIChatGPT else { return nil }
         let subrole = nonEmptyStringAttribute(kAXSubroleAttribute, from: window)
         let isModal = boolAttribute(kAXModalAttribute, from: window) == true
         guard Self.recordingStartFloatingPanelEvidenceMatches(
@@ -1923,6 +1964,10 @@ final class FocusLockService: ObservableObject {
         return applicationFallbackScopeIdentity(
             kind: .floatingQuickComposer,
             surface: surface,
+            // Option-Space is a ChatGPT product surface even though ChatGPT.app can
+            // also host Codex tasks. Pin it explicitly so a later wrapper replacement
+            // cannot borrow this window scope for an embedded Codex composer.
+            scopeSurface: .openAIChatGPT,
             element: window,
             in: window,
             containerDescriptor: applicationFallbackScopeLabel(for: window)
@@ -1956,7 +2001,8 @@ final class FocusLockService: ObservableObject {
     private func selectedTaskScopeIdentities(
         in window: AXUIElement,
         sourceElement: AXUIElement?,
-        surface: SemanticSendSurface,
+        hostSurface: SemanticSendSurface,
+        scopeSurfaces: [SemanticSendSurface],
         deadline: TimeInterval,
         nodeBudget: Int
     ) -> SelectedTaskScopeScanResult {
@@ -1971,7 +2017,9 @@ final class FocusLockService: ObservableObject {
         var identifierCounts: [String: Int] = [:]
         var domIdentifierCounts: [String: Int] = [:]
         var truncated = false
-        let candidateRoles = Self.selectedTaskRoles(for: surface)
+        let candidateRoles = Set(
+            scopeSurfaces.flatMap { Self.selectedTaskRoles(for: $0) }
+        )
         while cursor < queue.count,
               visited < nodeBudget,
               ProcessInfo.processInfo.systemUptime < deadline {
@@ -2009,35 +2057,48 @@ final class FocusLockService: ObservableObject {
                         for: element,
                         stoppingAt: window
                     )
-                    if Self.selectedTaskScopeEvidenceMatches(
-                        surface: surface,
-                        role: role,
-                        selected: selected,
-                        identifier: identifier,
-                        domIdentifier: domIdentifier,
-                        label: label,
-                        containerDescriptor: containerDescriptor
-                    ), owningWindow(
+                    let matchingScopeSurfaces = scopeSurfaces.filter {
+                        Self.selectedTaskScopeEvidenceMatches(
+                            surface: $0,
+                            role: role,
+                            selected: selected,
+                            identifier: identifier,
+                            domIdentifier: domIdentifier,
+                            label: label,
+                            containerDescriptor: containerDescriptor
+                        )
+                    }
+                    // Avoid a cross-process ancestor traversal unless this selected
+                    // control already has product-specific task-scope evidence.
+                    if !matchingScopeSurfaces.isEmpty,
+                       owningWindow(
                         for: element,
                         allowFocusedApplicationFallback: false
-                    ).map({ CFEqual($0, window) }) == true,
-                       !matches.contains(where: { CFEqual($0.element, element) }),
-                       let identity = applicationFallbackScopeIdentity(
-                        kind: .selectedTask,
-                        surface: surface,
-                        element: element,
-                        in: window,
-                        containerDescriptor: containerDescriptor
-                       ) {
-                        matches.append(identity)
-                        // Two independently selected task-like controls are already
-                        // ambiguous; no further traversal can make one exact.
-                        if matches.count > 1 {
-                            return SelectedTaskScopeScanResult(
-                                scopes: matches,
-                                completed: true,
-                                visitedCount: visited
-                            )
+                    ).map({ CFEqual($0, window) }) == true {
+                        for scopeSurface in matchingScopeSurfaces
+                        where !matches.contains(where: {
+                            CFEqual($0.element, element)
+                                && $0.scopeSurface == scopeSurface
+                        }) {
+                            if let identity = applicationFallbackScopeIdentity(
+                                kind: .selectedTask,
+                                surface: hostSurface,
+                                scopeSurface: scopeSurface,
+                                element: element,
+                                in: window,
+                                containerDescriptor: containerDescriptor
+                            ) {
+                                matches.append(identity)
+                            }
+                            // Two selected controls—or one generic container that
+                            // ambiguously matches two products—cannot identify one task.
+                            if matches.count > 1 {
+                                return SelectedTaskScopeScanResult(
+                                    scopes: matches,
+                                    completed: true,
+                                    visitedCount: visited
+                                )
+                            }
                         }
                     }
                 }
@@ -2218,6 +2279,7 @@ final class FocusLockService: ObservableObject {
     private func applicationFallbackScopeIdentity(
         kind: ApplicationFallbackScopeKind,
         surface: SemanticSendSurface,
+        scopeSurface: SemanticSendSurface? = nil,
         element: AXUIElement,
         in window: AXUIElement,
         containerDescriptor: String?
@@ -2227,6 +2289,7 @@ final class FocusLockService: ObservableObject {
         return ApplicationFallbackScopeIdentity(
             kind: kind,
             surface: surface,
+            scopeSurface: scopeSurface ?? surface,
             element: element,
             role: stringAttribute(kAXRoleAttribute, from: element),
             subrole: stringAttribute(kAXSubroleAttribute, from: element),
@@ -2292,6 +2355,7 @@ final class FocusLockService: ObservableObject {
         switch scope.kind {
         case .floatingQuickComposer:
             guard CFEqual(scope.element, window),
+                  scope.scopeSurface == .openAIChatGPT,
                   Self.recordingStartFloatingPanelEvidenceMatches(
                     surface: scope.surface,
                     subrole: nonEmptyStringAttribute(
@@ -2324,7 +2388,7 @@ final class FocusLockService: ObservableObject {
                 stoppingAt: window
             )
             guard Self.selectedTaskScopeEvidenceMatches(
-                    surface: scope.surface,
+                    surface: scope.scopeSurface,
                     role: stringAttribute(kAXRoleAttribute, from: scope.element),
                     selected: boolAttribute(kAXSelectedAttribute, from: scope.element),
                     identifier: nonEmptyStringAttribute(
@@ -3184,6 +3248,71 @@ final class FocusLockService: ObservableObject {
         return nil
     }
 
+    /// Map a composer to the selected-scope vocabulary it actually owns. The host and
+    /// product deliberately diverge for Codex tasks embedded in ChatGPT.app: the host
+    /// still gates audited Send actions, while the selected control must live under a
+    /// Codex `task`/`tasks`/`session` scope. With no composer evidence (the no-caret
+    /// recording-start path), scan both product vocabularies and require exactly one
+    /// unique match before any later promotion.
+    static func selectedTaskScopeSurfaces(
+        hostSurface: SemanticSendSurface,
+        composerProduct: OpenAIComposerProduct?
+    ) -> [SemanticSendSurface] {
+        switch (hostSurface, composerProduct) {
+        case (.openAIChatGPT, .some(.chatGPT)):
+            return [.openAIChatGPT]
+        case (.openAIChatGPT, .some(.codex)):
+            return [.openAICodex]
+        case (.openAIChatGPT, .none):
+            return [.openAIChatGPT, .openAICodex]
+        case (.openAICodex, .some(.codex)), (.openAICodex, .none):
+            return [.openAICodex]
+        case (.openAICodex, .some(.chatGPT)):
+            return []
+        case (.claudeDesktop, .none):
+            return [.claudeDesktop]
+        case (.claudeDesktop, .some(_)), (.telegramForegroundOnly, _):
+            return []
+        }
+    }
+
+    /// Promotion must compose all three facts atomically: installed host, captured
+    /// selected-scope vocabulary, and the candidate composer product. This prevents a
+    /// ChatGPT textarea from borrowing a Codex `Tasks` identity (or vice versa) merely
+    /// because both products happen to share one Electron host and bundle identifier.
+    static func recordingStartComposerScopeEvidenceMatches(
+        scopeKind: ApplicationFallbackScopeKind,
+        hostSurface: SemanticSendSurface,
+        scopeSurface: SemanticSendSurface,
+        description: String?,
+        placeholder: String?
+    ) -> Bool {
+        guard recordingStartComposerEvidenceMatches(
+            surface: hostSurface,
+            description: description,
+            placeholder: placeholder
+        ) else {
+            return false
+        }
+        let composerProduct = openAIComposerProduct(
+            description: description,
+            placeholder: placeholder
+        )
+        switch scopeKind {
+        case .floatingQuickComposer:
+            // ChatGPT's Option-Space panel is the sole accepted floating scope. It
+            // cannot authorize an embedded Codex composer even inside ChatGPT.app.
+            return hostSurface == .openAIChatGPT
+                && scopeSurface == .openAIChatGPT
+                && composerProduct == .chatGPT
+        case .selectedTask, .windowMainComposer:
+            return selectedTaskScopeSurfaces(
+                hostSurface: hostSurface,
+                composerProduct: composerProduct
+            ) == [scopeSurface]
+        }
+    }
+
     /// Main-composer capture must not depend on whether the adjacent action currently
     /// says Send or Stop: Ethan often starts dictating while an agent is still running.
     /// These are known per-surface composer semantics, not the old permissive rule that
@@ -3629,8 +3758,10 @@ final class FocusLockService: ObservableObject {
                                 stoppingAt: window
                             )
                       ),
-                      Self.recordingStartComposerEvidenceMatches(
-                        surface: surface,
+                      Self.recordingStartComposerScopeEvidenceMatches(
+                        scopeKind: applicationScope.kind,
+                        hostSurface: surface,
+                        scopeSurface: applicationScope.scopeSurface,
                         description: self.nonEmptyStringAttribute(
                             kAXDescriptionAttribute,
                             from: element
@@ -3655,6 +3786,17 @@ final class FocusLockService: ObservableObject {
             logger.notice("Recording-start main-composer promotion was not semantically unique or its bounded scan did not complete pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) composerCandidates=\(candidates.count, privacy: .public) nodesVisited=\(traversal.visitedCount, privacy: .public) traversal=\(String(describing: traversal.completion), privacy: .public) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), privacy: .public)")
             return nil
         }
+        let promotedComposerProduct = Self.openAIComposerProduct(
+            description: nonEmptyStringAttribute(
+                kAXDescriptionAttribute,
+                from: element
+            ),
+            placeholder: nonEmptyStringAttribute(
+                kAXPlaceholderValueAttribute,
+                from: element
+            )
+        )?.rawValue ?? "nonOpenAI"
+        logger.info("Recording-start composer promotion semantics accepted hostSurface=\(surface.rawValue, privacy: .public) scopeSurface=\(applicationScope.scopeSurface.rawValue, privacy: .public) composerProduct=\(promotedComposerProduct, privacy: .public)")
 
         // A feedback/modal textarea can have plausible placeholder text, so ambiguity
         // in the app-specific action topology still fails closed. Current OpenAI builds
@@ -5172,7 +5314,24 @@ final class FocusLockService: ObservableObject {
                         candidate,
                         stoppingAt: window
                     )
-              ) else {
+              ), target.applicationFallbackIdentity?.scopes.allSatisfy({ scope in
+                  // Every scope kind owns product identity. Restricting this check to
+                  // selected-task rows let a stable task-document window adopt a
+                  // ChatGPT wrapper after capturing Codex (or vice versa).
+                  Self.recordingStartComposerScopeEvidenceMatches(
+                      scopeKind: scope.kind,
+                      hostSurface: surface,
+                      scopeSurface: scope.scopeSurface,
+                      description: nonEmptyStringAttribute(
+                          kAXDescriptionAttribute,
+                          from: candidate
+                      ),
+                      placeholder: nonEmptyStringAttribute(
+                          kAXPlaceholderValueAttribute,
+                          from: candidate
+                      )
+                  )
+              }) != false else {
             return nil
         }
         return candidate
