@@ -21,12 +21,9 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let expandedCornerRadius: CGFloat = 14
 
     private var shouldShowPasteDestinationIndicator: Bool {
-        switch stateProvider.recordingState {
-        case .starting, .recording, .transcribing, .enhancing:
-            return true
-        case .idle, .busy:
-            return false
-        }
+        VoiceInkDeliveryFeatureFlags.shouldShowLockedDestinationIndicator(
+            recordingState: stateProvider.recordingState
+        )
     }
 
     private var capsuleWidth: CGFloat {

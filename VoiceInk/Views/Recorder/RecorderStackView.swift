@@ -263,12 +263,16 @@ struct TranscribingChip: View {
                 .foregroundColor(.white.opacity(0.82))
                 .lineLimit(1)
 
-            PasteDestinationIndicator(
-                target: session.pasteDestinationIndicatorTarget,
-                context: .pendingPaste,
-                actionPulseID: session.lockedDestinationIconActionPulseID,
-                isLocked: session.pasteDestinationIsLocked
-            ) // Moving behind a newer recording does not release the target: its compact chip must preserve both the session-owned pulse and locked outline until delivery resolves.
+            if VoiceInkDeliveryFeatureFlags.shouldShowLockedDestinationIndicator(
+                recordingState: session.liveRecordingState
+            ) {
+                PasteDestinationIndicator(
+                    target: session.pasteDestinationIndicatorTarget,
+                    context: .pendingPaste,
+                    actionPulseID: session.lockedDestinationIconActionPulseID,
+                    isLocked: session.pasteDestinationIsLocked
+                ) // Exact mode keeps ownership visible behind a newer recording; compatibility mode has no saved target and must not fabricate a warning slot.
+            }
 
             // Per-card cancel — discards THIS session only.
             RecorderCancelButton(action: onCancel)

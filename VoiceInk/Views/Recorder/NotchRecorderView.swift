@@ -91,12 +91,9 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     private var shouldShowPasteDestinationIndicator: Bool {
-        switch stateProvider.recordingState {
-        case .starting, .recording, .transcribing, .enhancing:
-            return true
-        case .idle, .busy:
-            return false
-        }
+        VoiceInkDeliveryFeatureFlags.shouldShowLockedDestinationIndicator(
+            recordingState: stateProvider.recordingState
+        )
     }
 
     // Cancel ("X") visibility — mirrors the mini panel: reachable while RECORDING

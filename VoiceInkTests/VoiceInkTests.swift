@@ -23,6 +23,11 @@ struct VoiceInkTests {
         #expect(TranscriptionDelivery.pasteDeliveryStrategy(
             exactInputDeliveryEnabled: false
         ) == .legacyCurrentKeyboardInput)
+        #expect(!VoiceInkDeliveryFeatureFlags
+            .shouldShowLockedDestinationIndicator(
+                recordingState: .recording,
+                isExactInputDeliveryEnabled: false
+            ))
 
         defaults.set(
             true,
@@ -33,6 +38,16 @@ struct VoiceInkTests {
         #expect(TranscriptionDelivery.pasteDeliveryStrategy(
             exactInputDeliveryEnabled: true
         ) == .exactSavedInput)
+        #expect(VoiceInkDeliveryFeatureFlags
+            .shouldShowLockedDestinationIndicator(
+                recordingState: .recording,
+                isExactInputDeliveryEnabled: true
+            ))
+        #expect(!VoiceInkDeliveryFeatureFlags
+            .shouldShowLockedDestinationIndicator(
+                recordingState: .idle,
+                isExactInputDeliveryEnabled: true
+            ))
 
         defaults.set(
             false,
@@ -2176,6 +2191,13 @@ struct VoiceInkTests {
             buildNumber: "5489",
             chromiumBaseVersion: "150.0.7871.124"
         ))
+        #expect(FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
+            surface: .openAIChatGPT,
+            applicationBundleName: "ChatGPT.app",
+            marketingVersion: "26.715.31925",
+            buildNumber: "5551",
+            chromiumBaseVersion: "150.0.7871.124"
+        ))
         #expect(!FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
             surface: .openAICodex,
             applicationBundleName: "Codex.app",
@@ -2189,6 +2211,20 @@ struct VoiceInkTests {
             marketingVersion: "26.707.31428",
             buildNumber: "5059",
             chromiumBaseVersion: "150.0.7871.101"
+        ))
+        #expect(FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
+            surface: .openAICodex,
+            applicationBundleName: "Codex.app",
+            marketingVersion: "26.707.72221",
+            buildNumber: "5307",
+            chromiumBaseVersion: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
+            surface: .openAICodex,
+            applicationBundleName: "Codex.app",
+            marketingVersion: "26.707.72221",
+            buildNumber: "5308",
+            chromiumBaseVersion: "150.0.7871.115"
         ))
         #expect(!FocusLockService.versionedUnlabelledOpenAISendIsAllowed(
             surface: .openAICodex,

@@ -3080,14 +3080,24 @@ final class FocusLockService: ObservableObject {
         switch surface {
         case .openAIChatGPT:
             return applicationBundleName == openAIChatGPTApplicationName
-                && marketingVersion == "26.715.21425"
-                && buildNumber == "5488"
-                && chromiumBaseVersion == "150.0.7871.124"
+                && [
+                    ("26.715.21425", "5488", "150.0.7871.124"),
+                    ("26.715.31925", "5551", "150.0.7871.124")
+                ].contains {
+                    $0.0 == marketingVersion
+                        && $0.1 == buildNumber
+                        && $0.2 == chromiumBaseVersion
+                }
         case .openAICodex:
             return applicationBundleName == openAICodexApplicationName
-                && marketingVersion == "26.707.31428"
-                && buildNumber == "5059"
-                && chromiumBaseVersion == "150.0.7871.101"
+                && [
+                    ("26.707.31428", "5059", "150.0.7871.101"),
+                    ("26.707.72221", "5307", "150.0.7871.115")
+                ].contains {
+                    $0.0 == marketingVersion
+                        && $0.1 == buildNumber
+                        && $0.2 == chromiumBaseVersion
+                }
         case .claudeDesktop, .telegramForegroundOnly:
             return false
         }
