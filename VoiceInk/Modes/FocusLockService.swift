@@ -1586,6 +1586,10 @@ final class FocusLockService: ObservableObject {
             kAXPlaceholderValueAttribute,
             from: element
         )
+        let openAIComposerProduct = Self.openAIComposerProduct(
+            description: composerDescription,
+            placeholder: composerPlaceholder
+        )
         guard Self.exactMainComposerCaptureEvidenceMatches(
             surface: surface,
             description: composerDescription,
@@ -1593,12 +1597,11 @@ final class FocusLockService: ObservableObject {
             windowIsModal: windowIsModal,
             hasDisallowedSecondaryAncestor: hasDisallowedSecondaryAncestor
         ) else {
+            // Keep this telemetry value-only and bounded: it must explain a real HUD
+            // warning without putting Ethan's draft or task title into unified logs.
+            logger.notice("Exact main-composer semantics rejected hostSurface=\(surface.rawValue, privacy: .public) composerProduct=\(openAIComposerProduct?.rawValue ?? "unrecognized", privacy: .public) descriptionPresent=\(composerDescription != nil, privacy: .public) placeholderPresent=\(composerPlaceholder != nil, privacy: .public) windowModal=\(windowIsModal, privacy: .public) secondaryAncestor=\(hasDisallowedSecondaryAncestor, privacy: .public)")
             return nil
         }
-        let openAIComposerProduct = Self.openAIComposerProduct(
-            description: composerDescription,
-            placeholder: composerPlaceholder
-        )
         let composerProduct = openAIComposerProduct?.rawValue ?? "nonOpenAI"
         let composerScopeSurfaces = Self.selectedTaskScopeSurfaces(
             hostSurface: surface,
@@ -3210,39 +3213,58 @@ final class FocusLockService: ObservableObject {
 
     /// Resolve only stable, app-owned OpenAI composer descriptions. ChatGPT.app is a
     /// host for both product surfaces, so its Codex task composer must be recognized
-    /// without weakening the host/version tuple used later for semantic Send. Search,
-    /// feedback, rename, and arbitrary textareas do not match this product evidence.
+    /// without weakening the host/version tuple used later for semantic Send. The live
+    /// app can expose different product-owned strings for AXDescription and
+    /// AXPlaceholderValue (for example `Do anything` plus `Ask for follow-up changes`)
+    /// as a task changes phase. Require both attributes to classify as the same product
+    /// instead of requiring byte-for-byte equality; a ChatGPT/Codex disagreement and
+    /// search, feedback, rename, or arbitrary textareas still fail closed.
     static func openAIComposerProduct(
         description: String?,
         placeholder: String?
     ) -> OpenAIComposerProduct? {
-        guard let normalizedDescription = description?
+        guard let descriptionProduct = openAIComposerProduct(
+            evidenceValue: description
+        ) else {
+            return nil
+        }
+        if let normalizedPlaceholder = placeholder?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !normalizedPlaceholder.isEmpty {
+            guard openAIComposerProduct(
+                evidenceValue: normalizedPlaceholder
+            ) == descriptionProduct else {
+                return nil
+            }
+        }
+        return descriptionProduct
+    }
+
+    private static func openAIComposerProduct(
+        evidenceValue: String?
+    ) -> OpenAIComposerProduct? {
+        guard let normalized = evidenceValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased(),
-              !normalizedDescription.isEmpty else {
+              !normalized.isEmpty else {
             return nil
         }
-        let normalizedPlaceholder = placeholder?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard normalizedPlaceholder == nil
-                || normalizedDescription == normalizedPlaceholder else {
-            return nil
-        }
-
-        if normalizedDescription == "message chatgpt"
-            || normalizedDescription == "ask chatgpt"
-            || normalizedDescription.hasPrefix("message chatgpt ")
-            || normalizedDescription.hasPrefix("ask chatgpt anything") {
+        if normalized == "message chatgpt"
+            || normalized == "ask chatgpt"
+            || normalized.hasPrefix("message chatgpt ")
+            || normalized.hasPrefix("ask chatgpt anything") {
             return .chatGPT
         }
         if [
             "ask for follow-up changes",
             "do anything",
             "ask codex",
-            "message codex"
-        ].contains(normalizedDescription)
-            || normalizedDescription.hasPrefix("ask codex to do anything") {
+            "message codex",
+            "follow-up in a new cloud task"
+        ].contains(normalized)
+            || normalized.hasPrefix("ask for follow-up changes ")
+            || normalized.hasPrefix("ask codex anything")
+            || normalized.hasPrefix("ask codex to do anything") {
             return .codex
         }
         return nil

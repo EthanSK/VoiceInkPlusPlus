@@ -1612,6 +1612,30 @@ struct VoiceInkTests {
             description: "Ask Codex to do anything",
             placeholder: "Ask Codex to do anything"
         ) == .codex)
+        // ChatGPT 26.715.31925 can expose one product-owned value as the
+        // AXDescription and a different phase-specific value as AXPlaceholderValue.
+        // Exact recording-start capture must accept that real pair without allowing a
+        // ChatGPT composer to borrow a Codex task scope (or vice versa).
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Do anything",
+            placeholder: "Ask for follow-up changes"
+        ) == .codex)
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Ask for follow-up changes",
+            placeholder: "Ask Codex to do anything in the cloud"
+        ) == .codex)
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Do anything",
+            placeholder: "Ask Codex anything. @ to use plugins or mention files"
+        ) == .codex)
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Message ChatGPT",
+            placeholder: "Ask ChatGPT anything locally"
+        ) == .chatGPT)
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Message ChatGPT",
+            placeholder: "Ask for follow-up changes"
+        ) == nil)
         #expect(FocusLockService.openAIComposerProduct(
             description: "Ask ChatGPT anything locally",
             placeholder: "Ask ChatGPT anything locally"
@@ -1664,6 +1688,13 @@ struct VoiceInkTests {
             surface: .openAIChatGPT,
             description: "Ask Codex to do anything",
             placeholder: "Ask Codex to do anything",
+            windowIsModal: false,
+            hasDisallowedSecondaryAncestor: false
+        ))
+        #expect(FocusLockService.exactMainComposerCaptureEvidenceMatches(
+            surface: .openAIChatGPT,
+            description: "Do anything",
+            placeholder: "Ask for follow-up changes",
             windowIsModal: false,
             hasDisallowedSecondaryAncestor: false
         ))
