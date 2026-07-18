@@ -34,6 +34,16 @@ Each entry looks like:
 **Guard:** Mac Mini direct xctest ran all 56 named tests including compatibilityRecorderNeverAdvertisesStaleExactOwnership and Codex scope regressions; canonical Xcode test compiled then stalled in TestManager; disposable live Codex trace remains the release acceptance gate
 ---
 
+---
+**Date:** 2026-07-18T18:17:02Z
+**Trigger:** Ethan asked to pull the completed Mac Mini VoiceInk++ work back to the MacBook and boot that build locally.
+**Symptom:** A successful recursive `scp` of the signed v2.0.220 app created the bundle directories and nested payloads but silently omitted top-level `Contents/Info.plist` and `PkgInfo`, leaving an unrecognizable bundle.
+**Root cause:** Raw recursive SCP did not preserve the complete macOS app-bundle layout on this transfer path; command success therefore did not prove a usable or signed candidate.
+**Fix:** Re-transferred the exact Mini artifact through a `tar` archive stream, rejected the incomplete copy before installation, and required local version/build, deep/strict signature, CDHash, and Automation-entitlement verification before the five-second warned replacement. Signed v2.0.220 was installed with the exact-delivery preference still off; `/Applications/VoiceInk.app` remained unchanged.
+**Commit:** 13fb3a9 (implementation; learning follow-up 769fadb)
+**Guard:** Never install a transferred `.app` based on copy exit status alone. Require `Info.plist`, expected version/build, `codesign --verify --deep --strict`, the expected signing identity/CDHash, and `com.apple.security.automation.apple-events=true` both before and after installation.
+---
+
 
 ---
 **Date:** 2026-07-18T11:01:33Z
@@ -43,6 +53,26 @@ Each entry looks like:
 **Fix:** Rebuilt the candidate as a normal branch from d3819c12, added navigation-order fallback plus an exact audited Codex idle-Send contract behind a default-off legacy flag, and kept the internal test seam available to Release test builds.
 **Commit:** 13fb3a9
 **Guard:** Require the canonical Release build attempt plus all 55 named tests through the bounded Debug xctest fallback, keep exact delivery off by default, and do not install or ship without a disposable live Codex trace.
+---
+
+---
+**Date:** 2026-07-18T00:20:37Z
+**Trigger:** Ethan asked whether VoiceInk++ should replace his tuned Deepgram Nova-3 setup with OpenAI's new realtime speech/translation models, and whether those models are faster or better than AssemblyAI or Deepgram.
+**Symptom:** The vendor names hide incompatible jobs and transports: `gpt-realtime-translate` is live speech-to-speech interpretation rather than ordinary dictation, while `gpt-realtime-whisper` requires a realtime PCM session and cannot be selected in VoiceInk++'s completed-file OpenAI-compatible request by changing only a model string. The repository also still lists AssemblyAI `universal-3-pro`, although AssemblyAI's current recommended model is `universal-3-5-pro`.
+**Root cause:** VoiceInk++'s custom-provider route uploads one completed multipart recording and carries Vocabulary through the standard `prompt` field; OpenAI's GA realtime Whisper endpoint uses a dedicated streaming protocol and does not support prompt steering. Deepgram Nova-3 and AssemblyAI Universal-3.5 Pro expose native keyterm prompting, which is material to Ethan's proper-noun-heavy dictation. Separately, the built-in Deepgram batch wrapper currently accepts but does not forward `customVocabulary`; Ethan's custom local proxy is the path that extracts VoiceInk++'s marked block into repeated Nova-3 `keyterm` parameters.
+**Fix:** No provider or runtime configuration was changed. Keep the tuned Deepgram proxy as the default until a same-audio evaluation proves a replacement; use `gpt-4o-transcribe` as the drop-in OpenAI quality comparator because it supports completed-file transcription plus prompt context. Treat `gpt-realtime-whisper`, `gpt-realtime-translate`, and AssemblyAI Universal-3.5 Pro as separate integration/evaluation candidates rather than silent model-name substitutions.
+**Commit:** none (read-only provider/model investigation in the intentionally dirty `main` checkout)
+**Guard:** Compare identical representative WAVs and identical Vocabulary across providers. Record stop-to-final p50/p95 latency, proper-noun/keyterm hit rate, omissions or hallucinations, punctuation/edit burden, and cost; do not claim a universal winner from vendor benchmarks. Before testing AssemblyAI, update and verify the stale model registry deliberately. Before testing OpenAI realtime, implement its dedicated stream and account for the lack of prompt steering. Never infer built-in Deepgram batch vocabulary support from the unused method parameter.
+---
+
+---
+**Date:** 2026-07-17T23:04:58Z
+**Trigger:** Ethan asked for an immediate base-VoiceInk fallback because the exact saved-input engine had regressed Codex paste/Return and recorder responsiveness.
+**Symptom:** The first fallback draft selected current-cursor delivery but still ran exact Accessibility capture at recording start and primary stop, so it could retain the same HUD/start-stop latency and destination-owned Mode work it was meant to escape.
+**Root cause:** The engine switch was initially applied only at Next handling, recorder target UI, and final paste. `VoiceInkEngine.toggleRecord` still synchronously captured and resolved saved inputs before the microphone session and at normal stop, while pipeline post-processing still read the saved target Mode.
+**Fix:** v2.0.219 made `VIPPExactInputDeliveryEnabled=false` a complete compatibility boundary: no saved-input capture at start/stop, Next Track passed through, current Mode owned post-processing/output, final paste plus optional Return followed the current keyboard input, and locked-target UI stayed hidden. The exact three-route engine remained compiled behind the Settings toggle for isolated repair. Ethan later live-confirmed that fallback in Codex; v2.0.223 supersedes only the hidden-slot UI contract by showing an honest warning while compatibility mode owns no exact target.
+**Commit:** pending (installed v2.0.219 from the intentionally dirty `main` checkout at HEAD `d3819c1`; do not infer that HEAD alone reproduces this binary)
+**Guard:** The Mac Mini direct Swift Testing run named all 54 tests and passed, including `exactInputDeliveryFlagDefaultsToLegacyAndRemainsSwitchable` and `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt`; the canonical test action compiled but its UI runner stalled and is preserved in `/private/tmp/voiceink-v219-test4.xcresult`. Installed build 219 verified deep/strict, stable signing authority, Automation=true, running PID, flag=0, and an unchanged `/Applications/VoiceInk.app`. The historical hidden-slot choice is not the current contract; v2.0.223's active two-slot regression test is authoritative.
 ---
 
 
