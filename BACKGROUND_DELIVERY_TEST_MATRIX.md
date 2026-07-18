@@ -3,14 +3,30 @@
 This is the permanent compatibility matrix for Ethan's main destinations. Read it before changing
 exact-input capture, background insertion, auto-send, focus restoration, or verification.
 
-**Current runtime state (2026-07-19):** signed v2.0.224 is installed with
-`VIPPExactInputDeliveryEnabled=true`. It repairs the live ChatGPT-hosted Codex capture rejection by
-allowing the description and placeholder to differ only when each independently proves the same
-product; ChatGPT/Codex cross-product pairs and arbitrary editors still fail closed. The Mac Mini ran
-all 56 named unit tests, but the disposable live Codex capture/background-delivery trace remains the
-acceptance gate and must not be inferred from installation or tests. v2.0.223 is preserved as the
-immediate operational rollback; v2.0.207/v2.0.208 remain rejected evidence and v2.0.206 remains the
-accepted exact-location rollback floor until v2.0.224 passes that physical trace.
+**Current runtime state (2026-07-19):** the byte-preserved original signed v2.0.206 is installed as
+the session-proven exact-location background AX rollback floor (CDHash
+`a88d4bbe7ab463ba5a1f62509757b349d98d7f97`, source anchor `96e494e`). This build predates
+`VIPPExactInputDeliveryEnabled`, so the persisted `false` value does not select compatibility mode;
+v2.0.206 still uses its saved-input Accessibility engine. On 2026-07-14 Ethan confirmed that its
+background Codex paste and Return worked despite a false verification warning, then distinguished a
+real Option-Space failure where paste reached the right floating composer but Return did not submit.
+On 2026-07-15 he explicitly requested that v2.0.206 be preserved because paste reached the right
+saved location. This is evidence for exact Codex destination insertion, not universal app or Return
+compatibility.
+
+The earlier v2.0.203 artifact (CDHash `715d9686a428e9c7d9a9064236f21e942901bc2b`, commit
+`1eabb1b`) is the first build Ethan repeatedly celebrated for all three destination routes, including
+second chance. It activated/restored the target app for ordinary foreground paste and Return before
+restoring the later workspace, so it is not the matching rollback for a request specifically about
+non-frontmost/background Codex delivery. v2.0.216 had one later partial Enter-with-false-warning
+observation, but session chronology does not make it the requested historical floor.
+
+v2.0.224 is rejected live evidence, despite all 56 named Mac Mini tests passing: it captured the real
+ChatGPT-hosted Codex `AXTextArea`, then rejected it because the bounded context fingerprint was still
+incomplete, leaving the locked slot as a warning and failing exact delivery. The description-versus-
+placeholder relaxation therefore did not repair the physical surface. Its signed bundle is preserved
+as a rollback artifact, and native source was not destructively rewound. v2.0.207/v2.0.208 remain
+rejected evidence.
 
 ## Safety invariant
 

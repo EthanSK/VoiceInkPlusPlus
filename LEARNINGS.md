@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-18T23:50:09Z
+**Trigger:** Ethan rejected v2.0.224 after repeated Codex warning-icon and no-paste failures, corrected an unsupported guess that the remembered AX baseline was v2.0.216, and asked for the version to be reconstructed from his session conversation.
+**Symptom:** The signed v2.0.224 app could read the real ChatGPT-hosted Codex `AXTextArea`, but the locked icon remained a warning and exact delivery failed or copied the transcript to the clipboard.
+**Root cause:** The v2.0.224 description/placeholder relaxation still left the real composer with an incomplete bounded context fingerprint. Separately, choosing a rollback by spoken version proximity was invalid: build 203 had been reused for several binaries, and later partial successes belonged to materially different foreground, background, and compatibility engines. The decisive evidence was the timestamped user message immediately after each verified install, not the nearest-sounding version.
+**Fix:** Session reconstruction separated two proven artifacts. Build 203/CDHash `715d9686a428e9c7d9a9064236f21e942901bc2b` at commit `1eabb1b` was the repeatedly celebrated three-route foreground restore/paste/Return build. Build 206/CDHash `a88d4bbe7ab463ba5a1f62509757b349d98d7f97` at source anchor `96e494e` was the first matching non-frontmost background AX build: Ethan confirmed background Codex paste and Return despite a false warning, identified Option-Space as paste-only, and later explicitly preserved v2.0.206 because it pasted into the right saved location. The byte-preserved v2.0.206 bundle was therefore restored; v2.0.216, v2.0.224, and current source were preserved.
+**Commit:** none (evidence-backed operational rollback to preserved build 206; rejected v2.0.224 source is `3639f60`, and current source was not rewound)
+**Guard:** Historical rollback selection must correlate the user's acceptance/failure timestamp with the immediately preceding install event and the artifact's build, CDHash, checksum, and delivery architecture. The installed app reports v2.0.206 with the expected CDHash and deep/strict-valid local signature; `/Applications/VoiceInk.app` remained byte-identical. Treat v2.0.206 as an exact-location Codex debugging floor, not universal compatibility proof.
+---
+
+---
 **Date:** 2026-07-18T21:02:15Z
 **Trigger:** Ethan corrected that the warning icon must remain until real app detection succeeds and requested more left/right recording-bar padding
 **Symptom:** v2.0.222 showed only the current-app icon in compatibility mode, and shared ChatGPT/Codex host identity could leave exact Codex capture at a warning

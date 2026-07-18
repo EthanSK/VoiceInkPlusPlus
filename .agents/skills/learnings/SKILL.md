@@ -22,7 +22,8 @@ Improve this skill as part of using it. Whenever use, debugging, feature work, d
    ```
 
 4. Inspect named accepted commits and current tests when a learning points to them. Preserve verified contracts instead of recreating remembered behavior.
-5. State any relevant prior constraint before making a risky change.
+5. For a remembered historical rollback, never choose by version proximity or a version label alone. Correlate Ethan's timestamped acceptance/failure message with the immediately preceding verified install/restart, then require the artifact's build, CDHash or executable checksum, and delivery architecture to agree. Early build 203 was reused for materially different binaries, so its label is not an identity.
+6. State any relevant prior constraint before making a risky change.
 
 For upstream work, read `UPDATING.md` and treat upstream as a feature source, never a branch to merge wholesale. Audit in a disposable clone/worktree, obtain Ethan's approval for one user-visible feature, and manually port only that feature while preserving VoiceInk++'s destination, delivery, vocabulary, identity, and release guards.
 
