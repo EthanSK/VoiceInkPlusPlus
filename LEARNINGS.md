@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-18T21:02:15Z
+**Trigger:** Ethan corrected that the warning icon must remain until real app detection succeeds and requested more left/right recording-bar padding
+**Symptom:** v2.0.222 showed only the current-app icon in compatibility mode, and shared ChatGPT/Codex host identity could leave exact Codex capture at a warning
+**Root cause:** Locked-slot visibility was incorrectly gated by the exact-delivery flag, while selected-task identity reused the installed host surface instead of the embedded composer's product scope
+**Fix:** Commit 3c44ebc keeps two slots for every active session, renders nil as the honest warning with no stale outline, separates host and task-scope surfaces for Codex inside ChatGPT.app, and adds 16-point mini-bar side padding
+**Commit:** 3c44ebc
+**Guard:** Mac Mini direct xctest ran all 56 named tests including compatibilityRecorderNeverAdvertisesStaleExactOwnership and Codex scope regressions; canonical Xcode test compiled then stalled in TestManager; disposable live Codex trace remains the release acceptance gate
+---
+
+
+---
 **Date:** 2026-07-18T11:01:33Z
 **Trigger:** Ethan directed the Mac Mini to stop monitoring, take ownership, and emulate the Codex failure locally.
 **Symptom:** The exact-input candidate never landed on authoritative main, Release unit tests could not see makeTestingTarget, and Codex submit discovery missed a Chromium subtree.
