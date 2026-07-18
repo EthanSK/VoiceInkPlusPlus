@@ -1556,6 +1556,33 @@ struct VoiceInkTests {
             description: "Message ChatGPT",
             placeholder: nil
         ))
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Ask for follow-up changes",
+            placeholder: nil
+        ) == .codex)
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything"
+        ) == .codex)
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Ask ChatGPT anything locally",
+            placeholder: "Ask ChatGPT anything locally"
+        ) == .chatGPT)
+        // ChatGPT.app is the audited host artifact for Ethan's current Codex task.
+        // Its embedded Codex composer must gain hardened capture scope without being
+        // reclassified as Codex.app for the separate versioned Send allowlist.
+        #expect(FocusLockService.recordingStartComposerEvidenceMatches(
+            surface: .openAIChatGPT,
+            description: "Ask for follow-up changes",
+            placeholder: "Ask for follow-up changes"
+        ))
+        #expect(FocusLockService.exactMainComposerCaptureEvidenceMatches(
+            surface: .openAIChatGPT,
+            description: "Ask Codex to do anything",
+            placeholder: "Ask Codex to do anything",
+            windowIsModal: false,
+            hasDisallowedSecondaryAncestor: false
+        ))
         #expect(FocusLockService.recordingStartComposerEvidenceMatches(
             surface: .openAICodex,
             description: "Ask for follow-up changes",
@@ -1587,6 +1614,15 @@ struct VoiceInkTests {
             placeholder: "Describe this bug"
         ))
         #expect(!FocusLockService.recordingStartComposerEvidenceMatches(
+            surface: .openAICodex,
+            description: "Message ChatGPT",
+            placeholder: "Message ChatGPT"
+        ))
+        #expect(FocusLockService.openAIComposerProduct(
+            description: "Ask Codex to do anything",
+            placeholder: "Different modal placeholder"
+        ) == nil)
+        #expect(!FocusLockService.recordingStartComposerEvidenceMatches(
             surface: .telegramForegroundOnly,
             description: "Write a message",
             placeholder: "Write a message"
@@ -1608,6 +1644,13 @@ struct VoiceInkTests {
         ))
         #expect(!FocusLockService.exactMainComposerCaptureEvidenceMatches(
             surface: .openAICodex,
+            description: "Ask for follow-up changes",
+            placeholder: "Ask for follow-up changes",
+            windowIsModal: true,
+            hasDisallowedSecondaryAncestor: false
+        ))
+        #expect(!FocusLockService.exactMainComposerCaptureEvidenceMatches(
+            surface: .openAIChatGPT,
             description: "Ask for follow-up changes",
             placeholder: "Ask for follow-up changes",
             windowIsModal: true,

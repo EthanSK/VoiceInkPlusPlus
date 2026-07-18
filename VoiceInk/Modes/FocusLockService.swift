@@ -299,6 +299,16 @@ final class FocusLockService: ObservableObject {
         case telegramForegroundOnly
     }
 
+    /// The installed host artifact and the composer product are separate facts.
+    /// ChatGPT.app now embeds both ChatGPT and Codex task surfaces, even though the
+    /// process still reports the shared `com.openai.codex` bundle identifier. Keep
+    /// this product evidence separate from `SemanticSendSurface`, whose host identity
+    /// remains the authority for version-audited irreversible Send actions.
+    enum OpenAIComposerProduct: String, Equatable {
+        case chatGPT
+        case codex
+    }
+
     static let shared = FocusLockService()
     static let longPressThreshold: TimeInterval = 0.45
 
@@ -1562,21 +1572,28 @@ final class FocusLockService: ObservableObject {
         let windowIsModal = boolAttribute(kAXModalAttribute, from: window) == true
         let hasDisallowedSecondaryAncestor =
             hasDisallowedSecondaryComposerAncestor(element, stoppingAt: window)
+        let composerDescription = nonEmptyStringAttribute(
+            kAXDescriptionAttribute,
+            from: element
+        )
+        let composerPlaceholder = nonEmptyStringAttribute(
+            kAXPlaceholderValueAttribute,
+            from: element
+        )
         guard Self.exactMainComposerCaptureEvidenceMatches(
             surface: surface,
-            description: nonEmptyStringAttribute(
-                kAXDescriptionAttribute,
-                from: element
-            ),
-            placeholder: nonEmptyStringAttribute(
-                kAXPlaceholderValueAttribute,
-                from: element
-            ),
+            description: composerDescription,
+            placeholder: composerPlaceholder,
             windowIsModal: windowIsModal,
             hasDisallowedSecondaryAncestor: hasDisallowedSecondaryAncestor
         ) else {
             return nil
         }
+        let composerProduct = Self.openAIComposerProduct(
+            description: composerDescription,
+            placeholder: composerPlaceholder
+        )?.rawValue ?? "nonOpenAI"
+        logger.info("Exact main-composer semantics accepted hostSurface=\(surface.rawValue, privacy: .public) composerProduct=\(composerProduct, privacy: .public)")
 
         // A focused main composer already supplies the semantic input proof that a
         // no-caret fallback lacks. Prefer a strict UUID-bearing task/window identity
@@ -3127,6 +3144,46 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    /// Resolve only stable, app-owned OpenAI composer descriptions. ChatGPT.app is a
+    /// host for both product surfaces, so its Codex task composer must be recognized
+    /// without weakening the host/version tuple used later for semantic Send. Search,
+    /// feedback, rename, and arbitrary textareas do not match this product evidence.
+    static func openAIComposerProduct(
+        description: String?,
+        placeholder: String?
+    ) -> OpenAIComposerProduct? {
+        guard let normalizedDescription = description?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !normalizedDescription.isEmpty else {
+            return nil
+        }
+        let normalizedPlaceholder = placeholder?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard normalizedPlaceholder == nil
+                || normalizedDescription == normalizedPlaceholder else {
+            return nil
+        }
+
+        if normalizedDescription == "message chatgpt"
+            || normalizedDescription == "ask chatgpt"
+            || normalizedDescription.hasPrefix("message chatgpt ")
+            || normalizedDescription.hasPrefix("ask chatgpt anything") {
+            return .chatGPT
+        }
+        if [
+            "ask for follow-up changes",
+            "do anything",
+            "ask codex",
+            "message codex"
+        ].contains(normalizedDescription)
+            || normalizedDescription.hasPrefix("ask codex to do anything") {
+            return .codex
+        }
+        return nil
+    }
+
     /// Main-composer capture must not depend on whether the adjacent action currently
     /// says Send or Stop: Ethan often starts dictating while an agent is still running.
     /// These are known per-surface composer semantics, not the old permissive rule that
@@ -3140,41 +3197,28 @@ final class FocusLockService: ObservableObject {
         description: String?,
         placeholder: String?
     ) -> Bool {
-        let normalizedDescription = description?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
         let normalizedPlaceholder = placeholder?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch surface {
         case .openAIChatGPT:
-            guard let normalizedDescription,
-                  !normalizedDescription.isEmpty else {
-                return false
-            }
-            let descriptionIsMainComposer = normalizedDescription == "message chatgpt"
-                || normalizedDescription == "ask chatgpt"
-                || normalizedDescription.hasPrefix("message chatgpt ")
-            // Electron removes AXPlaceholderValue as soon as the composer contains a
-            // draft. The stable app-owned AXDescription still identifies that same
-            // main composer; if a placeholder remains, require it to agree.
-            return descriptionIsMainComposer
-                && (normalizedPlaceholder == nil
-                    || normalizedDescription == normalizedPlaceholder)
+            // ChatGPT.app now hosts both ChatGPT conversations and Codex tasks. The
+            // product evidence may therefore be either one, while app filename plus
+            // exact version/build/Chromium remain independently mandatory for the
+            // unlabelled Send exception.
+            return openAIComposerProduct(
+                description: description,
+                placeholder: placeholder
+            ) != nil
         case .openAICodex:
-            guard let normalizedDescription else {
-                return false
-            }
-            let descriptionIsMainComposer = [
-                "ask for follow-up changes",
-                "do anything",
-                "ask codex",
-                "message codex"
-            ].contains(normalizedDescription)
-            return descriptionIsMainComposer
-                && (normalizedPlaceholder == nil
-                    || normalizedDescription == normalizedPlaceholder)
+            return openAIComposerProduct(
+                description: description,
+                placeholder: placeholder
+            ) == .codex
         case .claudeDesktop:
+            let normalizedDescription = description?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
             return normalizedDescription == "prompt"
                 && (normalizedPlaceholder == nil
                     || normalizedPlaceholder == "reply to claude"
