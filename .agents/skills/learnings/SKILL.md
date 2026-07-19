@@ -1,27 +1,27 @@
 ---
 name: learnings
-description: Preserve VoiceInk++ institutional memory and normalize Ethan's mouse-button terminology. Use automatically before any bug fix, regression investigation, fragile behavior change, primary/thumb/toggle-button or Next/forward/Next Track work, paste delivery, live compatibility testing or tracing, and after any feature, fix, deployment, or investigation that produces a durable verified lesson. Read TERMINOLOGY.md, search LEARNINGS.md, apply accepted contracts, record new evidence, and improve this skill when reusable workflow, terminology, safety, or validation changes.
+description: Preserve VoiceInk++ institutional memory, search rejected approaches, and normalize Ethan's mouse-button terminology. Use automatically before any bug fix, regression investigation, fragile behavior change, primary/thumb/toggle-button or Next/forward/Next Track work, paste delivery, live compatibility testing or tracing, and after any feature, fix, deployment, or investigation that produces durable verified evidence. Read TERMINOLOGY.md, search LEARNINGS.md and FAILED_APPROACHES.md, apply accepted contracts, record new evidence, and improve this skill when reusable workflow, terminology, safety, or validation changes.
 ---
 
 # VoiceInk++ learnings
 
-Compound verified project knowledge for Codex and Claude Code. Treat `LEARNINGS.md` as the dated evidence index and this skill as the reusable procedure that maintains it.
+Compound verified project knowledge for Codex and Claude Code. Treat `LEARNINGS.md` as the dated evidence index, `FAILED_APPROACHES.md` as the mandatory negative-evidence ledger, and this skill as the reusable procedure that maintains both.
 
 ## Continuous improvement
 
-Improve this skill as part of using it. Whenever use, debugging, feature work, deployment, investigation, or user feedback produces a durable verified finding, update `LEARNINGS.md` during the same task without waiting for a separate request. When that finding changes how future agents should gather, interpret, validate, or preserve evidence, also update this skill's instructions, scripts, tests, or references. Retest affected behavior and validate the skill before finishing. Preserve reusable evidence; never record guesses, duplicate guidance, secrets, credentials, or transient runtime state.
+Improve this skill as part of using it. Whenever use, debugging, feature work, deployment, investigation, or user feedback produces a durable verified finding, update `LEARNINGS.md` during the same task without waiting for a separate request. When real evidence rejects a plausible mechanism or exposes a repeated regression trap, also update `FAILED_APPROACHES.md` with the observed result and the narrow condition required before reconsideration. When a finding changes how future agents should gather, interpret, validate, or preserve evidence, update this skill's instructions, scripts, tests, or references too. Retest affected behavior and validate the skill before finishing. Preserve reusable evidence; never record guesses, duplicate guidance, secrets, credentials, or transient runtime state.
 
 ## Start with prior evidence
 
 1. Resolve the repository root and read its `AGENTS.md`.
-2. Read the newest relevant entries in `LEARNINGS.md`. For either mouse button, recording destinations, focus restoration, recorder UI, paste, or auto-send, read `TERMINOLOGY.md` and `RECORDING_DESTINATIONS.md` completely. For background insertion, auto-send, or verification, also read `BACKGROUND_DELIVERY_TEST_MATRIX.md`.
+2. Read the newest relevant entries in `LEARNINGS.md` and the matching rejected/superseded sections in `FAILED_APPROACHES.md`. For either mouse button, recording destinations, focus restoration, recorder UI, paste, or auto-send, read `TERMINOLOGY.md` and `RECORDING_DESTINATIONS.md` completely. For background insertion, auto-send, or verification, also read `BACKGROUND_DELIVERY_TEST_MATRIX.md`.
 3. Search with one to three symptom or subsystem terms:
 
    ```sh
    bash .agents/skills/learnings/scripts/check.sh "<keyword>"
    ```
 
-4. Inspect named accepted commits and current tests when a learning points to them. Preserve verified contracts instead of recreating remembered behavior.
+4. Inspect named accepted commits and current tests when a learning points to them. If `FAILED_APPROACHES.md` names the proposed mechanism, stop unless new evidence changes the exact recorded failure condition; write that distinction down before experimenting. Preserve verified contracts instead of recreating remembered behavior.
 5. For a remembered historical rollback, never choose by version proximity or a version label alone. Correlate Ethan's timestamped acceptance/failure message with the immediately preceding verified install/restart, then require the artifact's build, CDHash or executable checksum, and delivery architecture to agree. Early build 203 was reused for materially different binaries, so its label is not an identity.
 6. State any relevant prior constraint before making a risky change.
 

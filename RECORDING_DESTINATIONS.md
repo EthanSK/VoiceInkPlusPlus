@@ -28,6 +28,9 @@ engine switch, not a fourth destination route: never merge or reinterpret the th
 The **primary button** is Ethan's normal/thumb/toggle recording button: the first press starts recording and pressing that same button again performs a normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
 
 Read [VoiceInk++ terminology](TERMINOLOGY.md) for the complete alias map, timing table, and history of the deliberately reverted Next-toggle experiment.
+Before changing capture, paste, focus, Return, semantic Send, or verification, also read
+[the failed-approaches ledger](FAILED_APPROACHES.md); successful API return codes and passing mocked
+tests repeatedly failed on the real destination apps.
 
 ## Controls
 
@@ -83,7 +86,10 @@ transcription phase that starts after recording stops.
 1. Focus an input in Codex and start recording with the normal recording shortcut.
 2. Move to a VS Code editor while speaking.
 3. Stop with the **Next button**.
-4. If Codex is in the background, VoiceInk++ restores and verifies that exact original composer internally, types and submits there, and leaves the current app frontmost. An app-only fallback uses the verified foreground route.
+4. If Codex is in the background and its exact current surface exposes a proven non-activating
+   insertion and Send path, VoiceInk++ restores and verifies that exact original composer internally,
+   types and submits there, and leaves the current app frontmost. Otherwise it fails closed and
+   preserves the transcript instead of activating Codex or guessing at Return.
 
 ### Keep normal media controls outside recording
 
@@ -138,7 +144,12 @@ listen for raw Mouse Button 5.
 
 ## Codex and Claude Code destinations
 
-Codex desktop owns its composer directly, so VoiceInk++ can restore that exact input and use its bounded verified Send fallbacks. Codex CLI and Claude Code do not own separate macOS windows: their terminal or editor host owns the editable input. VoiceInk++ therefore saves the exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input and uses that host app's configured `autoSendKey`.
+Codex desktop owns its composer directly, so VoiceInk++ can restore that exact input and use a
+bounded Send action only when the current Codex surface proves one. It must fail closed when it
+cannot distinguish Send from Stop or verify submission. Codex CLI and Claude Code do not own
+separate macOS windows: their terminal or editor host owns the editable input. VoiceInk++ therefore
+saves the exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input and uses that host
+app's configured `autoSendKey` only through a proven host-specific route.
 
 The current and locked recorder icons show the host application for CLI agents by design. Configure a Mode for the host app and enable Return only where automatic submission is safe. The normal-stop, recording-start, and second-chance routes remain identical; no agent-specific toggle, shell hook, or plugin is involved.
 
@@ -175,18 +186,21 @@ For an exact saved input whose app is currently backgrounded, VoiceInk++:
 3. Types Unicode directly into that process in bounded chunks. It never uses background Command–V.
 4. Verifies that the exact editor changed, the intended transcript appeared, and the app that Ethan
    was using remained frontmost.
-5. If auto-send is enabled, uses a nearby semantic Send control when available or the narrowly scoped
-   targeted key route, then verifies editor clearing/value change and—for Codex/ChatGPT—the submitted
-   text appearing outside the composer.
-6. Restores the target app's previous internal window/editor state. A failure at any checkpoint copies
-   the transcript to the clipboard and shows a visible error rather than guessing.
+5. If auto-send is enabled, uses only a proven semantic Send control or a host-native exact-session
+   API. An ordinary HID Return is allowed only while the exact saved input already owns real system
+   keyboard focus. Chat verifies the exact composer clearing/resetting; rendered-message echo is
+   optional telemetry and never required proof.
+6. Restores the target app's previous internal window/editor state. A pre-mutation/action failure
+   copies the transcript to the clipboard and shows a visible error rather than guessing. After one
+   irreversible Send attempt, an unreadable/replaced wrapper is indeterminate telemetry: do not
+   retry, claim success, or show a false failure.
 
-The targeted Return exception is deliberately narrow. A disposable two-window Codex probe proved
-that ordinary PID posting is ignored until Electron receives the activation-state sequence, while
-the verified sequence changed only the saved composer, submitted it, left the comparison composer
-unchanged, and never made Codex frontmost. Never generalize that result into raw process-targeted
-Command–V/Return or infer success from an event return code alone. `AXConfirm` is still not a generic
-editor Return.
+There is no accepted process-targeted Return exception. Ordinary PID posting was accepted by macOS
+while Electron ignored it. The later v2.0.233 audited-unlabelled `AXPress` returned success while the
+composer stayed unchanged, and the v2.0.234 SkyLight-authenticated Return produced
+`modifiedWithoutSubmit` instead of a cleared composer. Authentication changes event trust, not the
+application's Send semantics. `AXConfirm` is likewise not a generic editor Return. See
+[FAILED_APPROACHES.md](FAILED_APPROACHES.md) before proposing another targeted-event variant.
 
 When the exact saved input already owns system keyboard focus, VoiceInk++ uses the foreground route:
 it re-verifies that same app/window/input at the irreversible boundary, sends ordinary Command–V,

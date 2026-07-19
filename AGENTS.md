@@ -4,8 +4,8 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Repository learnings contract
 
-- Use the public `.agents/skills/learnings` skill automatically before fixes, regressions, fragile workflow changes, destination/delivery work, or investigations that resemble an earlier failure.
-- After any feature, fix, deployment, or investigation, add every durable verified project lesson to `LEARNINGS.md` during the same task. Do not record guesses, secrets, duplicate knowledge, or transient runtime state.
+- Use the public `.agents/skills/learnings` skill automatically before fixes, regressions, fragile workflow changes, destination/delivery work, or investigations that resemble an earlier failure. Search both `LEARNINGS.md` and `FAILED_APPROACHES.md` before proposing a mechanism.
+- After any feature, fix, deployment, or investigation, add every durable verified project lesson to `LEARNINGS.md` during the same task. Add reproducible rejected mechanisms and the exact condition required to reconsider them to `FAILED_APPROACHES.md`. Do not record guesses, secrets, duplicate knowledge, or transient runtime state.
 - When a lesson changes the reusable workflow, terminology, safety rules, or validation procedure, update the learnings skill itself, retest its affected scripts/behavior, and validate the skill before finishing.
 - Codex discovers the canonical skill in `.agents/skills`; Claude Code uses the same folder through `.claude/skills/learnings`. Never maintain divergent copies.
 
@@ -13,7 +13,7 @@ These repository-specific rules are mandatory for every future agent working on 
 
 - Preserve the reason for VoiceInk++'s deliberately unusual behavior in the code beside the branch or safety check that enforces it. In particular, comments must distinguish all three destination routes, explain why input plus Mode/auto-send are atomic per-session state, and document why exact-input identity, non-activating delivery, surface-specific submission, one-shot fallbacks, and fail-closed checks exist.
 - Update those comments whenever behavior changes. Do not remove a constraint as "redundant," merge routes, or replace a bounded app-specific path with a generic shortcut unless the adjacent comment and accepted contract prove that simplification safe.
-- Comment intent and invariants, not obvious syntax. `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, and `BACKGROUND_DELIVERY_TEST_MATRIX.md` are the long-form source of truth; code comments must make the relevant intent visible without requiring a future agent to guess which rule applies.
+- Comment intent and invariants, not obvious syntax. `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, `BACKGROUND_DELIVERY_TEST_MATRIX.md`, and `FAILED_APPROACHES.md` are the long-form source of truth; code comments must make the relevant intent visible without requiring a future agent to guess which rule applies.
 
 ## Canonical mouse terminology
 
@@ -75,7 +75,7 @@ The saved input and its target app's complete Mode are one atomic, per-session d
 
 ## Required reading and validation
 
-Before changing this behavior, read `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, and the newest relevant entries in `LEARNINGS.md`. The current accepted shipped/runtime baseline is rollback commit `b2aeaa2`, which restores native source exactly to commit `96e494e` and the signed v2.0.206 app. Commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`) remains the accepted behavioral contract for the second-chance route, with `cba45ba` as its earlier retarget foundation. The later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`. The v2.0.207/v2.0.208 delivery rewrite is rejected evidence, not an accepted implementation.
+Before changing this behavior, read `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, `FAILED_APPROACHES.md`, and the newest relevant entries in `LEARNINGS.md`. The accepted rollback floor is commit `b2aeaa2`, which restores native source exactly to commit `96e494e` and the signed v2.0.206 app. Commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`) remains the accepted behavioral contract for the second-chance route, with `cba45ba` as its earlier retarget foundation. The later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`. The v2.0.207/v2.0.208 delivery rewrite is rejected evidence, not an accepted implementation. `FAILED_APPROACHES.md` records the later v2.0.209–v2.0.236 evidence and must be consulted before reviving any event, Accessibility, focus, verification, or release experiment.
 
 Read `BACKGROUND_DELIVERY_TEST_MATRIX.md` before delivery work. Ethan's required compatibility set is Codex desktop, ChatGPT's Option-Space floating window, Claude Code in its terminal/editor host, Telegram, Google Chrome, and a selected card/editor in Notion (`notion.id`). Use disposable targets for live tests—especially a disposable Notion card/page, never Ethan's current to-do board—and report unavailable surfaces as not tested.
 

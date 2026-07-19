@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Search only LEARNINGS.md entry blocks for a case-insensitive keyword.
+# Search LEARNINGS.md entry blocks and FAILED_APPROACHES.md for a literal case-insensitive keyword.
 
 set -u
 
@@ -22,14 +22,18 @@ else
 fi
 
 LEARNINGS_FILE="$REPO_ROOT/LEARNINGS.md"
-if [ ! -f "$LEARNINGS_FILE" ]; then
-  printf 'no prior learnings recorded (no LEARNINGS.md at %s)\n' "$REPO_ROOT"
+FAILED_FILE="$REPO_ROOT/FAILED_APPROACHES.md"
+if [ ! -f "$LEARNINGS_FILE" ] && [ ! -f "$FAILED_FILE" ]; then
+  printf 'no prior project memory recorded at %s\n' "$REPO_ROOT"
   exit 0
 fi
 
-printf 'Checking %s for keyword: "%s"\n\n' "$LEARNINGS_FILE" "$KEYWORD"
+printf 'Checking project memory for keyword: "%s"\n\n' "$KEYWORD"
 
-MATCHES=$(awk -v kw="$KEYWORD" '
+LEARNING_MATCHES=""
+LEARNING_COUNT=0
+if [ -f "$LEARNINGS_FILE" ]; then
+  LEARNING_MATCHES=$(awk -v kw="$KEYWORD" '
   BEGIN {
     after_marker = 0
     inside_entry = 0
@@ -74,13 +78,30 @@ MATCHES=$(awk -v kw="$KEYWORD" '
   }
 ' "$LEARNINGS_FILE")
 
-COUNT=$(printf '%s\n' "$MATCHES" | sed -n 's/^__LEARNINGS_MATCH_COUNT__=//p' | tail -n 1)
-BODY=$(printf '%s\n' "$MATCHES" | sed '/^__LEARNINGS_MATCH_COUNT__=/d')
-COUNT="${COUNT:-0}"
+  LEARNING_COUNT=$(printf '%s\n' "$LEARNING_MATCHES" | sed -n 's/^__LEARNINGS_MATCH_COUNT__=//p' | tail -n 1)
+  LEARNING_BODY=$(printf '%s\n' "$LEARNING_MATCHES" | sed '/^__LEARNINGS_MATCH_COUNT__=/d')
+  LEARNING_COUNT="${LEARNING_COUNT:-0}"
+fi
 
-if [ "$COUNT" -eq 0 ]; then
+FAILED_COUNT=0
+if [ -f "$FAILED_FILE" ]; then
+  FAILED_COUNT=$(grep -i -F -c -- "$KEYWORD" "$FAILED_FILE" 2>/dev/null || true)
+  FAILED_COUNT="${FAILED_COUNT:-0}"
+  if [ "$FAILED_COUNT" -gt 0 ]; then
+    printf 'FAILED_APPROACHES.md (matching lines with context)\n\n'
+    grep -n -i -F -C 2 -- "$KEYWORD" "$FAILED_FILE" || true
+    printf '\n'
+  fi
+fi
+
+if [ "$LEARNING_COUNT" -gt 0 ]; then
+  printf 'LEARNINGS.md\n\n%s\n\n' "$LEARNING_BODY"
+fi
+
+TOTAL_COUNT=$((LEARNING_COUNT + FAILED_COUNT))
+if [ "$TOTAL_COUNT" -eq 0 ]; then
   printf 'no matching prior learnings for "%s"\n' "$KEYWORD"
   exit 0
 fi
 
-printf '%s\n\nFound %s matching prior learning(s). Review them before changing behavior.\n' "$BODY" "$COUNT"
+printf 'Found %s matching LEARNINGS.md entries and %s FAILED_APPROACHES.md lines. Review both before changing behavior.\n' "$LEARNING_COUNT" "$FAILED_COUNT"
