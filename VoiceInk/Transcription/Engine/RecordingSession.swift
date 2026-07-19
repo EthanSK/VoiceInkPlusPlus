@@ -8,6 +8,24 @@ enum RecordingPasteDestination: Equatable {
     case focusedDuringTranscription
 }
 
+/// Recording-start evidence for the deliberately simple primary-button fast path.
+/// This is application continuity, not a latched input: when it remains unbroken,
+/// normal VoiceInk behavior follows the live keyboard caret. Any activation change
+/// rejects the fast path even if the user later returns to the same application.
+struct PrimaryForegroundContinuity: Equatable {
+    let activationGeneration: UInt64
+    let processIdentifier: pid_t
+    let bundleIdentifier: String?
+
+    func isUnbroken(
+        currentActivationGeneration: UInt64,
+        currentProcessIdentifier: pid_t?
+    ) -> Bool {
+        activationGeneration == currentActivationGeneration
+            && processIdentifier == currentProcessIdentifier
+    }
+}
+
 /// One user-confirmation pulse in the recorder bar. The token belongs to the
 /// recording session so every mirrored monitor panel sees the same action, and
 /// the icon is derived from the destination route at the moment it is chosen.
@@ -34,6 +52,10 @@ struct RecorderIconActionPulse: Equatable {
 struct RecordingPasteTarget {
     let destination: RecordingPasteDestination
     let focusedInput: FocusLockService.Target?
+    // Present only for a primary normal stop. It authorizes base VoiceInk's live-caret
+    // delivery only while the start app has remained continuously current. It is never
+    // populated or inferred for recordingStart or focusedDuringTranscription.
+    let primaryForegroundContinuity: PrimaryForegroundContinuity?
     // The destination and its complete Mode are one atomic per-session choice.
     // In particular, the transcription-time Next Track route is a second chance:
     // Ethan can stop normally, focus a different input, press Next Track while the
@@ -45,11 +67,18 @@ struct RecordingPasteTarget {
     init(
         destination: RecordingPasteDestination,
         focusedInput: FocusLockService.Target?,
-        mode: ModeConfig? = nil
+        mode: ModeConfig? = nil,
+        primaryForegroundContinuity: PrimaryForegroundContinuity? = nil
     ) {
         self.destination = destination
         self.focusedInput = focusedInput
         self.mode = mode
+        // Make the isolation structural, not a call-site convention: even if future
+        // code accidentally supplies continuity while constructing a Next target, it
+        // is discarded here and cannot enter the primary live-caret fast path.
+        self.primaryForegroundContinuity = destination == .focusedAtStop
+            ? primaryForegroundContinuity
+            : nil
     }
 }
 
@@ -182,6 +211,10 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // The target is captured before recording starts and belongs to this exact session so
     // another recording can safely begin while this one is still transcribing.
     @Published var recordingStartFocusedInput: FocusLockService.Target? // Published because an initially invalid shortcut-time capture can be replaced once microphone recording begins, and the destination icon must then appear immediately.
+    // Captured at the synchronous recording command boundary, before microphone setup.
+    // It is separate from recordingStartFocusedInput: Primary uses it only to decide
+    // whether plain current-caret delivery is still safe, never as a fallback target.
+    let recordingStartForegroundContinuity: PrimaryForegroundContinuity?
     @Published var pasteTarget: RecordingPasteTarget // Published so the icon remains visible after stop and immediately follows a Next Track retarget while transcription is still loading.
     @Published private(set) var iconActionPulse: RecorderIconActionPulse?
     private(set) var acceptsPasteRetargeting = true
@@ -243,7 +276,8 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         phase: Phase = .recording,
         useCase: UseCase = .newSession,
         startID: UUID = UUID(),
-        recordingStartFocusedInput: FocusLockService.Target? = nil
+        recordingStartFocusedInput: FocusLockService.Target? = nil,
+        recordingStartForegroundContinuity: PrimaryForegroundContinuity? = nil
     ) {
         self.phase = phase
         // A session is born recording, so its live UI state starts at .recording too.
@@ -252,6 +286,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         self.startID = startID
         self.createdAt = Date()
         self.recordingStartFocusedInput = recordingStartFocusedInput
+        self.recordingStartForegroundContinuity = recordingStartForegroundContinuity
         self.pasteTarget = RecordingPasteTarget(
             destination: .recordingStart,
             focusedInput: recordingStartFocusedInput,

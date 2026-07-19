@@ -15,12 +15,49 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "230"
+            buildNumber: "236"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".230")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 230")
+        #expect(presentation.bottomLine == ".236")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 236")
+    }
+
+    @Test func primaryForegroundContinuityRejectsSwitchAwayAndBack() {
+        let continuity = PrimaryForegroundContinuity(
+            activationGeneration: 12,
+            processIdentifier: 345,
+            bundleIdentifier: "com.openai.codex"
+        )
+
+        #expect(continuity.isUnbroken(
+            currentActivationGeneration: 12,
+            currentProcessIdentifier: 345
+        ))
+        #expect(!continuity.isUnbroken(
+            currentActivationGeneration: 13,
+            currentProcessIdentifier: 345
+        ))
+        #expect(!continuity.isUnbroken(
+            currentActivationGeneration: 12,
+            currentProcessIdentifier: 678
+        ))
+
+        #expect(RecordingPasteTarget(
+            destination: .focusedAtStop,
+            focusedInput: nil,
+            primaryForegroundContinuity: continuity
+        ).primaryForegroundContinuity == continuity)
+        #expect(RecordingPasteTarget(
+            destination: .recordingStart,
+            focusedInput: nil,
+            primaryForegroundContinuity: continuity
+        ).primaryForegroundContinuity == nil)
+        #expect(RecordingPasteTarget(
+            destination: .focusedDuringTranscription,
+            focusedInput: nil,
+            primaryForegroundContinuity: continuity
+        ).primaryForegroundContinuity == nil)
     }
 
     @MainActor

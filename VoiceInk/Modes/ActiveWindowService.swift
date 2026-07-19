@@ -8,6 +8,13 @@ class ActiveWindowService: ObservableObject {
     @Published var currentApplication: NSRunningApplication?
     private let browserURLService = BrowserURLService.shared
 
+    // Monotonic record of genuine external app activations. Primary-button delivery
+    // snapshots this at recording start so "switch away, then switch back" does not
+    // masquerade as an uninterrupted foreground recording merely because the same PID
+    // happens to be current again when transcription finishes. VoiceInk's own panels
+    // are excluded below because they are not a user destination change.
+    private(set) var externalApplicationActivationGeneration: UInt64 = 0
+
     private let logger = Logger(
         subsystem: "com.prakashjoshipax.voiceink",
         category: "browser.detection"
@@ -83,6 +90,8 @@ class ActiveWindowService: ObservableObject {
         // NOT replace the last real target app shown in the recorder or clobber its Mode.
         if bundleIdentifier == Bundle.main.bundleIdentifier { return }
 
+        externalApplicationActivationGeneration &+= 1
+
         // The recorder now shows the genuinely current app separately from the
         // per-session locked paste destination. Keep this visual signal current even
         // when a focus lock suppresses Mode re-resolution below.
@@ -100,6 +109,46 @@ class ActiveWindowService: ObservableObject {
         // also handles the neutral-nil fallback (issue #784) and the async
         // browser-URL override.
         resolveAndApplyConfiguration(for: bundleIdentifier, shouldApply: { true })
+    }
+
+    // MARK: - Uninterrupted primary-button foreground delivery
+
+    /// Capture only application continuity, never an input identity. The ordinary
+    /// primary route deliberately pastes into whichever caret is current when delivery
+    /// occurs if Ethan has stayed in this app for the whole recording/transcription.
+    /// The exact input captured alongside this snapshot remains reserved for the route
+    /// used after any app activation, and both Next-button routes remain exact-only.
+    @MainActor
+    func capturePrimaryForegroundContinuity(
+        preferredInput: FocusLockService.Target?
+    ) -> PrimaryForegroundContinuity? {
+        let focusedApplication = accessibilityFocusedApplication()
+            ?? NSWorkspace.shared.frontmostApplication
+        let processIdentifier = preferredInput?.processIdentifier
+            ?? focusedApplication?.processIdentifier
+        guard let processIdentifier else { return nil }
+
+        return PrimaryForegroundContinuity(
+            activationGeneration: externalApplicationActivationGeneration,
+            processIdentifier: processIdentifier,
+            bundleIdentifier: preferredInput?.bundleIdentifier
+                ?? focusedApplication?.bundleIdentifier
+        )
+    }
+
+    /// Re-check at every irreversible foreground action boundary. Matching only the
+    /// app is insufficient: the generation also has to match so leaving and returning
+    /// to the start app cannot opt back into current-caret compatibility delivery.
+    @MainActor
+    func primaryForegroundContinuityIsUnbroken(
+        _ continuity: PrimaryForegroundContinuity
+    ) -> Bool {
+        let focusedApplication = accessibilityFocusedApplication()
+            ?? NSWorkspace.shared.frontmostApplication
+        return continuity.isUnbroken(
+            currentActivationGeneration: externalApplicationActivationGeneration,
+            currentProcessIdentifier: focusedApplication?.processIdentifier
+        )
     }
 
     // Shared resolution used by BOTH the record-start path and the live-follow

@@ -304,12 +304,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 )
             case .focusedAtStop:
                 let focusedInput = FocusLockService.shared.captureFocusedInput()
+                let continuity = active.recordingStartForegroundContinuity
+                let continuityIsUnbroken = continuity.map {
+                    ActiveWindowService.shared.primaryForegroundContinuityIsUnbroken($0)
+                } ?? false
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .focusedAtStop,
                     focusedInput: focusedInput,
                     mode: ModeRuntimeResolver.modeSnapshot(
                         forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
-                    )
+                            ?? (continuityIsUnbroken ? continuity?.bundleIdentifier : nil)
+                    ),
+                    primaryForegroundContinuity: continuity
                 )
             case .focusedDuringTranscription:
                 preconditionFailure("A transcription-time target can only be selected after recording has stopped")
@@ -320,7 +326,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // same session and therefore pulse in sync without re-reading focus.
             active.signalDestinationAction(stopPasteDestination)
 
-            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
+            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) primaryContinuity=\(active.pasteTarget.primaryForegroundContinuity.map { ActiveWindowService.shared.primaryForegroundContinuityIsUnbroken($0) } ?? false, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
@@ -385,6 +391,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
 
             let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Capture before asynchronous setup. Electron may expose only AXWebArea while the shortcut is down, so preserve the owning app for Next Track.
+            let recordingStartForegroundContinuity = ActiveWindowService.shared
+                .capturePrimaryForegroundContinuity(
+                    preferredInput: recordingStartFocusedInput
+                )
 
             requestRecordPermission { [self] granted in
                 if granted {
@@ -392,7 +402,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         await self.startNewSession(
                             modeId: modeId,
                             useCase: useCase,
-                            recordingStartFocusedInput: recordingStartFocusedInput
+                            recordingStartFocusedInput: recordingStartFocusedInput,
+                            recordingStartForegroundContinuity: recordingStartForegroundContinuity
                         )
                     }
                 } else {
@@ -410,14 +421,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private func startNewSession(
         modeId: UUID?,
         useCase: RecordingSession.UseCase,
-        recordingStartFocusedInput: FocusLockService.Target?
+        recordingStartFocusedInput: FocusLockService.Target?,
+        recordingStartForegroundContinuity: PrimaryForegroundContinuity?
     ) async {
         let startID = UUID()
         let session = RecordingSession(
             phase: .recording,
             useCase: useCase,
             startID: startID,
-            recordingStartFocusedInput: recordingStartFocusedInput
+            recordingStartFocusedInput: recordingStartFocusedInput,
+            recordingStartForegroundContinuity: recordingStartForegroundContinuity
         )
         // Born .recording but we drive it through .starting → .recording during the handshake.
         session.liveRecordingState = .starting
