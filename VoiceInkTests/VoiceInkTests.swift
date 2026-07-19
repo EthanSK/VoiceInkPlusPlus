@@ -395,30 +395,55 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func unlabelledCodexSendExceptionIsPinnedToTheAuditedBuildTuple() {
-        #expect(FocusLockService.isAuditedCodexSubmitBuild(
+    @Test func unlabelledOpenAISendExceptionIsPinnedToExactAppAndBuildTuples() {
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "Codex.app",
             bundleIdentifier: "com.openai.codex",
             shortVersion: "26.707.72221",
             build: "5307",
             chromium: "150.0.7871.115"
         ))
-        #expect(!FocusLockService.isAuditedCodexSubmitBuild(
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72221",
+            build: "5307",
+            chromium: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "Codex.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "Codex.app",
             bundleIdentifier: "com.openai.codex",
             shortVersion: "26.707.72222",
             build: "5308",
             chromium: "150.0.7871.115"
         ))
-        #expect(!FocusLockService.isAuditedCodexSubmitBuild(
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
             bundleIdentifier: "com.openai.codex",
-            shortVersion: "26.707.72221",
-            build: "5307",
+            shortVersion: "26.715.31925",
+            build: "5551",
             chromium: nil
         ))
-        #expect(!FocusLockService.isAuditedCodexSubmitBuild(
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
             bundleIdentifier: "com.openai.chat",
-            shortVersion: "26.707.72221",
-            build: "5307",
-            chromium: "150.0.7871.115"
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
         ))
     }
 
@@ -549,7 +574,7 @@ struct VoiceInkTests {
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
-    @Test func foregroundOpenAIReturnBypassesSemanticTraversalAndReroutesOnFocusLoss() throws {
+    @Test func foregroundOpenAIPrefersSemanticSendAndReroutesOnFocusLoss() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -568,11 +593,14 @@ struct VoiceInkTests {
         ))
         let autoSendBody = source[autoSendStart.lowerBound..<feedbackStart.lowerBound]
 
-        #expect(autoSendBody.contains("let primaryRoute = \"foregroundHIDReturn\""))
+        #expect(autoSendBody.contains("pressNearbySubmitButton"))
+        #expect(autoSendBody.contains("foregroundSemanticSend"))
+        #expect(autoSendBody.contains("foregroundSemanticSendAXError"))
+        #expect(autoSendBody.contains("let primaryRoute = \"foregroundHIDReturnFallback\""))
         #expect(autoSendBody.contains("method: .cgEvent"))
+        #expect(autoSendBody.contains("case .focusLostBeforeAction:"))
         #expect(autoSendBody.contains("result == .actionGuardRefused"))
         #expect(autoSendBody.contains("return .needsNonActivatingExactInput"))
-        #expect(!autoSendBody.contains("pressNearbySubmitButton"))
         #expect(!autoSendBody.contains("method: .systemEvents"))
     }
 

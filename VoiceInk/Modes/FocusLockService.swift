@@ -363,15 +363,23 @@ final class FocusLockService: ObservableObject {
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
     private static let semanticSendNodeBudget = 1_600
     private static let semanticSendSearchSeconds = 0.35
-    // Codex 26.707.72221 renders its idle submit control as the only enabled,
-    // unlabelled button in the nearest composer container. Its bundled React source
-    // gives the *Stop* state a non-empty aria label, while the idle Send state passes
-    // `aria-label: undefined`. This exact tuple is intentionally fail-closed: an app
-    // update must be re-audited before VoiceInk++ may press an unlabelled control.
+    // The separately installed Codex and ChatGPT apps share `com.openai.codex` but
+    // have different bundle paths and release trains. Offline inspection of each
+    // exact app.asar proves its idle Send control is the sole enabled unlabelled
+    // composer button, while the same control gains an explicit Stop label once a
+    // turn runs. Pin both the real .app name and full build tuple: a product update
+    // must fail closed until its renderer is audited again.
     private static let auditedCodexSubmitBuild = (
+        applicationBundleName: "Codex.app",
         shortVersion: "26.707.72221",
         build: "5307",
         chromium: "150.0.7871.115"
+    )
+    private static let auditedChatGPTSubmitBuild = (
+        applicationBundleName: "ChatGPT.app",
+        shortVersion: "26.715.31925",
+        build: "5551",
+        chromium: "150.0.7871.124"
     )
 
     private init() {}
@@ -1398,7 +1406,7 @@ final class FocusLockService: ObservableObject {
             }
         case .unlabelled:
             label = nil
-            usesAuditedUnlabelledContract = Self.matchesAuditedCodexSubmitBuild(app)
+            usesAuditedUnlabelledContract = Self.matchesAuditedOpenAISubmitBuild(app)
             diagnostics?.unlabelledButtons += 1
             if usesAuditedUnlabelledContract {
                 diagnostics?.auditedUnlabelledButtons += 1
@@ -1506,7 +1514,7 @@ final class FocusLockService: ObservableObject {
         }
 
         let auditedBuildStillMatches = candidate.usesAuditedUnlabelledContract
-            && Self.matchesAuditedCodexSubmitBuild(app)
+            && Self.matchesAuditedOpenAISubmitBuild(app)
         guard preflight(), !Task.isCancelled else { return .unavailable }
         let focusBeforeAction: (element: AXUIElement, pid: pid_t)?
         if preserveSystemFocusAcrossAction {
@@ -1579,7 +1587,7 @@ final class FocusLockService: ObservableObject {
             logger.error("Semantic Send violated the non-activating focus boundary pid=\(pid, privacy: .public)")
             return .failed(AXError.cannotComplete.rawValue)
         }
-        logger.info("Verified semantic Send press attempted pid=\(pid, privacy: .public) route=\(currentAuditedUnlabelledContract ? "auditedCodexIdleSend" : "labelledSend", privacy: .public) label=\(currentLabel ?? "nil", privacy: .public) result=\(actionResult?.rawValue ?? -1, privacy: .public)")
+        logger.info("Verified semantic Send press attempted pid=\(pid, privacy: .public) route=\(currentAuditedUnlabelledContract ? "auditedOpenAIIdleSend" : "labelledSend", privacy: .public) label=\(currentLabel ?? "nil", privacy: .public) result=\(actionResult?.rawValue ?? -1, privacy: .public)")
         return result
     }
 
@@ -1888,16 +1896,26 @@ final class FocusLockService: ObservableObject {
         )
     }
 
-    static func isAuditedCodexSubmitBuild(
+    static func isAuditedOpenAISubmitBuild(
+        applicationBundleName: String?,
         bundleIdentifier: String?,
         shortVersion: String?,
         build: String?,
         chromium: String?
     ) -> Bool {
-        bundleIdentifier == "com.openai.codex"
-            && shortVersion == auditedCodexSubmitBuild.shortVersion
-            && build == auditedCodexSubmitBuild.build
-            && chromium == auditedCodexSubmitBuild.chromium
+        guard bundleIdentifier == "com.openai.codex" else { return false }
+        switch applicationBundleName {
+        case auditedCodexSubmitBuild.applicationBundleName:
+            return shortVersion == auditedCodexSubmitBuild.shortVersion
+                && build == auditedCodexSubmitBuild.build
+                && chromium == auditedCodexSubmitBuild.chromium
+        case auditedChatGPTSubmitBuild.applicationBundleName:
+            return shortVersion == auditedChatGPTSubmitBuild.shortVersion
+                && build == auditedChatGPTSubmitBuild.build
+                && chromium == auditedChatGPTSubmitBuild.chromium
+        default:
+            return false
+        }
     }
 
     static func semanticSendGeometryMatches(
@@ -1916,8 +1934,9 @@ final class FocusLockService: ObservableObject {
 
     /// Own the action closure inside the final semantic proof so rejected states have
     /// zero side effects in production and unit tests. The unlabelled exception remains
-    /// valid only when the caller has re-proven the exact audited Codex tuple and the
-    /// button still has no accepted label at this same boundary.
+    /// valid only when the caller has re-proven the exact audited Codex/ChatGPT app
+    /// name plus build tuple and the button still has no accepted label at this same
+    /// boundary.
     static func performProvenSemanticSend(
         isUnambiguous: Bool,
         pidMatches: Bool,
@@ -1961,15 +1980,15 @@ final class FocusLockService: ObservableObject {
         }
     }
 
-    private static func matchesAuditedCodexSubmitBuild(
+    private static func matchesAuditedOpenAISubmitBuild(
         _ app: NSRunningApplication
     ) -> Bool {
         guard let bundleURL = app.bundleURL,
-              bundleURL.lastPathComponent == "Codex.app",
               let bundle = Bundle(url: bundleURL) else {
             return false
         }
-        return isAuditedCodexSubmitBuild(
+        return isAuditedOpenAISubmitBuild(
+            applicationBundleName: bundleURL.lastPathComponent,
             bundleIdentifier: bundle.bundleIdentifier,
             shortVersion: bundle.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"

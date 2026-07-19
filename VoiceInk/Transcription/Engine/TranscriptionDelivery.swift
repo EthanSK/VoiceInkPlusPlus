@@ -905,15 +905,49 @@ final class TranscriptionDelivery {
             return .failed
         }
 
-        // A foreground exact composer already owns the real system keyboard focus.
-        // Walking the Chromium tree twice to discover and revalidate a Send button is
-        // unnecessary here and added 1-3 seconds after the paste before Return. Keep
-        // semantic Send for background delivery, where a normal key would steal or
-        // miss focus. In the foreground, issue one humanized HID Return immediately
-        // after insertion is readable, with the exact saved input re-proved at the
-        // irreversible key boundary. If Ethan clicks away first, no key is posted and
+        // Prefer the exact composer's semantic Send control even in the foreground.
+        // ChatGPT 26.715.31925 proved that its focused Electron editor can accept the
+        // paste yet ignore a normal HID Return. The same bounded discovery and final
+        // Send-vs-Stop proof used for background delivery avoids that false success.
+        // A semantic result that may have issued AXPress is verification-only: never
+        // follow it with Return and risk a double submission. Only a lookup that made
+        // no action may fall through to the exact-focus HID compatibility route.
+        let semanticResult = await FocusLockService.shared.pressNearbySubmitButton(
+            for: target,
+            allowApplicationFallback: allowsApplicationFallback
+        )
+        switch semanticResult {
+        case .pressed, .failed(_):
+            let semanticRoute = semanticResult == .pressed
+                ? "foregroundSemanticSend"
+                : "foregroundSemanticSendAXError"
+            let verification = await waitForForegroundValueChange(
+                from: textBeforeSubmit,
+                target: target,
+                allowsApplicationFallback: allowsApplicationFallback
+            )
+            let exactTargetStillOwnsKeyboardFocus = FocusLockService.shared
+                .targetOwnsSystemKeyboardFocus(target)
+            let outcome = Self.foregroundOpenAIAutoSendOutcome(
+                verification: verification,
+                exactTargetStillOwnsKeyboardFocus: exactTargetStillOwnsKeyboardFocus
+            )
+            if outcome == .indeterminate {
+                vippLog.notice("paste: OpenAI foreground post-state not authoritative after semantic Send; no retry and no visible false-failure route=\(semanticRoute, privacy: .public) verification=\(String(describing: verification), privacy: .public) exactFocus=\(exactTargetStillOwnsKeyboardFocus, privacy: .public) targetPid=\(targetPID, privacy: .public)")
+            }
+            return outcome
+        case .focusLostBeforeAction:
+            vippLog.notice("paste: OpenAI exact focus moved before semantic Send; rerouting to non-activating exact input targetPid=\(targetPID, privacy: .public)")
+            return .needsNonActivatingExactInput
+        case .unavailable, .refusedAfterCandidate:
+            break
+        }
+
+        // The semantic lookup made no irreversible action. Preserve one bounded HID
+        // compatibility fallback, but only while this exact saved composer still owns
+        // real system keyboard focus. If Ethan clicks away first, no key is posted and
         // the frozen target gets one non-activating exact-input continuation instead.
-        let primaryRoute = "foregroundHIDReturn"
+        let primaryRoute = "foregroundHIDReturnFallback"
         let result = await CursorPaster.performAutoSend(
             .enter,
             targetPID: targetPID,
