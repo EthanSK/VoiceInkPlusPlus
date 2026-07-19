@@ -1211,7 +1211,10 @@ final class FocusLockService: ObservableObject {
             && CFEqual(focusedInput.element, targetElement)
     }
 
-    private func retainedTargetOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
+    /// Cheap, read-only proof for the exact retained wrapper. Unlike full replay-safe
+    /// resolution this performs no task-tree scan, so the uninterrupted Primary path
+    /// can arm optional post-Return verification without delaying its first Return.
+    func retainedInputOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
         guard let retainedElement = target.element,
               let retainedWindow = target.window,
               let focusedInput = systemFocusedElement(),
@@ -1289,7 +1292,7 @@ final class FocusLockService: ObservableObject {
             allowsTargetedBackgroundClick: false,
             waitForUnavailableCandidate: false,
             traversalPreflight: { [weak self] in
-                self?.retainedTargetOwnsSystemKeyboardFocus(target) == true
+                self?.retainedInputOwnsSystemKeyboardFocus(target) == true
             },
             actionPreflight: { [weak self] in
                 self?.targetOwnsSystemKeyboardFocus(target) == true

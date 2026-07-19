@@ -98,7 +98,7 @@ struct VoiceInkTests {
             previousText: "latched transcript",
             currentText: "latched transcript\n",
             currentPlaceholder: "Ask for follow-up changes"
-        ) == .unchanged)
+        ) == .modifiedWithoutSubmit)
         #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
             previousText: "latched transcript",
             currentText: "Ask for follow-up changes",
@@ -166,6 +166,37 @@ struct VoiceInkTests {
             verification: .modifiedWithoutSubmit,
             exactTargetStillOwnsKeyboardFocus: false
         ) == .indeterminate)
+
+        #expect(TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter,
+            verification: .modifiedWithoutSubmit,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: false
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .shiftEnter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
     }
 
     @MainActor
@@ -703,7 +734,7 @@ struct VoiceInkTests {
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
-    @Test func foregroundAutoSendUsesImmediateOneShotHIDWithoutAXReadback() throws {
+    @Test func foregroundAutoSendKeepsFirstHIDImmediateAndBoundsOpenAIRetry() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -723,10 +754,11 @@ struct VoiceInkTests {
         let autoSendBody = source[autoSendStart.lowerBound..<feedbackStart.lowerBound]
 
         #expect(autoSendBody.contains("method: .cgEvent"))
-        #expect(autoSendBody.contains("verification=notRequired"))
+        #expect(autoSendBody.contains("verification=pending"))
+        #expect(autoSendBody.contains("verifyAndRetryForegroundOpenAIReturn"))
         #expect(autoSendBody.contains("case .actionGuardRefused:"))
         #expect(autoSendBody.contains("return .needsNonActivatingExactInput"))
-        #expect(!autoSendBody.contains("focusedInputText"))
+        #expect(autoSendBody.contains("foregroundOpenAIVerificationContext"))
         #expect(!autoSendBody.contains("pressNearbySubmitButton"))
         #expect(!autoSendBody.contains("performAuthenticatedTargetedReturn"))
         #expect(!autoSendBody.contains("method: .systemEvents"))

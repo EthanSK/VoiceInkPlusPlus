@@ -572,24 +572,34 @@ class CursorPaster {
             return .actionGuardRefused
         }
 
-        return await issueAutoSendKey(key, method: method)
+        // Re-run the caller's exact-input/continuity boundary at Return-down. This is
+        // still one immediate HID action; it adds no settling delay or target mutation.
+        return await issueAutoSendKey(
+            key,
+            method: method,
+            preflight: { canPost() }
+        )
     }
 
     @MainActor
     private static func issueAutoSendKey(
         _ key: AutoSendKey,
-        method: AutoSendMethod
+        method: AutoSendMethod,
+        preflight: (() -> Bool)?
     ) async -> AutoSendResult {
         switch method {
         case .systemEvents:
-            return issueAutoSendUsingSystemEvents(key)
+            return issueAutoSendUsingSystemEvents(key, preflight: preflight)
         case .cgEvent:
-            return await issueAutoSendUsingCGEvent(key)
+            return await issueAutoSendUsingCGEvent(key, preflight: preflight)
         }
     }
 
     @MainActor
-    private static func issueAutoSendUsingSystemEvents(_ key: AutoSendKey) -> AutoSendResult {
+    private static func issueAutoSendUsingSystemEvents(
+        _ key: AutoSendKey,
+        preflight: (() -> Bool)?
+    ) -> AutoSendResult {
         let script: NSAppleScript?
         switch key {
         case .none:
@@ -607,6 +617,10 @@ class CursorPaster {
             logger.error("System Events auto-send script is unavailable")
             return .commandNotPosted
         }
+        guard preflight?() != false else {
+            logger.notice("Cancelled System Events auto-send because the exact-input preflight changed immediately before Return")
+            return .commandNotPosted
+        }
 
         var error: NSDictionary?
         script.executeAndReturnError(&error)
@@ -620,7 +634,10 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func issueAutoSendUsingCGEvent(_ key: AutoSendKey) async -> AutoSendResult {
+    private static func issueAutoSendUsingCGEvent(
+        _ key: AutoSendKey,
+        preflight: (() -> Bool)?
+    ) async -> AutoSendResult {
         // HID system state plus a real down/up interval more closely resembles a
         // physical key press than the old back-to-back private-state events. The old
         // pair worked in Terminal but was ignored by the OpenAI Electron composer.
@@ -646,6 +663,10 @@ class CursorPaster {
             enterUp.flags = .maskCommand
         }
 
+        guard preflight?() != false else {
+            logger.notice("Cancelled humanized CGEvent auto-send because the exact-input preflight changed immediately before Return-down")
+            return .commandNotPosted
+        }
         enterDown.post(tap: .cghidEventTap)
         await wait(0.03)
         enterUp.post(tap: .cghidEventTap)

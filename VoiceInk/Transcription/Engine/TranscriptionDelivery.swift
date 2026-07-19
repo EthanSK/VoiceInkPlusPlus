@@ -37,6 +37,11 @@ final class TranscriptionDelivery {
         let sampleCount: Int
     }
 
+    private struct ForegroundOpenAIVerificationContext {
+        let target: FocusLockService.Target
+        let textBeforeSubmit: String
+    }
+
     static func classifyBackgroundAutoSendVerification(
         previousText: String,
         currentText: String?,
@@ -97,7 +102,10 @@ final class TranscriptionDelivery {
            current != previous {
             return .verifiedCleared
         }
-        if current == previous {
+        // Preserve the raw value. Trimming before equality incorrectly turns
+        // "transcript\n" into an unchanged composer and authorizes a second Return
+        // even though the first Return visibly mutated the draft without submitting.
+        if currentText == previousText {
             return .unchanged
         }
         // A changed value proves failure only while it still contains the complete
@@ -109,6 +117,18 @@ final class TranscriptionDelivery {
             return .modifiedWithoutSubmit
         }
         return .unreadable
+    }
+
+    static func shouldRetryForegroundOpenAIReturn(
+        bundleIdentifier: String?,
+        autoSendKey: AutoSendKey,
+        verification: BackgroundAutoSendVerification,
+        exactTargetStillOwnsKeyboardFocus: Bool
+    ) -> Bool {
+        openAIComposerBundleIdentifiers.contains(bundleIdentifier ?? "")
+            && autoSendKey == .enter
+            && verification == .unchanged
+            && exactTargetStillOwnsKeyboardFocus
     }
 
     static func deferredForegroundAutoSendRoute(
@@ -535,7 +555,8 @@ final class TranscriptionDelivery {
             let autoSendOutcome = await performAutoSend(
                 autoSendKey,
                 to: deliveryInput,
-                targetPID: targetPID
+                targetPID: targetPID,
+                pastedText: pastedText
             )
             vippLog.info("paste: foreground auto-send finished outcome=\(String(describing: autoSendOutcome), privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
             switch autoSendOutcome {
@@ -614,6 +635,15 @@ final class TranscriptionDelivery {
             return true
         }
 
+        // A single read of the already-focused retained wrapper may arm read-only
+        // verification, but the first Return is never held behind a settling poll or a
+        // semantic-button scan. If Electron has not exposed the pasted text yet, keep
+        // v2.0.236's immediate one-shot behavior and report the post-state as unknown.
+        let verificationContext = foregroundOpenAIVerificationContext(
+            autoSendKey: autoSendKey,
+            target: target.focusedInput,
+            pastedText: pastedText
+        )
         let sendResult = await CursorPaster.performAutoSend(
             autoSendKey,
             targetPID: continuity.processIdentifier,
@@ -622,9 +652,24 @@ final class TranscriptionDelivery {
         )
         switch sendResult {
         case .commandPosted:
-            // Base VoiceInk does not wait for AX read-back or report a false failure.
-            // This is one ordinary foreground Return with no retry.
-            vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=notRequired key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+            guard let verificationContext else {
+                vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=unavailablePreState key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+                break
+            }
+            vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=pending key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+            let outcome = await verifyAndRetryForegroundOpenAIReturn(
+                autoSendKey,
+                context: verificationContext,
+                targetPID: continuity.processIdentifier,
+                canPost: continuityStillMatches
+            )
+            vippLog.info("paste: primary current-input auto-send verification finished outcome=\(String(describing: outcome), privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+            if outcome == .failed {
+                showAutoSendFailure(
+                    "Transcription pasted, but Return did not submit it",
+                    detail: "primary current-input OpenAI composer remained readable and non-empty after its bounded Return attempt targetPid=\(continuity.processIdentifier)"
+                )
+            }
         case .actionGuardRefused:
             showAutoSendFailure(
                 "Transcription pasted, but the current app changed before Return",
@@ -990,7 +1035,8 @@ final class TranscriptionDelivery {
     private func performAutoSend(
         _ key: AutoSendKey,
         to target: FocusLockService.Target,
-        targetPID: pid_t
+        targetPID: pid_t,
+        pastedText: String
     ) async -> AutoSendOutcome {
         // Foreground/current-input delivery intentionally behaves like a physical
         // paste followed immediately by one physical Return. The guarded Cmd-V above
@@ -1014,6 +1060,11 @@ final class TranscriptionDelivery {
         guard canPost() else {
             return target.hasExactInput ? .needsNonActivatingExactInput : .failed
         }
+        let verificationContext = foregroundOpenAIVerificationContext(
+            autoSendKey: key,
+            target: target,
+            pastedText: pastedText
+        )
         let result = await CursorPaster.performAutoSend(
             key,
             targetPID: targetPID,
@@ -1027,13 +1078,140 @@ final class TranscriptionDelivery {
         case .commandNotPosted:
             return .failed
         case .commandPosted:
-            // Event posting is intentionally not presented as surface verification.
-            // The foreground compatibility route is one-shot and never retries, so an
-            // unreadable Electron post-state cannot create a false red error or a
-            // duplicate submission.
-            vippLog.info("paste: foreground immediate HID auto-send issued=true verification=notRequired key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
-            return .indeterminate
+            guard let verificationContext else {
+                vippLog.info("paste: foreground immediate HID auto-send issued=true verification=unavailablePreState key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
+                return .indeterminate
+            }
+            vippLog.info("paste: foreground immediate HID auto-send issued=true verification=pending key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
+            return await verifyAndRetryForegroundOpenAIReturn(
+                key,
+                context: verificationContext,
+                targetPID: targetPID,
+                canPost: canPost
+            )
         }
+    }
+
+    /// Build an opportunistic verifier only from the exact composer that already owns
+    /// the keyboard and already contains this paste. Failure to read that state never
+    /// delays or suppresses the first HID Return; it merely disables retry/error claims.
+    private func foregroundOpenAIVerificationContext(
+        autoSendKey: AutoSendKey,
+        target: FocusLockService.Target?,
+        pastedText: String
+    ) -> ForegroundOpenAIVerificationContext? {
+        let verificationText = pastedText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard autoSendKey == .enter,
+              !verificationText.isEmpty,
+              let target,
+              target.bundleIdentifier.map(
+                  Self.openAIComposerBundleIdentifiers.contains
+              ) == true,
+              target.hasExactInput,
+              FocusLockService.shared.retainedInputOwnsSystemKeyboardFocus(target),
+              let snapshot = FocusLockService.shared.focusedInputTextSnapshot(
+                  for: target
+              ),
+              snapshot.text.contains(verificationText) else {
+            return nil
+        }
+        return ForegroundOpenAIVerificationContext(
+            target: target,
+            textBeforeSubmit: snapshot.text
+        )
+    }
+
+    /// Verify the one already-issued foreground OpenAI Return. Only a readable, raw-
+    /// unchanged composer which still owns exact keyboard focus may receive one retry.
+    /// A newline/non-empty mutation is a proven failure and is never retried; a replaced
+    /// or unreadable wrapper stays indeterminate so successful submission cannot produce
+    /// a false red warning or a duplicate message.
+    private func verifyAndRetryForegroundOpenAIReturn(
+        _ key: AutoSendKey,
+        context: ForegroundOpenAIVerificationContext,
+        targetPID: pid_t,
+        canPost: @escaping @MainActor () -> Bool
+    ) async -> AutoSendOutcome {
+        let firstVerification = await waitForForegroundOpenAIReturnResult(
+            from: context.textBeforeSubmit,
+            target: context.target
+        )
+        let stillOwnsFocus = FocusLockService.shared
+            .targetOwnsSystemKeyboardFocus(context.target)
+        let firstOutcome = Self.foregroundOpenAIAutoSendOutcome(
+            verification: firstVerification,
+            exactTargetStillOwnsKeyboardFocus: stillOwnsFocus
+        )
+        vippLog.info("paste: foreground OpenAI Return observed verification=\(String(describing: firstVerification), privacy: .public) outcome=\(String(describing: firstOutcome), privacy: .public) retry=false targetPid=\(targetPID, privacy: .public)")
+
+        guard Self.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: context.target.bundleIdentifier,
+            autoSendKey: key,
+            verification: firstVerification,
+            exactTargetStillOwnsKeyboardFocus: stillOwnsFocus
+        ), canPost() else {
+            return firstOutcome
+        }
+
+        let retry = await CursorPaster.performAutoSend(
+            key,
+            targetPID: targetPID,
+            method: .cgEvent,
+            canPost: {
+                canPost()
+                    && FocusLockService.shared.targetOwnsSystemKeyboardFocus(
+                        context.target
+                    )
+            }
+        )
+        guard retry == .commandPosted else {
+            return FocusLockService.shared.targetOwnsSystemKeyboardFocus(
+                context.target
+            ) ? .failed : .indeterminate
+        }
+
+        let retryVerification = await waitForForegroundOpenAIReturnResult(
+            from: context.textBeforeSubmit,
+            target: context.target
+        )
+        let retryOwnsFocus = FocusLockService.shared
+            .targetOwnsSystemKeyboardFocus(context.target)
+        let retryOutcome = Self.foregroundOpenAIAutoSendOutcome(
+            verification: retryVerification,
+            exactTargetStillOwnsKeyboardFocus: retryOwnsFocus
+        )
+        vippLog.info("paste: foreground OpenAI Return observed verification=\(String(describing: retryVerification), privacy: .public) outcome=\(String(describing: retryOutcome), privacy: .public) retry=true targetPid=\(targetPID, privacy: .public)")
+        return retryOutcome
+    }
+
+    private func waitForForegroundOpenAIReturnResult(
+        from previousText: String,
+        target: FocusLockService.Target
+    ) async -> BackgroundAutoSendVerification {
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.75
+        var latest: BackgroundAutoSendVerification = .unreadable
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let snapshot = FocusLockService.shared.focusedInputTextSnapshot(
+                for: target
+            )
+            latest = Self.classifyForegroundOpenAIAutoSendVerification(
+                previousText: previousText,
+                currentText: snapshot?.text,
+                currentPlaceholder: snapshot?.placeholder
+            )
+            if latest == .verifiedCleared {
+                return latest
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let snapshot = FocusLockService.shared.focusedInputTextSnapshot(for: target)
+        return Self.classifyForegroundOpenAIAutoSendVerification(
+            previousText: previousText,
+            currentText: snapshot?.text,
+            currentPlaceholder: snapshot?.placeholder
+        )
     }
 
     private func showAutoSendFailure(_ title: String, detail: String) {
