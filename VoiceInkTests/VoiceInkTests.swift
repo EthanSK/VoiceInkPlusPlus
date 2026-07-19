@@ -13,12 +13,82 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "206"
+            buildNumber: "225"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".206")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 206")
+        #expect(presentation.bottomLine == ".225")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 225")
+    }
+
+    @MainActor
+    @Test func backgroundAutoSendSeparatesUnreadableFromReadableNoOp() {
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: nil
+        ) == .unreadable)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript"
+        ) == .unchanged)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: ""
+        ) == .verifiedCleared)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript\n"
+        ) == .modifiedWithoutSubmit)
+
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .unreadable,
+            targetStayedBackground: true
+        ) == .none)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .verifiedCleared,
+            targetStayedBackground: true
+        ) == .none)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .unchanged,
+            targetStayedBackground: true
+        ) == .unchangedComposerError)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .modifiedWithoutSubmit,
+            targetStayedBackground: true
+        ) == .modifiedWithoutSubmitError)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .unreadable,
+            targetStayedBackground: false
+        ) == .focusSafetyError)
+    }
+
+    @MainActor
+    @Test func deferredForegroundAutoSendNeverReactivatesAnExactInput() {
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: true,
+            targetIsFrontmost: true
+        ) == .foregroundExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: false
+        ) == .nonActivatingExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: true
+        ) == .failClosed)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: true,
+            targetIsFrontmost: false
+        ) == .nonActivatingExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: false,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: false
+        ) == .failClosed)
     }
 
     @MainActor

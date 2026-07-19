@@ -4,6 +4,66 @@ import os
 
 @MainActor
 final class TranscriptionDelivery {
+    enum BackgroundAutoSendVerification: Equatable {
+        case verifiedCleared
+        case unchanged
+        case modifiedWithoutSubmit
+        case unreadable
+    }
+
+    enum DeferredForegroundAutoSendRoute: Equatable {
+        case foregroundExactInput
+        case nonActivatingExactInput
+        case failClosed
+    }
+
+    enum BackgroundAutoSendUserFeedback: Equatable {
+        case none
+        case focusSafetyError
+        case unchangedComposerError
+        case modifiedWithoutSubmitError
+    }
+
+    static func classifyBackgroundAutoSendVerification(
+        previousText: String,
+        currentText: String?
+    ) -> BackgroundAutoSendVerification {
+        guard let currentText else { return .unreadable }
+        guard currentText != previousText else { return .unchanged }
+        return currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? .verifiedCleared
+            : .modifiedWithoutSubmit
+    }
+
+    static func deferredForegroundAutoSendRoute(
+        hasExactInput: Bool,
+        exactInputOwnsKeyboardFocus: Bool,
+        targetIsFrontmost: Bool
+    ) -> DeferredForegroundAutoSendRoute {
+        if hasExactInput {
+            if exactInputOwnsKeyboardFocus && targetIsFrontmost {
+                return .foregroundExactInput
+            }
+            return targetIsFrontmost ? .failClosed : .nonActivatingExactInput
+        }
+        return targetIsFrontmost ? .foregroundExactInput : .failClosed
+    }
+
+    static func backgroundAutoSendUserFeedback(
+        verification: BackgroundAutoSendVerification,
+        targetStayedBackground: Bool
+    ) -> BackgroundAutoSendUserFeedback {
+        guard targetStayedBackground else { return .focusSafetyError }
+        switch verification {
+        case .verifiedCleared, .unreadable:
+            return .none
+        case .unchanged:
+            return .unchangedComposerError
+        case .modifiedWithoutSubmit:
+            return .modifiedWithoutSubmitError
+        }
+    }
+
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     // VIPPDebug: see RecorderUIManager for the filter predicate. Tracks which delivery
     // branch runs and the actual paste (text length) so an empty/suppressed paste is
@@ -285,12 +345,37 @@ final class TranscriptionDelivery {
             }
 
             if autoSendKey.isEnabled {
-                // Keep the destination frontmost for the complete atomic delivery.
-                // The live Codex trace proved that AXConfirm can return `.success`
-                // without submitting an Electron editor, while Terminal happened to
-                // accept it. A real foreground key-code Return is the reliable public
-                // macOS route; restore the user's previous app only after it is posted.
+                // Cmd-V and Return are separated by a settlement window. Ethan may move
+                // to another app or another input during it. Never reactivate or rewrite
+                // focus back to the saved composer: an exact target continues through the
+                // same bounded non-activating background session used by an initially
+                // background delivery, while an app-only fallback fails closed.
                 try? await Task.sleep(nanoseconds: 500_000_000)
+                let exactInputOwnsKeyboardFocus = FocusLockService.shared
+                    .targetOwnsSystemKeyboardFocus(focusedInput)
+                switch Self.deferredForegroundAutoSendRoute(
+                    hasExactInput: focusedInput.hasExactInput,
+                    exactInputOwnsKeyboardFocus: exactInputOwnsKeyboardFocus,
+                    targetIsFrontmost: NSWorkspace.shared.frontmostApplication?
+                        .processIdentifier == targetPID
+                ) {
+                case .nonActivatingExactInput:
+                    await performDetachedBackgroundAutoSendAfterForegroundPaste(
+                        autoSendKey,
+                        pastedText: pastedText,
+                        target: focusedInput
+                    )
+                    return
+                case .failClosed:
+                    showAutoSendFailure(
+                        "Transcription pasted, but the saved input lost focus before Return",
+                        detail: "foreground app-only Return skipped without reactivating targetPid=\(targetPID)"
+                    )
+                    return
+                case .foregroundExactInput:
+                    break
+                }
+
                 guard await FocusLockService.shared.restoreFocus(
                     to: focusedInput,
                     allowApplicationFallback: allowsApplicationFallback
@@ -396,7 +481,62 @@ final class TranscriptionDelivery {
             return
         }
 
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        await performBackgroundAutoSend(
+            autoSendKey,
+            pastedText: pastedText,
+            session: session
+        )
+    }
+
+    /// Foreground Cmd-V may finish just as Ethan moves elsewhere. The saved exact
+    /// composer already contains the transcript, so reusing the non-activating session
+    /// only for submission preserves both the latch and Ethan's newer workspace. Never
+    /// reinsert the text and never activate the destination as a fallback.
+    private func performDetachedBackgroundAutoSendAfterForegroundPaste(
+        _ autoSendKey: AutoSendKey,
+        pastedText: String,
+        target: FocusLockService.Target
+    ) async {
+        guard let session = await FocusLockService.shared.prepareBackgroundDelivery(
+            to: target
+        ) else {
+            showAutoSendFailure(
+                "Transcription pasted, but the saved background input could not be re-verified for Return",
+                detail: "detached foreground auto-send preparation failed targetPid=\(target.processIdentifier)"
+            )
+            return
+        }
+        defer { FocusLockService.shared.finishBackgroundDelivery(session) }
+
+        let verificationText = pastedText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !verificationText.isEmpty,
+              FocusLockService.shared.backgroundInputText(for: session)?
+                .contains(verificationText) == true else {
+            showAutoSendFailure(
+                "Transcription pasted, but the saved background input no longer contained it for Return",
+                detail: "detached foreground paste verification failed targetPid=\(target.processIdentifier)"
+            )
+            return
+        }
+
+        vippLog.notice("paste: user focus moved after foreground paste; continuing auto-send through non-activating exact-input session targetPid=\(target.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        await performBackgroundAutoSend(
+            autoSendKey,
+            pastedText: pastedText,
+            session: session
+        )
+    }
+
+    private func performBackgroundAutoSend(
+        _ autoSendKey: AutoSendKey,
+        pastedText: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async {
+        // Insertion (or the detached foreground readback) already proved that the exact
+        // composer contains the transcript. Submit immediately; an arbitrary delay only
+        // makes Return feel late and widens the window for Ethan to change workspaces.
         guard await FocusLockService.shared.refreshBackgroundFocus(session),
               let textBeforeSubmit = FocusLockService.shared.backgroundInputText(for: session) else {
             showAutoSendFailure(
@@ -419,7 +559,12 @@ final class TranscriptionDelivery {
             case .unavailable:
                 break
             case .failed(let error):
-                vippLog.error("paste: background semantic Send failed AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+                // AXPress can report an error after the app handled the action. Count it
+                // as the single irreversible attempt and verify only; falling through to
+                // targeted Return could double-submit an already accepted message.
+                submitRoute = "semanticSendAXError"
+                submitIssued = true
+                vippLog.error("paste: background semantic Send returned AXError=\(error, privacy: .public); verifying without fallback targetPid=\(session.processIdentifier, privacy: .public)")
             }
         }
 
@@ -437,11 +582,11 @@ final class TranscriptionDelivery {
             return
         }
 
-        var submitVerified = await waitForBackgroundValueChange(
+        var verification = await waitForBackgroundValueChange(
             from: textBeforeSubmit,
             session: session
         )
-        if !submitVerified,
+        if verification == .unchanged,
            submitRoute == "semanticSend",
            await FocusLockService.shared.refreshBackgroundFocus(session) {
             submitRoute = "semanticSend+targetedKey"
@@ -450,12 +595,12 @@ final class TranscriptionDelivery {
                 pid: session.processIdentifier
             ).didPostAutoSendCommand
             if fallbackIssued {
-                submitVerified = await waitForBackgroundValueChange(
+                verification = await waitForBackgroundValueChange(
                     from: textBeforeSubmit,
                     session: session
                 )
             }
-        } else if !submitVerified,
+        } else if verification == .unchanged,
                   autoSendKey == .enter,
                   await FocusLockService.shared.refreshBackgroundFocus(session) {
             submitRoute = "targetedKeyRetry"
@@ -464,38 +609,71 @@ final class TranscriptionDelivery {
                 pid: session.processIdentifier
             ).didPostAutoSendCommand
             if retryIssued {
-                submitVerified = await waitForBackgroundValueChange(
+                verification = await waitForBackgroundValueChange(
                     from: textBeforeSubmit,
                     session: session
                 )
             }
         }
 
-        let stayedBackground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            == session.expectedFrontmostProcessIdentifier
-        let requiresVisibleSubmittedMessage = autoSendKey == .enter && isOpenAIComposer
-        let submittedTextVisible: Bool
-        if requiresVisibleSubmittedMessage {
-            submittedTextVisible = await waitForBackgroundSubmittedText(
-                pastedText,
-                session: session
-            )
-        } else {
-            submittedTextVisible = FocusLockService.shared.backgroundWindowContains(
-                pastedText.trimmingCharacters(in: .whitespacesAndNewlines),
-                for: session
-            )
-        }
-        let succeeded = submitVerified
-            && stayedBackground
-            && (!requiresVisibleSubmittedMessage || submittedTextVisible)
-        vippLog.info("paste: background auto-send finished success=\(succeeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=\(submitRoute, privacy: .public) submittedTextVisible=\(submittedTextVisible, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-        guard succeeded else {
+        // Ethan may move between unrelated apps during the bounded verification wait.
+        // The safety proof is that the saved target never became frontmost—not that the
+        // unrelated app which happened to be frontmost at session start stayed frozen.
+        let finalFrontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        let stayedBackground = finalFrontmostPID != nil
+            && finalFrontmostPID != session.processIdentifier
+        // A rendered message echo is diagnostic only. Do one read without extending
+        // delivery or making it part of success: Codex can omit/delay this background
+        // AX node even when its exact composer already handled Return.
+        let submittedTextVisible = FocusLockService.shared.backgroundWindowContains(
+            pastedText.trimmingCharacters(in: .whitespacesAndNewlines),
+            for: session,
+            excludingSavedInput: isOpenAIComposer && autoSendKey == .enter
+        )
+        let succeeded = verification == .verifiedCleared && stayedBackground
+        vippLog.info("paste: background auto-send finished success=\(succeeded, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=\(submitRoute, privacy: .public) verification=\(String(describing: verification), privacy: .public) submittedTextVisible=\(submittedTextVisible, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(finalFrontmostPID ?? -1, privacy: .public)")
+
+        switch Self.backgroundAutoSendUserFeedback(
+            verification: verification,
+            targetStayedBackground: stayedBackground
+        ) {
+        case .focusSafetyError:
             showAutoSendFailure(
-                "Transcription inserted, but Return could not be verified in the saved background input",
-                detail: "background auto-send produced no verified value change targetPid=\(session.processIdentifier)"
+                "Transcription inserted, but background Return could not preserve focus safely",
+                detail: "saved target became frontmost or frontmost state became unreadable targetPid=\(session.processIdentifier)"
             )
             return
+        case .unchangedComposerError:
+            showAutoSendFailure(
+                "Transcription inserted, but the saved background input did not respond to Return",
+                detail: "background auto-send left readable composer unchanged targetPid=\(session.processIdentifier)"
+            )
+            return
+        case .modifiedWithoutSubmitError:
+            showAutoSendFailure(
+                "Transcription inserted, but Return changed the saved input without submitting it",
+                detail: "background auto-send modified readable composer without clearing it targetPid=\(session.processIdentifier)"
+            )
+            return
+        case .none:
+            break
+        }
+
+        switch verification {
+        case .verifiedCleared:
+            // A rendered-message echo is useful telemetry, but Codex can delay or omit it
+            // from its background AX tree after the composer has already changed. Never
+            // turn that optional observation into a false user-facing failure.
+            return
+        case .unreadable:
+            // One irreversible action was issued. If the composer wrapper disappeared or
+            // became unreadable, Return may already have succeeded; retrying could submit
+            // twice, while an error notification/sound would be a false claim. Preserve
+            // the uncertainty in telemetry only.
+            vippLog.notice("paste: background auto-send post-state unreadable after one issued action; no retry and no visible false-failure targetPid=\(session.processIdentifier, privacy: .public) route=\(submitRoute, privacy: .public)")
+        case .unchanged, .modifiedWithoutSubmit:
+            return // The feedback policy above already surfaced this proven no-op.
         }
     }
 
@@ -523,38 +701,23 @@ final class TranscriptionDelivery {
     private func waitForBackgroundValueChange(
         from previousText: String,
         session: FocusLockService.BackgroundDeliverySession
-    ) async -> Bool {
+    ) async -> BackgroundAutoSendVerification {
         let deadline = ProcessInfo.processInfo.systemUptime + 0.75
         while ProcessInfo.processInfo.systemUptime < deadline {
-            if FocusLockService.shared.backgroundInputText(for: session) != previousText {
-                return true
+            let verification = Self.classifyBackgroundAutoSendVerification(
+                previousText: previousText,
+                currentText: FocusLockService.shared.backgroundInputText(
+                    for: session
+                )
+            )
+            if verification == .verifiedCleared {
+                return verification
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        return FocusLockService.shared.backgroundInputText(for: session) != previousText
-    }
-
-    private func waitForBackgroundSubmittedText(
-        _ submittedText: String,
-        session: FocusLockService.BackgroundDeliverySession
-    ) async -> Bool {
-        let verificationText = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !verificationText.isEmpty else { return false }
-        let deadline = ProcessInfo.processInfo.systemUptime + 2
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if FocusLockService.shared.backgroundWindowContains(
-                verificationText,
-                for: session,
-                excludingSavedInput: true
-            ) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return FocusLockService.shared.backgroundWindowContains(
-            verificationText,
-            for: session,
-            excludingSavedInput: true
+        return Self.classifyBackgroundAutoSendVerification(
+            previousText: previousText,
+            currentText: FocusLockService.shared.backgroundInputText(for: session)
         )
     }
 

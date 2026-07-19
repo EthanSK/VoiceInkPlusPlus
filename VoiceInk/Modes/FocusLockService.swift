@@ -394,6 +394,20 @@ final class FocusLockService: ObservableObject {
         return value as? String
     }
 
+    /// Read-only proof that the frozen exact input still owns system keyboard focus.
+    /// Delivery uses this at the irreversible Cmd-V/Return boundaries so a later click
+    /// routes through non-activating exact delivery instead of activating the saved app
+    /// or rewriting focus from a newer input in the same app.
+    func targetOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
+        guard target.hasExactInput,
+              let targetElement = resolvedExactElement(for: target),
+              let focusedInput = systemFocusedElement() else {
+            return false
+        }
+        return focusedInput.pid == target.pid
+            && CFEqual(focusedInput.element, targetElement)
+    }
+
     /// Some Electron chat editors expose an adjacent accessibility button labelled
     /// "Send" even when their text area ignores synthetic Return. Restrict this to
     /// the caller-selected OpenAI composer path and to a small ancestor radius; never
