@@ -363,6 +363,169 @@ class CursorPaster {
         return true
     }
 
+    /// Click one exact, action-time-revalidated OpenAI Send control without moving
+    /// the system cursor or bringing its app forward.
+    ///
+    /// This is intentionally smaller than Cua/Trope's general background driver.
+    /// FocusLockService already owns and verifies the one internal activation-state
+    /// session, so this primitive omits PSN focus-without-raise and every activation,
+    /// public PID-post, and HID-tap fallback. All five NSEvent-bridged mouse events are
+    /// stamped before the first post. The off-window primer has no semantic target;
+    /// the target mouse-down is the sole irreversible Send attempt, and mouse-up is
+    /// unconditional cleanup. The caller must verify exact composer clear/reset and
+    /// must never follow this with AXPress, Return, or a second click.
+    @MainActor
+    static func performTargetedOpenAISendClick(
+        targetPID: pid_t,
+        windowID: CGWindowID,
+        targetPoint: CGPoint,
+        targetPointInWindow: CGPoint,
+        offWindowPoint: CGPoint,
+        canPost: @MainActor () -> Bool
+    ) async -> AutoSendResult {
+        guard AXIsProcessTrusted() else {
+            logger.error("Accessibility permission is required for targeted OpenAI Send click")
+            return .commandNotPosted
+        }
+        guard canPost() else {
+            logger.error("Refused targeted OpenAI Send click because the exact-input boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+
+        func makeMouseEvent(
+            _ type: NSEvent.EventType,
+            clickCount: Int
+        ) -> CGEvent? {
+            NSEvent.mouseEvent(
+                with: type,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: Int(windowID),
+                context: nil,
+                eventNumber: 0,
+                clickCount: clickCount,
+                pressure: 1
+            )?.cgEvent
+        }
+
+        guard let move = makeMouseEvent(.mouseMoved, clickCount: 0),
+              let primerDown = makeMouseEvent(.leftMouseDown, clickCount: 1),
+              let primerUp = makeMouseEvent(.leftMouseUp, clickCount: 1),
+              let targetDown = makeMouseEvent(.leftMouseDown, clickCount: 1),
+              let targetUp = makeMouseEvent(.leftMouseUp, clickCount: 1) else {
+            logger.error("Failed to create NSEvent-bridged targeted OpenAI Send click events targetPid=\(targetPID, privacy: .public)")
+            return .commandNotPosted
+        }
+
+        let clickGroupID = Int64(
+            (ProcessInfo.processInfo.systemUptime * 1_000_000)
+                .truncatingRemainder(dividingBy: Double(Int32.max))
+        )
+        let offWindowLocalPoint = CGPoint(x: -2_048, y: -2_048)
+        let preparations = [
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                move,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: targetPoint,
+                windowLocalPoint: targetPointInWindow,
+                phase: 2,
+                clickState: 0,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                primerDown,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: offWindowPoint,
+                windowLocalPoint: offWindowLocalPoint,
+                phase: 1,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                primerUp,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: offWindowPoint,
+                windowLocalPoint: offWindowLocalPoint,
+                phase: 2,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                targetDown,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: targetPoint,
+                windowLocalPoint: targetPointInWindow,
+                phase: 3,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                targetUp,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: targetPoint,
+                windowLocalPoint: targetPointInWindow,
+                phase: 3,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            )
+        ]
+        guard preparations.allSatisfy({ $0 }), canPost() else {
+            logger.error("Targeted OpenAI Send click preparation failed or exact-input boundary changed targetPid=\(targetPID, privacy: .public) bridgeAvailable=\(SkyLightTargetedMouseEventPost.isAvailable, privacy: .public) preparedCount=\(preparations.filter { $0 }.count, privacy: .public)")
+            return canPost() ? .commandNotPosted : .actionGuardRefused
+        }
+
+        guard SkyLightTargetedMouseEventPost.postPreparedEvent(
+            move,
+            to: targetPID
+        ) else {
+            return .commandNotPosted
+        }
+        await wait(0.015)
+        guard canPost(),
+              SkyLightTargetedMouseEventPost.postPreparedEvent(
+                primerDown,
+                to: targetPID
+              ) else {
+            return canPost() ? .commandNotPosted : .actionGuardRefused
+        }
+        await wait(0.001)
+        _ = SkyLightTargetedMouseEventPost.postPreparedEvent(
+            primerUp,
+            to: targetPID
+        )
+        await wait(0.1)
+
+        // The primer is deliberately outside the exact window. Revalidate every
+        // saved-input and Send-vs-Stop condition once more before the only target hit.
+        guard canPost() else {
+            logger.notice("Targeted OpenAI Send click cancelled after off-window primer because its action boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+        guard SkyLightTargetedMouseEventPost.postPreparedEvent(
+            targetDown,
+            to: targetPID
+        ) else {
+            return .commandNotPosted
+        }
+        await wait(0.001)
+        let boundaryAfterMouseDown = canPost()
+        let mouseUpPosted = SkyLightTargetedMouseEventPost.postPreparedEvent(
+            targetUp,
+            to: targetPID
+        )
+        if !mouseUpPosted {
+            logger.fault("Targeted OpenAI Send mouse-up cleanup failed after posted mouse-down targetPid=\(targetPID, privacy: .public)")
+        }
+        logger.info("Issued one targeted OpenAI Send click targetPid=\(targetPID, privacy: .public) windowId=\(windowID, privacy: .public) targetX=\(Int(targetPoint.x), privacy: .public) targetY=\(Int(targetPoint.y), privacy: .public) mouseUpPosted=\(mouseUpPosted, privacy: .public) boundaryAfterMouseDown=\(boundaryAfterMouseDown, privacy: .public)")
+        return .commandPosted
+    }
+
     @MainActor
     private static func makeOtherEvent(
         typeRawValue: UInt,

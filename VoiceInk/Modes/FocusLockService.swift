@@ -42,6 +42,14 @@ final class FocusLockService: ObservableObject {
         let placeholder: String?
     }
 
+    struct ApplicationIdentitySnapshot {
+        let applicationBundleName: String
+        let bundleIdentifier: String
+        let shortVersion: String
+        let build: String
+        let chromium: String
+    }
+
     enum BackgroundFocusBooleanSlot: CaseIterable, Hashable {
         case targetWindowMain
         case targetWindowFocused
@@ -197,10 +205,20 @@ final class FocusLockService: ObservableObject {
         var usesPreparedTargetedInput: Bool {
             mode == .preparedTargetedInput
         }
+        var diagnosticMode: String {
+            switch mode {
+            case .preparedTargetedInput: "preparedTargetedInput"
+            case .directExactElement: "directExactElement"
+            }
+        }
+        var diagnosticApplicationIdentity: ApplicationIdentitySnapshot {
+            FocusLockService.applicationIdentitySnapshot(for: app)
+        }
     }
 
     enum NearbySubmitButtonResult: Equatable {
         case pressed
+        case targetedClick
         case unavailable
         case focusLostBeforeAction
         case refusedAfterCandidate
@@ -480,15 +498,33 @@ final class FocusLockService: ObservableObject {
     /// When the saved app is frontmost but another input owns the keyboard, no internal
     /// focus is rewritten; that route may use only direct AXSelectedText insertion.
     func prepareBackgroundDelivery(to target: Target) async -> BackgroundDeliverySession? {
-        guard AXIsProcessTrusted(),
-              target.hasExactInput,
-              !target.app.isTerminated,
-              let frontmostPID = NSWorkspace.shared.frontmostApplication?
-                .processIdentifier,
-              let keyboardFocus = systemFocusedElement(),
-              let element = resolvedExactElement(for: target),
-              let window = liveWindow(for: target, resolvedElement: element) else {
-            logger.error("Background exact-input preparation could not resolve a live saved element/window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+        guard AXIsProcessTrusted() else {
+            logger.error("Background exact-input preparation requires Accessibility permission pid=\(target.pid, privacy: .public)")
+            return nil
+        }
+        guard target.hasExactInput else {
+            logger.error("Background exact-input preparation received no saved exact element pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard !target.app.isTerminated else {
+            logger.error("Background exact-input preparation target app is terminated pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let keyboardFocus = await systemFocusedElementWithBoundedRetry() else {
+            logger.error("Background exact-input preparation could not read current system keyboard focus after bounded retry pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let frontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier else {
+            logger.error("Background exact-input preparation could not read the frontmost application pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let element = resolvedExactElement(for: target) else {
+            logger.error("Background exact-input preparation could not resolve the saved element pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let window = liveWindow(for: target, resolvedElement: element) else {
+            logger.error("Background exact-input preparation could not resolve the saved window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return nil
         }
 
@@ -874,8 +910,130 @@ final class FocusLockService: ObservableObject {
     }
 
     func backgroundInputText(for session: BackgroundDeliverySession) -> String? {
-        guard backgroundDeliveryFastBoundaryMatches(session) else { return nil }
-        return stringAttribute(kAXValueAttribute, from: session.element)
+        backgroundInputTextSnapshot(for: session)?.text
+    }
+
+    func backgroundInputTextSnapshot(
+        for session: BackgroundDeliverySession
+    ) -> FocusedInputTextSnapshot? {
+        guard backgroundDeliveryFastBoundaryMatches(session),
+              let text = stringAttribute(
+                kAXValueAttribute,
+                from: session.element
+              ) else {
+            return nil
+        }
+        return FocusedInputTextSnapshot(
+            text: text,
+            placeholder: stringAttribute(
+                kAXPlaceholderValueAttribute,
+                from: session.element
+            )
+        )
+    }
+
+    /// After a successful chat Send, Electron may replace the composer wrapper.
+    /// Re-resolve only inside the same frozen target/window/context and require the
+    /// new exact editor to own the target app's internal focus. This read is used for
+    /// clear/reset verification and diagnostics only; it never retargets the session,
+    /// mutates focus, or authorizes a retry.
+    func backgroundPostActionInputTextSnapshot(
+        for session: BackgroundDeliverySession
+    ) -> FocusedInputTextSnapshot? {
+        if let retained = backgroundInputTextSnapshot(for: session) {
+            return retained
+        }
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session),
+              let resolved = resolvedExactElement(for: session.target),
+              owningWindow(for: resolved).map({
+                CFEqual($0, session.window)
+              }) == true,
+              let internallyFocused = elementAttribute(
+                kAXFocusedUIElementAttribute,
+                from: AXUIElementCreateApplication(
+                    session.processIdentifier
+                )
+              ),
+              CFEqual(internallyFocused, resolved),
+              let text = stringAttribute(kAXValueAttribute, from: resolved) else {
+            return nil
+        }
+        return FocusedInputTextSnapshot(
+            text: text,
+            placeholder: stringAttribute(
+                kAXPlaceholderValueAttribute,
+                from: resolved
+            )
+        )
+    }
+
+    /// Privacy-safe rolling telemetry for one background Send attempt. This logs only
+    /// executable/build identity, focus/boundary booleans, timings, and aggregate text
+    /// counts. It never logs transcript, composer, placeholder, chat, URL, or clipboard
+    /// content. The repository trace runner retains allowlisted lines for seven days.
+    func logBackgroundAutoSendDiagnostic(
+        stage: String,
+        route: String,
+        verification: String,
+        beforeText: String,
+        afterSnapshot: FocusedInputTextSnapshot?,
+        session: BackgroundDeliverySession,
+        elapsedMilliseconds: Int,
+        sampleCount: Int
+    ) {
+        let identity = session.diagnosticApplicationIdentity
+        let currentFrontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier ?? -1
+        let systemFocusPID = systemFocusedElement()?.pid ?? -1
+        let retainedBoundary = backgroundDeliveryFastBoundaryMatches(session)
+        let fullBoundary = backgroundSessionRemainsPrepared(session)
+        let beforeCharacterCount = beforeText.count
+        let beforeNewlineCount = beforeText.reduce(into: 0) { count, scalar in
+            if scalar.isNewline { count += 1 }
+        }
+        let afterText = afterSnapshot?.text
+        let afterCharacterCount = afterText?.count ?? -1
+        let afterNewlineCount = afterText?.reduce(into: 0) { count, scalar in
+            if scalar.isNewline { count += 1 }
+        } ?? -1
+        let afterMatchesPlaceholder = afterSnapshot.flatMap { snapshot in
+            snapshot.placeholder.map { $0 == snapshot.text }
+        }
+        let afterTrimmedEmpty = afterText.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let endsWithNewline = afterText?.last.map {
+            $0 == "\n" || $0 == "\r"
+        }
+        let afterReadable = afterText != nil
+        let composerElementReplaced = afterReadable && !retainedBoundary
+        let targetBecameFrontmost = currentFrontmostPID
+            == session.processIdentifier
+        let auditedTupleMatched = Self.matchesAuditedOpenAISubmitBuild(
+            session.app
+        )
+        let characterDelta = afterText.map {
+            $0.count - beforeCharacterCount
+        } ?? Int.min
+        let newlineDelta = afterText.map { text in
+            text.reduce(into: 0) { count, scalar in
+                if scalar.isNewline { count += 1 }
+            } - beforeNewlineCount
+        } ?? Int.min
+        let placeholderReadable = afterSnapshot?.placeholder != nil
+        let matchesPlaceholderDescription = afterMatchesPlaceholder.map {
+            String(describing: $0)
+        } ?? "unknown"
+        let trimmedEmptyDescription = afterTrimmedEmpty.map {
+            String(describing: $0)
+        } ?? "unknown"
+        let endsWithNewlineDescription = endsWithNewline.map {
+            String(describing: $0)
+        } ?? "unknown"
+        let windowID = SkyLightTargetedMouseEventPost.windowID(
+            for: session.window
+        ) ?? 0
+        logger.info("Background auto-send diagnostic stage=\(stage, privacy: .public) route=\(route, privacy: .public) verification=\(verification, privacy: .public) app=\(identity.applicationBundleName, privacy: .public) bundle=\(identity.bundleIdentifier, privacy: .public) version=\(identity.shortVersion, privacy: .public) build=\(identity.build, privacy: .public) chromium=\(identity.chromium, privacy: .public) auditedTuple=\(auditedTupleMatched, privacy: .public) sessionMode=\(session.diagnosticMode, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) windowId=\(windowID, privacy: .public) windowHash=\(CFHash(session.window), privacy: .public) elementHash=\(CFHash(session.element), privacy: .public) targetActive=\(session.app.isActive, privacy: .public) targetBecameFrontmost=\(targetBecameFrontmost, privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(currentFrontmostPID, privacy: .public) systemFocusPid=\(systemFocusPID, privacy: .public) retainedBoundary=\(retainedBoundary, privacy: .public) fullBoundary=\(fullBoundary, privacy: .public) composerElementReplaced=\(composerElementReplaced, privacy: .public) beforeChars=\(beforeCharacterCount, privacy: .public) afterReadable=\(afterReadable, privacy: .public) afterChars=\(afterCharacterCount, privacy: .public) charDelta=\(characterDelta, privacy: .public) beforeNewlines=\(beforeNewlineCount, privacy: .public) afterNewlines=\(afterNewlineCount, privacy: .public) newlineDelta=\(newlineDelta, privacy: .public) endsWithNewline=\(endsWithNewlineDescription, privacy: .public) placeholderReadable=\(placeholderReadable, privacy: .public) matchesPlaceholder=\(matchesPlaceholderDescription, privacy: .public) trimmedEmpty=\(trimmedEmptyDescription, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public) samples=\(sampleCount, privacy: .public)")
     }
 
     func backgroundWindowContains(
@@ -984,6 +1142,7 @@ final class FocusLockService: ObservableObject {
             app: session.app,
             pid: session.processIdentifier,
             preserveSystemFocusAcrossAction: session.mode == .directExactElement,
+            allowsTargetedBackgroundClick: session.mode == .preparedTargetedInput,
             waitForUnavailableCandidate: true,
             traversalPreflight: { [weak self] in
                 self?.backgroundDeliveryFastBoundaryMatches(session) == true
@@ -1126,6 +1285,7 @@ final class FocusLockService: ObservableObject {
             app: target.app,
             pid: target.pid,
             preserveSystemFocusAcrossAction: false,
+            allowsTargetedBackgroundClick: false,
             waitForUnavailableCandidate: false,
             traversalPreflight: { [weak self] in
                 self?.retainedTargetOwnsSystemKeyboardFocus(target) == true
@@ -1143,6 +1303,7 @@ final class FocusLockService: ObservableObject {
         app: NSRunningApplication,
         pid: pid_t,
         preserveSystemFocusAcrossAction: Bool,
+        allowsTargetedBackgroundClick: Bool,
         waitForUnavailableCandidate: Bool,
         traversalPreflight: () -> Bool,
         actionPreflight: () -> Bool,
@@ -1203,13 +1364,14 @@ final class FocusLockService: ObservableObject {
             logger.notice("Semantic Send action-time topology changed; no action issued pid=\(pid, privacy: .public)")
             return .refusedAfterCandidate
         }
-        let result = pressVerifiedSubmitButton(
+        let result = await pressVerifiedSubmitButton(
             actionTimeCandidate,
             editor: element,
             window: window,
             app: app,
             pid: pid,
             preserveSystemFocusAcrossAction: preserveSystemFocusAcrossAction,
+            allowsTargetedBackgroundClick: allowsTargetedBackgroundClick,
             preflight: actionPreflight,
             postActionFocusGuard: postActionFocusGuard
         )
@@ -1475,9 +1637,10 @@ final class FocusLockService: ObservableObject {
         app: NSRunningApplication,
         pid: pid_t,
         preserveSystemFocusAcrossAction: Bool,
+        allowsTargetedBackgroundClick: Bool,
         preflight: () -> Bool,
         postActionFocusGuard: () -> Bool
-    ) -> NearbySubmitButtonResult {
+    ) async -> NearbySubmitButtonResult {
         guard preflight(), !Task.isCancelled,
               let editorFrame = frame(of: editor),
               let candidateFrame = frame(of: candidate.element) else {
@@ -1547,6 +1710,74 @@ final class FocusLockService: ObservableObject {
             currentLabel = nil
             labelWasReadable = false
             currentAuditedUnlabelledContract = false
+        }
+
+        let semanticBoundaryProven = Self.isProvenSemanticSendBoundary(
+            isUnambiguous: true,
+            pidMatches: true,
+            windowMatches: true,
+            geometryMatches: true,
+            roleMatches: true,
+            enabled: true,
+            label: currentLabel,
+            labelWasReadable: labelWasReadable,
+            allowsAuditedUnlabelledSend: currentAuditedUnlabelledContract,
+            hasPressAction: true,
+            boundaryMatches: true
+        )
+        guard semanticBoundaryProven else { return .unavailable }
+
+        if allowsTargetedBackgroundClick,
+           currentAuditedUnlabelledContract {
+            guard preflight(), !Task.isCancelled,
+                  let windowFrame = frame(of: window),
+                  let windowID = SkyLightTargetedMouseEventPost.windowID(
+                    for: window
+                  ) else {
+                return .unavailable
+            }
+            let targetPoint = CGPoint(
+                x: candidateFrame.midX,
+                y: candidateFrame.midY
+            )
+            guard windowFrame.contains(targetPoint) else { return .unavailable }
+            let targetPointInWindow = CGPoint(
+                x: targetPoint.x - windowFrame.minX,
+                y: targetPoint.y - windowFrame.minY
+            )
+            // This point is outside the exact window in both screen and local
+            // coordinates, including on multi-monitor layouts with negative origins.
+            let offWindowPoint = CGPoint(
+                x: windowFrame.minX - max(windowFrame.width, 2_048),
+                y: windowFrame.minY - max(windowFrame.height, 2_048)
+            )
+            let actionStarted = ProcessInfo.processInfo.systemUptime
+            let clickResult = await CursorPaster.performTargetedOpenAISendClick(
+                targetPID: pid,
+                windowID: windowID,
+                targetPoint: targetPoint,
+                targetPointInWindow: targetPointInWindow,
+                offWindowPoint: offWindowPoint,
+                canPost: preflight
+            )
+            let elapsedMilliseconds = Int(
+                (ProcessInfo.processInfo.systemUptime - actionStarted) * 1_000
+            )
+            switch clickResult {
+            case .actionGuardRefused:
+                logger.notice("Targeted OpenAI Send click refused at its final exact-input boundary pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .focusLostBeforeAction
+            case .commandNotPosted:
+                logger.error("Targeted OpenAI Send click transport unavailable pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) bridgeAvailable=\(SkyLightTargetedMouseEventPost.isAvailable, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .failed(AXError.cannotComplete.rawValue)
+            case .commandPosted:
+                guard postActionFocusGuard() else {
+                    logger.error("Targeted OpenAI Send click violated the non-activating focus boundary pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                    return .failed(AXError.cannotComplete.rawValue)
+                }
+                logger.info("Targeted OpenAI Send click attempted pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) auditedTuple=true labelState=unlabelledAudited buttonIdentityStable=true buttonEnabled=true buttonWidth=\(Int(candidateFrame.width), privacy: .public) buttonHeight=\(Int(candidateFrame.height), privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .targetedClick
+            }
         }
 
         var actionResult: AXError?
@@ -1951,23 +2182,51 @@ final class FocusLockService: ObservableObject {
         boundaryMatches: Bool,
         action: () -> Int32
     ) -> NearbySubmitButtonResult {
-        guard isUnambiguous,
-              pidMatches,
-              windowMatches,
-              geometryMatches,
-              roleMatches,
-              enabled,
-              labelWasReadable,
-              (isProvenSemanticSendLabel(label)
-                || (allowsAuditedUnlabelledSend && label == nil)),
-              hasPressAction,
-              boundaryMatches else {
+        guard isProvenSemanticSendBoundary(
+            isUnambiguous: isUnambiguous,
+            pidMatches: pidMatches,
+            windowMatches: windowMatches,
+            geometryMatches: geometryMatches,
+            roleMatches: roleMatches,
+            enabled: enabled,
+            label: label,
+            labelWasReadable: labelWasReadable,
+            allowsAuditedUnlabelledSend: allowsAuditedUnlabelledSend,
+            hasPressAction: hasPressAction,
+            boundaryMatches: boundaryMatches
+        ) else {
             return .unavailable
         }
         let result = action()
         return result == AXError.success.rawValue
             ? .pressed
             : .failed(result)
+    }
+
+    static func isProvenSemanticSendBoundary(
+        isUnambiguous: Bool,
+        pidMatches: Bool,
+        windowMatches: Bool,
+        geometryMatches: Bool,
+        roleMatches: Bool,
+        enabled: Bool,
+        label: String?,
+        labelWasReadable: Bool,
+        allowsAuditedUnlabelledSend: Bool,
+        hasPressAction: Bool,
+        boundaryMatches: Bool
+    ) -> Bool {
+        isUnambiguous
+            && pidMatches
+            && windowMatches
+            && geometryMatches
+            && roleMatches
+            && enabled
+            && labelWasReadable
+            && (isProvenSemanticSendLabel(label)
+                || (allowsAuditedUnlabelledSend && label == nil))
+            && hasPressAction
+            && boundaryMatches
     }
 
     static func isProvenSemanticSendLabel(_ label: String?) -> Bool {
@@ -2002,6 +2261,26 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    private static func applicationIdentitySnapshot(
+        for app: NSRunningApplication
+    ) -> ApplicationIdentitySnapshot {
+        let bundleURL = app.bundleURL
+        let bundle = bundleURL.flatMap(Bundle.init(url:))
+        return ApplicationIdentitySnapshot(
+            applicationBundleName: bundleURL?.lastPathComponent ?? "unknown",
+            bundleIdentifier: bundle?.bundleIdentifier ?? "unknown",
+            shortVersion: bundle?.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "unknown",
+            build: bundle?.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String ?? "unknown",
+            chromium: bundle?.object(
+                forInfoDictionaryKey: "ChromiumBaseVersion"
+            ) as? String ?? "unknown"
+        )
+    }
+
     private func systemFocusedElement() -> (element: AXUIElement, pid: pid_t)? {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedValue: CFTypeRef?
@@ -2019,6 +2298,23 @@ final class FocusLockService: ObservableObject {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return nil }
         return (element, pid)
+    }
+
+    /// A modifier/media-key transition can briefly make the system-wide focused-element
+    /// read unavailable even though both the saved target and Ethan's foreground app
+    /// are still valid. This retry is read-only and tightly bounded: it never activates
+    /// an app, rewrites focus, or retries any irreversible delivery action.
+    private func systemFocusedElementWithBoundedRetry()
+        async -> (element: AXUIElement, pid: pid_t)? {
+        let attempts = 3
+        for attempt in 0..<attempts {
+            if let focused = systemFocusedElement() {
+                return focused
+            }
+            guard attempt + 1 < attempts else { break }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return nil
     }
 
     private func liveElement(

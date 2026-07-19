@@ -262,11 +262,13 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused input restore'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Restored and verified focused input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background exact'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background auto-send diagnostic'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram retained'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background internal focus'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact-input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Semantic Send'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'semantic Send'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Targeted OpenAI Send'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Bounded OpenAI FooterActions'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Resolved OpenAI FooterActions'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Retained exact submit'*|\
@@ -283,7 +285,10 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground CGEvent paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to prepare clipboard for paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Accessibility permission is required to paste'*|\
-      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'* )
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'targeted OpenAI Send'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Targeted OpenAI Send'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Issued one targeted OpenAI Send'* )
         append_trace_line "$line"
         case "$line" in
           *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Event-tap health monitoring active'*)

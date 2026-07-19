@@ -78,6 +78,16 @@ struct VoiceInkTests {
             previousText: "latched transcript",
             currentText: "latched transcript\n"
         ) == .modifiedWithoutSubmit)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "Ask for follow-up changes",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .verifiedCleared)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "unrelated reset status",
+            currentPlaceholder: nil
+        ) == .unreadable)
 
         #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
             previousText: "latched transcript",
@@ -482,6 +492,82 @@ struct VoiceInkTests {
             build: "5551",
             chromium: "150.0.7871.124"
         ))
+
+    }
+
+    @Test func targetedOpenAISendClickIsFailClosedAndOneShot() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let delivery = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let backgroundStart = try #require(delivery.range(
+            of: "    private func performBackgroundAutoSend("
+        ))
+        let backgroundEnd = try #require(delivery.range(
+            of: "    private func waitForBackgroundInsertion(",
+            range: backgroundStart.upperBound..<delivery.endIndex
+        ))
+        let backgroundRoute = delivery[
+            backgroundStart.lowerBound..<backgroundEnd.lowerBound
+        ]
+        #expect(backgroundRoute.contains("case .targetedClick:"))
+        #expect(backgroundRoute.contains("skyLightTargetedSendClick"))
+        #expect(backgroundRoute.contains("semanticAXPress"))
+        #expect(!backgroundRoute.contains("authenticatedSkyLightReturn"))
+        #expect(!backgroundRoute.contains("performAuthenticatedTargetedReturn"))
+        #expect(!backgroundRoute.contains("CursorPaster.performAutoSend"))
+
+        let bridge = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/SkyLightTargetedMouseEventPost.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(bridge.contains("SLEventPostToPid"))
+        #expect(bridge.contains("SLEventSetIntegerValueField"))
+        #expect(bridge.contains("CGEventSetWindowLocation"))
+        #expect(bridge.contains("_AXUIElementGetWindow"))
+        #expect(bridge.contains("clock_gettime_nsec_np(CLOCK_UPTIME_RAW)"))
+        #expect(!bridge.contains("SLEventSetAuthenticationMessage"))
+        #expect(!bridge.contains("event.postToPid("))
+        #expect(!bridge.contains("event.post(tap:"))
+
+        let paster = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/CursorPaster.swift"
+            ),
+            encoding: .utf8
+        )
+        let primitiveStart = try #require(paster.range(
+            of: "    static func performTargetedOpenAISendClick("
+        ))
+        let primitiveEnd = try #require(paster.range(
+            of: "    @MainActor\n    private static func makeOtherEvent(",
+            range: primitiveStart.upperBound..<paster.endIndex
+        ))
+        let primitive = paster[
+            primitiveStart.lowerBound..<primitiveEnd.lowerBound
+        ]
+        let lastPreparation = try #require(primitive.range(
+            of: "targetUp,\n                targetPID: targetPID"
+        ))
+        let firstPost = try #require(primitive.range(
+            of: "postPreparedEvent(\n            move"
+        ))
+        #expect(lastPreparation.lowerBound < firstPost.lowerBound)
+        #expect(primitive.contains("postPreparedEvent(\n            primerDown"))
+        #expect(primitive.contains("postPreparedEvent(\n            primerUp"))
+        #expect(primitive.contains("postPreparedEvent(\n            targetDown"))
+        #expect(primitive.contains("postPreparedEvent(\n            targetUp"))
+        #expect(!primitive.contains("performAutoSend("))
+        #expect(!primitive.contains("AXUIElementPerformAction"))
+        #expect(!primitive.contains("postToPid("))
+        #expect(!primitive.contains("post(tap:"))
     }
 
     @MainActor
@@ -576,7 +662,7 @@ struct VoiceInkTests {
             hasExactInput: true,
             exactInputOwnsKeyboardFocus: false,
             targetIsFrontmost: true
-        ) == .nonActivatingExactInput)
+        ) == .foregroundExactInput)
         #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
             hasExactInput: true,
             exactInputOwnsKeyboardFocus: true,
@@ -587,6 +673,11 @@ struct VoiceInkTests {
             exactInputOwnsKeyboardFocus: false,
             targetIsFrontmost: false
         ) == .failClosed)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: false,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: true
+        ) == .foregroundExactInput)
     }
 
     @Test func foregroundDeliveryRemainsAwaitedInsideSerializedPipeline() throws {
@@ -608,10 +699,11 @@ struct VoiceInkTests {
 
         #expect(pasteBody.contains("let pasteResult = await pasteTask.value"))
         #expect(pasteBody.contains("defer { FocusLockService.shared.clearLock() }"))
+        #expect(!pasteBody.contains("waitForForegroundInsertion"))
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
-    @Test func foregroundOpenAIPrefersSemanticSendAndReroutesOnFocusLoss() throws {
+    @Test func foregroundAutoSendUsesImmediateOneShotHIDWithoutAXReadback() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -630,14 +722,13 @@ struct VoiceInkTests {
         ))
         let autoSendBody = source[autoSendStart.lowerBound..<feedbackStart.lowerBound]
 
-        #expect(autoSendBody.contains("pressNearbySubmitButton"))
-        #expect(autoSendBody.contains("foregroundSemanticSend"))
-        #expect(autoSendBody.contains("foregroundSemanticSendAXError"))
-        #expect(autoSendBody.contains("let primaryRoute = \"foregroundHIDReturnFallback\""))
         #expect(autoSendBody.contains("method: .cgEvent"))
-        #expect(autoSendBody.contains("case .focusLostBeforeAction:"))
-        #expect(autoSendBody.contains("result == .actionGuardRefused"))
+        #expect(autoSendBody.contains("verification=notRequired"))
+        #expect(autoSendBody.contains("case .actionGuardRefused:"))
         #expect(autoSendBody.contains("return .needsNonActivatingExactInput"))
+        #expect(!autoSendBody.contains("focusedInputText"))
+        #expect(!autoSendBody.contains("pressNearbySubmitButton"))
+        #expect(!autoSendBody.contains("performAuthenticatedTargetedReturn"))
         #expect(!autoSendBody.contains("method: .systemEvents"))
     }
 
