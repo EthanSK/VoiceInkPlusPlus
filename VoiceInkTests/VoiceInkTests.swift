@@ -15,12 +15,12 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "225"
+            buildNumber: "226"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".225")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 225")
+        #expect(presentation.bottomLine == ".226")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 226")
     }
 
     @MainActor
@@ -67,6 +67,218 @@ struct VoiceInkTests {
         #expect(TranscriptionDelivery.autoSendOutcome(
             verification: .modifiedWithoutSubmit
         ) == .failed)
+    }
+
+    @MainActor
+    @Test func backgroundFocusSnapshotRestoresFalseAndOmitsUnreadableValues() {
+        typealias Slot = FocusLockService.BackgroundFocusBooleanSlot
+        let snapshot = FocusLockService.BackgroundFocusBooleanSnapshot { slot in
+            switch slot {
+            case .targetWindowMain: false
+            case .targetWindowFocused: false
+            case .targetElementFocused: true
+            case .previousWindowMain: true
+            case .previousWindowFocused: true
+            case .previousElementFocused: nil
+            }
+        }
+        var restored: [Slot: Bool] = [:]
+
+        #expect(snapshot.restore { slot, value in
+            restored[slot] = value
+            return true
+        })
+        #expect(restored[.targetWindowMain] == false)
+        #expect(restored[.targetWindowFocused] == false)
+        #expect(restored[.targetElementFocused] == true)
+        #expect(restored[.previousWindowMain] == true)
+        #expect(restored[.previousWindowFocused] == true)
+        #expect(restored[.previousElementFocused] == nil)
+        #expect(snapshot.matches { restored[$0] })
+        #expect(!snapshot.containsAll([.previousElementFocused]))
+        #expect(snapshot.missing(from: [.targetWindowMain, .previousElementFocused]) == [
+            .previousElementFocused
+        ])
+
+        var restorationOrder: [Slot] = []
+        #expect(snapshot.restore { slot, _ in
+            restorationOrder.append(slot)
+            return true
+        })
+        #expect(restorationOrder == [
+            .targetWindowMain,
+            .targetWindowFocused,
+            .targetElementFocused,
+            .previousWindowMain,
+            .previousWindowFocused
+        ])
+
+        var attempted: [Slot] = []
+        #expect(!snapshot.restore { slot, _ in
+            attempted.append(slot)
+            return slot != .targetWindowFocused
+        })
+        #expect(attempted.contains(.previousWindowFocused))
+    }
+
+    @MainActor
+    @Test func backgroundFocusSessionLifecycleIsOneShotAndOwnsPartialCleanup() {
+        var lifecycle = FocusLockService.BackgroundFocusSessionLifecycle()
+        var beginCount = 0
+        var endCount = 0
+
+        #expect(lifecycle.canBegin)
+        #expect(lifecycle.begin {
+            beginCount += 1
+            return true
+        })
+        #expect(beginCount == 1)
+        #expect(!lifecycle.canBegin)
+        #expect(!lifecycle.begin {
+            beginCount += 1
+            return true
+        })
+        #expect(beginCount == 1)
+        #expect(lifecycle.requiresTeardown)
+        #expect(lifecycle.markTeardownRetryScheduled())
+        #expect(lifecycle.state == .teardownRetryScheduled)
+        #expect(!lifecycle.markTeardownRetryScheduled())
+        #expect(lifecycle.finish { endCount += 1 })
+        #expect(endCount == 1)
+        #expect(lifecycle.state == .finished)
+        #expect(!lifecycle.finish { endCount += 1 })
+        #expect(endCount == 1)
+
+        var beginFailed = FocusLockService.BackgroundFocusSessionLifecycle()
+        #expect(!beginFailed.begin {
+            beginCount += 1
+            return false
+        })
+        #expect(beginFailed.state == .ready)
+        #expect(!beginFailed.finish { endCount += 1 })
+        #expect(endCount == 1)
+
+        var waived = FocusLockService.BackgroundFocusSessionLifecycle()
+        #expect(waived.begin { true })
+        #expect(waived.waiveTeardown())
+        #expect(waived.state == .teardownWaived)
+        #expect(!waived.finish { endCount += 1 })
+        #expect(endCount == 1)
+
+        var waivedAfterRetry = FocusLockService.BackgroundFocusSessionLifecycle()
+        #expect(waivedAfterRetry.begin { true })
+        #expect(waivedAfterRetry.markTeardownRetryScheduled())
+        #expect(waivedAfterRetry.waiveTeardown())
+        #expect(waivedAfterRetry.state == .teardownWaived)
+        #expect(!waivedAfterRetry.finish { endCount += 1 })
+        #expect(endCount == 1)
+    }
+
+    @MainActor
+    @Test func backgroundTeardownDecisionCoversEveryTerminalBoundary() {
+        typealias Decision = FocusLockService.BackgroundTeardownDecision
+        typealias Boundary = FocusLockService.BackgroundTeardownBoundaryStatus
+
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: false,
+            retryCount: 0
+        ) == Decision.restoreNow)
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: false,
+            retryCount: 1
+        ) == Decision.restoreNow)
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: true,
+            retryCount: 0
+        ) == Decision.retryFullRestoration)
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: true,
+            retryCount: 1
+        ) == Decision.finishPartialAndEnd)
+
+        for unavailable in [Boundary.frontmostUnavailable, .systemFocusUnavailable] {
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: unavailable,
+                restorationIncomplete: false,
+                retryCount: 0
+            ) == Decision.retryFullRestoration)
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: unavailable,
+                restorationIncomplete: false,
+                retryCount: 1
+            ) == Decision.waiveWithoutMutation)
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: unavailable,
+                restorationIncomplete: true,
+                retryCount: 1
+            ) == Decision.waiveWithoutMutation)
+        }
+
+        for terminal in [Boundary.targetOwnsSystemFocus, .targetTerminated] {
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: terminal,
+                restorationIncomplete: true,
+                retryCount: 0
+            ) == Decision.waiveWithoutMutation)
+        }
+
+        let takeover = FocusLockService.preservedBackgroundTeardownBoundary(
+            current: .safe,
+            observed: .targetOwnsSystemFocus
+        )
+        #expect(takeover == .targetOwnsSystemFocus)
+        #expect(FocusLockService.preservedBackgroundTeardownBoundary(
+            current: takeover,
+            observed: .frontmostUnavailable
+        ) == .targetOwnsSystemFocus)
+        #expect(FocusLockService.preservedBackgroundTeardownBoundary(
+            current: takeover,
+            observed: .safe
+        ) == .targetOwnsSystemFocus)
+    }
+
+    @MainActor
+    @Test func failedBackgroundFocusPreparationBehaviorallyInvokesOwnedCleanup() async {
+        var cleanupCount = 0
+        let failed = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
+            prepare: { false },
+            cleanup: { cleanupCount += 1 }
+        )
+        #expect(!failed)
+        #expect(cleanupCount == 1)
+
+        let succeeded = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
+            prepare: { true },
+            cleanup: { cleanupCount += 1 }
+        )
+        #expect(succeeded)
+        #expect(cleanupCount == 1)
+
+        var lifecycle = FocusLockService.BackgroundFocusSessionLifecycle()
+        var beginCount = 0
+        var endCount = 0
+        let failedAfterBegin = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
+            prepare: {
+                #expect(lifecycle.begin {
+                    beginCount += 1
+                    return true
+                })
+                return false
+            },
+            cleanup: {
+                #expect(lifecycle.finish { endCount += 1 })
+            }
+        )
+        #expect(!failedAfterBegin)
+        #expect(beginCount == 1)
+        #expect(endCount == 1)
+        #expect(lifecycle.state == .finished)
+        #expect(!lifecycle.finish { endCount += 1 })
+        #expect(endCount == 1)
     }
 
     @MainActor

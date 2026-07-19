@@ -37,7 +37,107 @@ final class FocusLockService: ObservableObject {
         var hasExactInput: Bool { element != nil }
     }
 
-    struct BackgroundDeliverySession {
+    enum BackgroundFocusBooleanSlot: CaseIterable, Hashable {
+        case targetWindowMain
+        case targetWindowFocused
+        case targetElementFocused
+        case previousWindowMain
+        case previousWindowFocused
+        case previousElementFocused
+    }
+
+    /// Exact readable values from before VoiceInk++ synthesizes internal focus.
+    /// Missing values are deliberately omitted: writing a guessed `false` during
+    /// teardown is less faithful than leaving an unsupported attribute alone.
+    struct BackgroundFocusBooleanSnapshot {
+        fileprivate let values: [BackgroundFocusBooleanSlot: Bool]
+
+        init(read: (BackgroundFocusBooleanSlot) -> Bool?) {
+            var captured: [BackgroundFocusBooleanSlot: Bool] = [:]
+            for slot in BackgroundFocusBooleanSlot.allCases {
+                if let value = read(slot) {
+                    captured[slot] = value
+                }
+            }
+            values = captured
+        }
+
+        @discardableResult
+        func restore(
+            write: (BackgroundFocusBooleanSlot, Bool) -> Bool
+        ) -> Bool {
+            var allWritesSucceeded = true
+            for slot in BackgroundFocusBooleanSlot.allCases {
+                guard let value = values[slot] else { continue }
+                if !write(slot, value) {
+                    // A stale or unsupported attribute must not prevent later saved
+                    // values from being restored. Aggregate the result after making
+                    // every safe best-effort write.
+                    allWritesSucceeded = false
+                }
+            }
+            return allWritesSucceeded
+        }
+
+        func containsAll(_ slots: [BackgroundFocusBooleanSlot]) -> Bool {
+            slots.allSatisfy { values[$0] != nil }
+        }
+
+        func missing(from slots: [BackgroundFocusBooleanSlot]) -> [BackgroundFocusBooleanSlot] {
+            slots.filter { values[$0] == nil }
+        }
+
+        func matches(read: (BackgroundFocusBooleanSlot) -> Bool?) -> Bool {
+            values.allSatisfy { slot, expected in read(slot) == expected }
+        }
+    }
+
+    struct BackgroundFocusSessionLifecycle {
+        enum State: Equatable {
+            case ready
+            case activationSessionBegan
+            case teardownRetryScheduled
+            case teardownWaived
+            case finished
+        }
+
+        private(set) var state: State = .ready
+        var canBegin: Bool { state == .ready }
+        var requiresTeardown: Bool {
+            state == .activationSessionBegan || state == .teardownRetryScheduled
+        }
+
+        mutating func begin(open: () -> Bool) -> Bool {
+            guard state == .ready else { return false }
+            guard open() else { return false }
+            state = .activationSessionBegan
+            return true
+        }
+
+        /// Keep an unsafe/indeterminate teardown retryable rather than falsely marking
+        /// the synthetic activation session finished before its paired end was posted.
+        mutating func markTeardownRetryScheduled() -> Bool {
+            guard state == .activationSessionBegan else { return false }
+            state = .teardownRetryScheduled
+            return true
+        }
+
+        mutating func waiveTeardown() -> Bool {
+            guard requiresTeardown else { return false }
+            state = .teardownWaived
+            return true
+        }
+
+        /// Posts the paired end exactly once for any opened or deferred session.
+        mutating func finish(postTeardown: () -> Void) -> Bool {
+            guard requiresTeardown else { return false }
+            postTeardown()
+            state = .finished
+            return true
+        }
+    }
+
+    final class BackgroundDeliverySession {
         fileprivate enum Mode: Equatable {
             case preparedTargetedInput
             case directExactElement
@@ -51,8 +151,38 @@ final class FocusLockService: ObservableObject {
         fileprivate let frontmostPIDAtPreparation: pid_t
         fileprivate let previouslyFocusedWindow: AXUIElement?
         fileprivate let previouslyFocusedElement: AXUIElement?
+        fileprivate let focusBooleanSnapshot: BackgroundFocusBooleanSnapshot
+        fileprivate var lifecycle = BackgroundFocusSessionLifecycle()
+        fileprivate var teardownRetryCount = 0
         let processIdentifier: pid_t
         let bundleIdentifier: String?
+
+        fileprivate init(
+            target: Target,
+            element: AXUIElement,
+            window: AXUIElement,
+            app: NSRunningApplication,
+            mode: Mode,
+            frontmostPIDAtPreparation: pid_t,
+            previouslyFocusedWindow: AXUIElement?,
+            previouslyFocusedElement: AXUIElement?,
+            focusBooleanSnapshot: BackgroundFocusBooleanSnapshot,
+            processIdentifier: pid_t,
+            bundleIdentifier: String?
+        ) {
+            self.target = target
+            self.element = element
+            self.window = window
+            self.app = app
+            self.mode = mode
+            self.frontmostPIDAtPreparation = frontmostPIDAtPreparation
+            self.previouslyFocusedWindow = previouslyFocusedWindow
+            self.previouslyFocusedElement = previouslyFocusedElement
+            self.focusBooleanSnapshot = focusBooleanSnapshot
+            self.processIdentifier = processIdentifier
+            self.bundleIdentifier = bundleIdentifier
+        }
+
         var frontmostProcessIdentifierAtPreparation: pid_t {
             frontmostPIDAtPreparation
         }
@@ -96,6 +226,41 @@ final class FocusLockService: ObservableObject {
         case labelled(String)
         case unlabelled
         case unreadable
+    }
+
+    /// Pointer-valued AX reads must distinguish a genuinely absent value from a
+    /// transport/read failure. Neither state is restorable through the public AX API,
+    /// so prepared background focus requires an exact prior window and editor value.
+    private enum ElementReferenceRead {
+        case value(AXUIElement)
+        case absent
+        case failed(Int32)
+
+        var diagnostic: String {
+            switch self {
+            case .value:
+                return "value"
+            case .absent:
+                return "absent"
+            case .failed(let error):
+                return "failed(\(error))"
+            }
+        }
+    }
+
+    enum BackgroundTeardownBoundaryStatus: Equatable {
+        case safe
+        case targetOwnsSystemFocus
+        case targetTerminated
+        case frontmostUnavailable
+        case systemFocusUnavailable
+    }
+
+    enum BackgroundTeardownDecision: Equatable {
+        case restoreNow
+        case retryFullRestoration
+        case finishPartialAndEnd
+        case waiveWithoutMutation
     }
 
     private final class BoundedTraversalState {
@@ -259,6 +424,64 @@ final class FocusLockService: ObservableObject {
                 : .preparedTargetedInput
 
         let appElement = AXUIElementCreateApplication(target.pid)
+        let previouslyFocusedWindow: AXUIElement?
+        let previouslyFocusedElement: AXUIElement?
+        switch mode {
+        case .directExactElement:
+            previouslyFocusedWindow = nil
+            previouslyFocusedElement = nil
+        case .preparedTargetedInput:
+            let windowRead = elementReferenceAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+            )
+            let elementRead = elementReferenceAttribute(
+                kAXFocusedUIElementAttribute,
+                from: appElement
+            )
+            guard case .value(let previousWindow) = windowRead,
+                  case .value(let previousElement) = elementRead else {
+                // VoiceInk++ writes both application pointer attributes below. A nil
+                // or unreadable prior value cannot be restored through public AX, so
+                // this stricter delayed-delivery route must fail before any mutation.
+                logger.error("Background exact focus refused without restorable prior pointer state targetPid=\(target.pid, privacy: .public) windowRead=\(windowRead.diagnostic, privacy: .public) elementRead=\(elementRead.diagnostic, privacy: .public)")
+                return nil
+            }
+            previouslyFocusedWindow = previousWindow
+            previouslyFocusedElement = previousElement
+        }
+        // Adapt the useful part of Cua/Trope's MIT-licensed synthetic-focus
+        // pattern to VoiceInk++'s stricter exact-input contract: snapshot every
+        // readable boolean we may overwrite, including literal `false` values.
+        // The saved app/window/editor references remain VoiceInk++-specific because
+        // delayed delivery must restore the exact prior internal destination.
+        let focusBooleanSnapshot = BackgroundFocusBooleanSnapshot { slot in
+            guard mode == .preparedTargetedInput else { return nil }
+            self.backgroundFocusBoolean(
+                slot,
+                targetWindow: window,
+                targetElement: element,
+                previousWindow: previouslyFocusedWindow,
+                previousElement: previouslyFocusedElement
+            )
+        }
+        let requiredBooleanSlots = requiredBackgroundFocusBooleanSlots(
+            targetWindow: window,
+            targetElement: element,
+            previousWindow: previouslyFocusedWindow,
+            previousElement: previouslyFocusedElement,
+            mode: mode
+        )
+        let missingBooleanSlots = focusBooleanSnapshot.missing(
+            from: requiredBooleanSlots
+        )
+        guard missingBooleanSlots.isEmpty else {
+            // Never overwrite a focus boolean whose exact previous value could not be
+            // read. Omitting it from verification would otherwise permit teardown to
+            // claim success while leaving stale synthetic focus behind.
+            logger.error("Background exact focus refused without complete restorable boolean state targetPid=\(target.pid, privacy: .public) missing=\(String(describing: missingBooleanSlots), privacy: .public)")
+            return nil
+        }
         let session = BackgroundDeliverySession(
             target: target,
             element: element,
@@ -266,14 +489,9 @@ final class FocusLockService: ObservableObject {
             app: target.app,
             mode: mode,
             frontmostPIDAtPreparation: frontmostPID,
-            previouslyFocusedWindow: elementAttribute(
-                kAXFocusedWindowAttribute,
-                from: appElement
-            ),
-            previouslyFocusedElement: elementAttribute(
-                kAXFocusedUIElementAttribute,
-                from: appElement
-            ),
+            previouslyFocusedWindow: previouslyFocusedWindow,
+            previouslyFocusedElement: previouslyFocusedElement,
+            focusBooleanSnapshot: focusBooleanSnapshot,
             processIdentifier: target.pid,
             bundleIdentifier: target.bundleIdentifier
         )
@@ -282,30 +500,98 @@ final class FocusLockService: ObservableObject {
         case .directExactElement:
             guard backgroundSessionRemainsPrepared(session) else { return nil }
         case .preparedTargetedInput:
-            guard await applyBackgroundFocus(session) else {
-                if preparedTargetFocusBoundaryIsSafe(session) {
-                    CursorPaster.endTargetedInputSession(pid: target.pid)
-                }
-                return nil
-            }
+            guard await Self.runBackgroundPreparationWithOwnedFailureCleanup(
+                prepare: { await self.applyBackgroundFocus(session) },
+                cleanup: { self.finishBackgroundDelivery(session) }
+            ) else { return nil }
         }
 
         logger.info("Non-activating exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) mode=\(String(describing: mode), privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         return session
     }
 
+    static func runBackgroundPreparationWithOwnedFailureCleanup(
+        prepare: () async -> Bool,
+        cleanup: () -> Void
+    ) async -> Bool {
+        guard await prepare() else {
+            // Preparation can fail after only some AX setters succeeded. The
+            // session owner—not a caller that never receives it—must pair the
+            // activation-state begin and restore every captured mutation.
+            cleanup()
+            return false
+        }
+        return true
+    }
+
+    static func backgroundTeardownDecision(
+        boundary: BackgroundTeardownBoundaryStatus,
+        restorationIncomplete: Bool,
+        retryCount: Int
+    ) -> BackgroundTeardownDecision {
+        switch boundary {
+        case .safe:
+            guard restorationIncomplete else { return .restoreNow }
+            return retryCount == 0 ? .retryFullRestoration : .finishPartialAndEnd
+        case .targetOwnsSystemFocus, .targetTerminated:
+            return .waiveWithoutMutation
+        case .frontmostUnavailable, .systemFocusUnavailable:
+            // One bounded retry may recover a transient AX/Workspace read. After that,
+            // the least disruptive terminal choice is to waive teardown rather than
+            // post a deactivation that might fight a real but unreadable user focus.
+            return retryCount == 0 ? .retryFullRestoration : .waiveWithoutMutation
+        }
+    }
+
+    static func preservedBackgroundTeardownBoundary(
+        current: BackgroundTeardownBoundaryStatus,
+        observed: BackgroundTeardownBoundaryStatus
+    ) -> BackgroundTeardownBoundaryStatus {
+        guard current == .safe, observed != .safe else { return current }
+        return observed
+    }
+
     func finishBackgroundDelivery(_ session: BackgroundDeliverySession) {
-        guard session.mode == .preparedTargetedInput else { return }
-        // The synthetic active state belongs only to the one bounded background
-        // session. If Ethan has brought Codex forward, do not post a fake deactivation
-        // or rewrite its now-live internal focus.
-        guard preparedTargetFocusBoundaryIsSafe(session) else {
-            logger.notice("Background internal-focus restoration skipped because the target acquired system focus targetPid=\(session.processIdentifier, privacy: .public)")
+        guard session.mode == .preparedTargetedInput,
+              session.lifecycle.requiresTeardown else {
             return
         }
+        // The synthetic active state belongs only to the one bounded background
+        // session. If Ethan has really brought Codex forward, explicitly waive the
+        // synthetic deactivation; if focus state is merely unreadable, retain a
+        // retryable lifecycle state instead of falsely declaring teardown complete.
+        let entryBoundary = preparedTargetFocusBoundaryStatus(session)
+        guard entryBoundary == .safe else {
+            resolveBackgroundTeardown(
+                session,
+                boundary: entryBoundary,
+                restorationIncomplete: false
+            )
+            return
+        }
+        var teardownCompleted = false
+        var restorationBoundary: BackgroundTeardownBoundaryStatus = .safe
+        func restorationBoundaryIsSafe() -> Bool {
+            let observed = preparedTargetFocusBoundaryStatus(session)
+            if observed != .safe {
+                // Preserve the first unsafe observation for the terminal decision. A
+                // second AX/Workspace read must never erase a real user focus takeover
+                // and then permit VoiceInk++ to resume internal-focus mutation.
+                restorationBoundary = Self.preservedBackgroundTeardownBoundary(
+                    current: restorationBoundary,
+                    observed: observed
+                )
+                return false
+            }
+            return restorationBoundary == .safe
+        }
         defer {
-            if preparedTargetFocusBoundaryIsSafe(session) {
-                CursorPaster.endTargetedInputSession(pid: session.processIdentifier)
+            if !teardownCompleted {
+                resolveBackgroundTeardown(
+                    session,
+                    boundary: restorationBoundary,
+                    restorationIncomplete: true
+                )
             }
         }
 
@@ -313,38 +599,46 @@ final class FocusLockService: ObservableObject {
         // session open and re-check the target-not-system-focused boundary before every
         // internal mutation; never begin a nested/repeated activation session.
         Thread.sleep(forTimeInterval: 0.05)
-        guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+        guard restorationBoundaryIsSafe() else { return }
         let appElement = AXUIElementCreateApplication(session.processIdentifier)
-        if let previousWindow = session.previouslyFocusedWindow,
-           !CFEqual(previousWindow, session.window) {
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+
+        // First return the app's pointer attributes to their exact former
+        // window/editor. Temporary `true` writes make that transition acceptable to
+        // Electron, but they are not the final state; the boolean snapshot below then
+        // restores every readable value exactly, including prior `false` values.
+        guard let previousWindow = session.previouslyFocusedWindow,
+              let previousElement = session.previouslyFocusedElement else {
+            logger.error("Background internal-focus restoration lost its required prior pointer state targetPid=\(session.processIdentifier, privacy: .public)")
+            return
+        }
+        if !CFEqual(previousWindow, session.window) {
+            guard restorationBoundaryIsSafe() else { return }
             _ = AXUIElementSetAttributeValue(
                 previousWindow,
                 kAXMainAttribute as CFString,
                 kCFBooleanTrue
             )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+            guard restorationBoundaryIsSafe() else { return }
             _ = AXUIElementSetAttributeValue(
                 appElement,
                 kAXFocusedWindowAttribute as CFString,
                 previousWindow
             )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+            guard restorationBoundaryIsSafe() else { return }
             _ = AXUIElementSetAttributeValue(
                 previousWindow,
                 kAXFocusedAttribute as CFString,
                 kCFBooleanTrue
             )
         }
-        if let previousElement = session.previouslyFocusedElement,
-           !CFEqual(previousElement, session.element) {
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+        if !CFEqual(previousElement, session.element) {
+            guard restorationBoundaryIsSafe() else { return }
             _ = AXUIElementSetAttributeValue(
                 appElement,
                 kAXFocusedUIElementAttribute as CFString,
                 previousElement
             )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+            guard restorationBoundaryIsSafe() else { return }
             _ = AXUIElementSetAttributeValue(
                 previousElement,
                 kAXFocusedAttribute as CFString,
@@ -352,17 +646,102 @@ final class FocusLockService: ObservableObject {
             )
         }
 
+        let booleansRestored = session.focusBooleanSnapshot.restore { slot, value in
+            guard restorationBoundaryIsSafe(),
+                  let (element, attribute) = self.backgroundFocusBooleanTarget(
+                    for: slot,
+                    session: session
+                  ) else {
+                return false
+            }
+            return AXUIElementSetAttributeValue(
+                element,
+                attribute as CFString,
+                value ? kCFBooleanTrue : kCFBooleanFalse
+            ) == .success
+        }
+
         Thread.sleep(forTimeInterval: 0.05)
-        guard preparedTargetFocusBoundaryIsSafe(session) else { return }
+        guard restorationBoundaryIsSafe() else { return }
         let restoredWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
         let restoredElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
-        let windowRestored = session.previouslyFocusedWindow.map { previousWindow in
-            restoredWindow.map { CFEqual($0, previousWindow) } == true
-        } ?? true
-        let elementRestored = session.previouslyFocusedElement.map { previousElement in
-            restoredElement.map { CFEqual($0, previousElement) } == true
-        } ?? true
-        logger.info("Background internal focus restored window=\(windowRestored, privacy: .public) element=\(elementRestored, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        let windowRestored = restoredWindow.map { CFEqual($0, previousWindow) } == true
+        let elementRestored = restoredElement.map { CFEqual($0, previousElement) } == true
+        let booleansVerified = session.focusBooleanSnapshot.matches { slot in
+            guard let (element, attribute) = self.backgroundFocusBooleanTarget(
+                for: slot,
+                session: session
+            ) else {
+                return nil
+            }
+            return self.boolAttribute(attribute, from: element)
+        }
+        guard restorationBoundaryIsSafe() else { return }
+        let restorationComplete = windowRestored
+            && elementRestored
+            && booleansRestored
+            && booleansVerified
+        if restorationComplete {
+            let targetPID = session.processIdentifier
+            teardownCompleted = session.lifecycle.finish {
+                CursorPaster.endTargetedInputSession(pid: targetPID)
+            }
+        } else {
+            // Do not pair the synthetic deactivation merely because the restoration
+            // setters returned. Retry the complete pointer + boolean restoration once;
+            // only the terminal policy may then end a still-partial session.
+            logger.error("Background internal-focus restoration incomplete; scheduling bounded resolution window=\(windowRestored, privacy: .public) element=\(elementRestored, privacy: .public) booleansWritten=\(booleansRestored, privacy: .public) booleansVerified=\(booleansVerified, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+        }
+        logger.info("Background internal focus restoration checked complete=\(restorationComplete, privacy: .public) window=\(windowRestored, privacy: .public) element=\(elementRestored, privacy: .public) booleansWritten=\(booleansRestored, privacy: .public) booleansVerified=\(booleansVerified, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+    }
+
+    private func resolveBackgroundTeardown(
+        _ session: BackgroundDeliverySession,
+        boundary: BackgroundTeardownBoundaryStatus,
+        restorationIncomplete: Bool
+    ) {
+        let decision = Self.backgroundTeardownDecision(
+            boundary: boundary,
+            restorationIncomplete: restorationIncomplete,
+            retryCount: session.teardownRetryCount
+        )
+        switch decision {
+        case .restoreNow:
+            // This resolver is entered only after an unsafe boundary or an incomplete
+            // restoration. A safe complete state is handled inline by the caller. Fail
+            // closed if a future caller violates that invariant; never recurse on a
+            // freshly re-read boundary or leave an ownerless synthetic session.
+            _ = session.lifecycle.waiveTeardown()
+            logger.error("Background internal-focus teardown received an invalid restore-now resolution; teardown waived targetPid=\(session.processIdentifier, privacy: .public)")
+        case .retryFullRestoration:
+            guard session.lifecycle.markTeardownRetryScheduled(),
+                  session.teardownRetryCount == 0 else {
+                _ = session.lifecycle.waiveTeardown()
+                logger.error("Background internal-focus teardown retry could not be owned; teardown waived targetPid=\(session.processIdentifier, privacy: .public)")
+                return
+            }
+            session.teardownRetryCount += 1
+            // Resolve the only retry before returning to the serialized pipeline. A
+            // detached retry could otherwise race a newer session for the same PID and
+            // restore stale pointers or post that newer session's synthetic end.
+            Thread.sleep(forTimeInterval: 0.05)
+            finishBackgroundDelivery(session)
+        case .finishPartialAndEnd:
+            // The complete restoration path was retried once while the non-activating
+            // boundary was safe. Pair the activation session exactly once, keep the
+            // unresolved AX restoration in telemetry, and never spin indefinitely.
+            let targetPID = session.processIdentifier
+            _ = session.lifecycle.finish {
+                CursorPaster.endTargetedInputSession(pid: targetPID)
+            }
+            logger.error("Background internal-focus restoration remained partial after one full retry; activation session ended targetPid=\(targetPID, privacy: .public)")
+        case .waiveWithoutMutation:
+            // Target takeover, termination, or persistent unreadable focus makes any
+            // further AX write/deactivation less safe than stopping. This is an explicit
+            // terminal waiver, not a silently orphaned activation-session owner.
+            _ = session.lifecycle.waiveTeardown()
+            logger.notice("Background internal-focus teardown waived without another mutation targetPid=\(session.processIdentifier, privacy: .public) boundary=\(String(describing: boundary), privacy: .public)")
+        }
     }
 
     func backgroundInputText(for session: BackgroundDeliverySession) -> String? {
@@ -936,11 +1315,119 @@ final class FocusLockService: ObservableObject {
         min(uniqueCandidates(candidates).count, 2)
     }
 
+    private func backgroundFocusBoolean(
+        _ slot: BackgroundFocusBooleanSlot,
+        targetWindow: AXUIElement,
+        targetElement: AXUIElement,
+        previousWindow: AXUIElement?,
+        previousElement: AXUIElement?
+    ) -> Bool? {
+        guard let (element, attribute) = backgroundFocusBooleanTarget(
+            for: slot,
+            targetWindow: targetWindow,
+            targetElement: targetElement,
+            previousWindow: previousWindow,
+            previousElement: previousElement
+        ) else {
+            return nil
+        }
+        return boolAttribute(attribute, from: element)
+    }
+
+    private func backgroundFocusBooleanTarget(
+        for slot: BackgroundFocusBooleanSlot,
+        session: BackgroundDeliverySession
+    ) -> (AXUIElement, String)? {
+        backgroundFocusBooleanTarget(
+            for: slot,
+            targetWindow: session.window,
+            targetElement: session.element,
+            previousWindow: session.previouslyFocusedWindow,
+            previousElement: session.previouslyFocusedElement
+        )
+    }
+
+    private func backgroundFocusBooleanTarget(
+        for slot: BackgroundFocusBooleanSlot,
+        targetWindow: AXUIElement,
+        targetElement: AXUIElement,
+        previousWindow: AXUIElement?,
+        previousElement: AXUIElement?
+    ) -> (AXUIElement, String)? {
+        switch slot {
+        case .targetWindowMain:
+            return (targetWindow, kAXMainAttribute)
+        case .targetWindowFocused:
+            return (targetWindow, kAXFocusedAttribute)
+        case .targetElementFocused:
+            return (targetElement, kAXFocusedAttribute)
+        case .previousWindowMain:
+            return previousWindow.map { ($0, kAXMainAttribute) }
+        case .previousWindowFocused:
+            return previousWindow.map { ($0, kAXFocusedAttribute) }
+        case .previousElementFocused:
+            return previousElement.map { ($0, kAXFocusedAttribute) }
+        }
+    }
+
+    private func requiredBackgroundFocusBooleanSlots(
+        targetWindow: AXUIElement,
+        targetElement: AXUIElement,
+        previousWindow: AXUIElement?,
+        previousElement: AXUIElement?,
+        mode: BackgroundDeliverySession.Mode
+    ) -> [BackgroundFocusBooleanSlot] {
+        guard mode == .preparedTargetedInput else { return [] }
+        var required: [BackgroundFocusBooleanSlot] = [
+            .targetWindowMain,
+            .targetWindowFocused,
+            .targetElementFocused
+        ]
+        if let previousWindow {
+            if !CFEqual(previousWindow, targetWindow) {
+                required.append(contentsOf: [
+                    .previousWindowMain,
+                    .previousWindowFocused
+                ])
+            }
+        } else {
+            // A prepared session may never exist without both exact prior pointers;
+            // include their slots so the defensive apply-time guard also fails closed.
+            required.append(contentsOf: [
+                .previousWindowMain,
+                .previousWindowFocused
+            ])
+        }
+        if let previousElement {
+            if !CFEqual(previousElement, targetElement) {
+                required.append(.previousElementFocused)
+            }
+        } else {
+            required.append(.previousElementFocused)
+        }
+        return required
+    }
+
     private func applyBackgroundFocus(_ session: BackgroundDeliverySession) async -> Bool {
+        let requiredBooleanSlots = requiredBackgroundFocusBooleanSlots(
+            targetWindow: session.window,
+            targetElement: session.element,
+            previousWindow: session.previouslyFocusedWindow,
+            previousElement: session.previouslyFocusedElement,
+            mode: session.mode
+        )
         guard session.mode == .preparedTargetedInput,
               preparedTargetFocusBoundaryIsSafe(session),
-              CursorPaster.beginTargetedInputSession(pid: session.processIdentifier) else {
+              session.lifecycle.canBegin,
+              session.focusBooleanSnapshot.containsAll(requiredBooleanSlots) else {
             logger.error("Background exact focus refused before its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
+            return false
+        }
+        let targetPID = session.processIdentifier
+        guard session.lifecycle.begin(open: {
+            CursorPaster.beginTargetedInputSession(pid: targetPID)
+        }) else {
+            logger.error("Background exact focus could not begin its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
             return false
         }
 
@@ -1002,13 +1489,23 @@ final class FocusLockService: ObservableObject {
     private func preparedTargetFocusBoundaryIsSafe(
         _ session: BackgroundDeliverySession
     ) -> Bool {
-        guard !session.app.isTerminated,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier
-                != session.processIdentifier,
-              let systemFocus = systemFocusedElement() else {
-            return false
+        preparedTargetFocusBoundaryStatus(session) == .safe
+    }
+
+    private func preparedTargetFocusBoundaryStatus(
+        _ session: BackgroundDeliverySession
+    ) -> BackgroundTeardownBoundaryStatus {
+        guard !session.app.isTerminated else { return .targetTerminated }
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        let systemFocus = systemFocusedElement()
+        if frontmostPID == session.processIdentifier
+            || systemFocus?.pid == session.processIdentifier {
+            return .targetOwnsSystemFocus
         }
-        return systemFocus.pid != session.processIdentifier
+        guard frontmostPID != nil else { return .frontmostUnavailable }
+        guard systemFocus != nil else { return .systemFocusUnavailable }
+        return .safe
     }
 
     private func backgroundFocusBoundaryIsSafeAfterSubmission(
@@ -1551,6 +2048,30 @@ final class FocusLockService: ObservableObject {
         }
         let attributeElement = value as! AXUIElement
         return attributeElement
+    }
+
+    private func elementReferenceAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> ElementReferenceRead {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        )
+        switch result {
+        case .success:
+            guard let value else { return .absent }
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                return .failed(AXError.illegalArgument.rawValue)
+            }
+            return .value(value as! AXUIElement)
+        case .noValue:
+            return .absent
+        default:
+            return .failed(result.rawValue)
+        }
     }
 
     private func elementArrayAttribute(_ attribute: String, from element: AXUIElement) -> [AXUIElement] {
