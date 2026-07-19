@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-19T17:46:05Z
+**Trigger:** Ethan asked agents to always check logs during frequent live use, add detailed self-cleaning one-week diagnostics for the current debug period, and remember to turn debug mode off when the work is done.
+**Symptom:** Runtime regressions were repeatedly changed without first correlating Ethan's newest physical use with the exact installed build and delivery trace; the reusable trace lived in one temporary file with no explicit weekly retention or debug-mode shutdown contract.
+**Root cause:** The project instructions did not require a current log check after every reported reproduction, and live-delivery-trace.sh truncated one /tmp trace on start instead of retaining a bounded rolling evidence window.
+**Fix:** Commit 6434efb makes live delivery tracing an explicit temporary debug mode, keeps privacy-allowlisted action/focus/paste/auto-send metadata in private daily files under ~/Library/Logs/VoiceInkPlusPlus/DeliveryTrace, prunes files after seven complete days, and requires agents to inspect current build/PID plus logs before another mechanism change and stop the trace when the investigation closes.
+**Commit:** 6434efb
+**Guard:** An isolated retention test removed a nine-day-old trace while preserving today's file; live start/status/show reported debugMode=on with retentionDays=7 and a launchd-owned runner; bash syntax, git diff --check, and skill quick_validate all passed. Transcript and app content remain excluded by the existing allowlist.
+---
+
+
+---
 **Date:** 2026-07-15T15:52:35Z
 **Trigger:** Ethan made reliable exact-input background paste and Enter the primary objective and required compatibility tracking for his main apps.
 **Symptom:** Exact saved-input paste could work while Return was inconsistent or unsafe across Codex, ChatGPT quick window, Terminal/iTerm, Telegram, Chrome, Notion, and same-app different-input cases.
