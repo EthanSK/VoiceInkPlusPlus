@@ -315,6 +315,27 @@ final class FocusLockService: ObservableObject {
     private final class BoundedTraversalState {
         var remainingNodeBudget: Int
         var visitedNodeHashes = Set<CFHashCode>()
+        var navigationChildEdges = 0
+        var visibleChildEdges = 0
+        var ordinaryChildEdges = 0
+        var mergedChildEdges = 0
+        var buttonNodes = 0
+        var labelledSendButtons = 0
+        var labelledOtherButtons = 0
+        var unlabelledButtons = 0
+        var unreadableLabelButtons = 0
+        var auditedUnlabelledButtons = 0
+        var enabledButtons = 0
+        var disabledButtons = 0
+        var unreadableEnabledButtons = 0
+        var pressableButtons = 0
+        var unpressableButtons = 0
+        var matchingWindowButtons = 0
+        var mismatchedWindowButtons = 0
+        var readableFrameButtons = 0
+        var unreadableFrameButtons = 0
+        var matchingGeometryButtons = 0
+        var mismatchedGeometryButtons = 0
 
         init(nodeBudget: Int) {
             remainingNodeBudget = nodeBudget
@@ -340,6 +361,8 @@ final class FocusLockService: ObservableObject {
     private(set) var stopHoldDecisionPending = false
 
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
+    private static let semanticSendNodeBudget = 1_600
+    private static let semanticSendSearchSeconds = 0.35
     // Codex 26.707.72221 renders its idle submit control as the only enabled,
     // unlabelled button in the nearest composer container. Its bundled React source
     // gives the *Stop* state a non-empty aria label, while the idle Send state passes
@@ -1201,14 +1224,20 @@ final class FocusLockService: ObservableObject {
         pid: pid_t,
         boundary: () -> Bool
     ) async -> NearbySubmitButtonLookup {
-        guard boundary() else { return .boundaryChanged }
+        guard boundary() else {
+            logger.notice("Bounded OpenAI FooterActions sibling search stopped reason=initialBoundaryChanged pid=\(pid, privacy: .public)")
+            return .boundaryChanged
+        }
         guard let editorFrame = frame(of: editor) else {
+            logger.notice("Bounded OpenAI FooterActions sibling search stopped reason=editorFrameUnreadable pid=\(pid, privacy: .public)")
             return .unavailable
         }
 
         let searchStarted = ProcessInfo.processInfo.systemUptime
-        let deadline = searchStarted + 0.35
-        let traversalState = BoundedTraversalState(nodeBudget: 1_600)
+        let deadline = searchStarted + Self.semanticSendSearchSeconds
+        let traversalState = BoundedTraversalState(
+            nodeBudget: Self.semanticSendNodeBudget
+        )
         var ancestorsVisited = 0
         var editorBranch = editor
         var ancestor = elementAttribute(kAXParentAttribute, from: editor)
@@ -1223,7 +1252,10 @@ final class FocusLockService: ObservableObject {
             ancestorsVisited += 1
             ancestor = elementAttribute(kAXParentAttribute, from: container)
             var candidates: [NearbySubmitButtonCandidate] = []
-            let siblingBranches = traversalChildren(of: container).filter {
+            let siblingBranches = traversalChildren(
+                of: container,
+                state: traversalState
+            ).filter {
                 !CFEqual($0, editorBranch)
             }
             for sibling in siblingBranches {
@@ -1240,7 +1272,8 @@ final class FocusLockService: ObservableObject {
                             window: window,
                             editorFrame: editorFrame,
                             app: app,
-                            pid: pid
+                            pid: pid,
+                            diagnostics: traversalState
                         ) {
                             candidates.append(candidate)
                         }
@@ -1252,9 +1285,40 @@ final class FocusLockService: ObservableObject {
                     break
                 case .stoppedByVisitor:
                     return .ambiguous
-                case .cancelled, .boundaryChanged:
+                case .cancelled:
+                    logSemanticSendSearchFailure(
+                        reason: "cancelled",
+                        pid: pid,
+                        searchStarted: searchStarted,
+                        ancestorsVisited: ancestorsVisited,
+                        state: traversalState
+                    )
+                    return .boundaryChanged
+                case .boundaryChanged:
+                    logSemanticSendSearchFailure(
+                        reason: "boundaryChanged",
+                        pid: pid,
+                        searchStarted: searchStarted,
+                        ancestorsVisited: ancestorsVisited,
+                        state: traversalState
+                    )
                     return .boundaryChanged
                 case .exhausted:
+                    let reason: String
+                    if traversalState.remainingNodeBudget <= 0 {
+                        reason = "nodeBudgetExhausted"
+                    } else if ProcessInfo.processInfo.systemUptime >= deadline {
+                        reason = "deadlineExhausted"
+                    } else {
+                        reason = "depthOrQueueTruncated"
+                    }
+                    logSemanticSendSearchFailure(
+                        reason: reason,
+                        pid: pid,
+                        searchStarted: searchStarted,
+                        ancestorsVisited: ancestorsVisited,
+                        state: traversalState
+                    )
                     return .unavailable
                 }
             }
@@ -1264,17 +1328,38 @@ final class FocusLockService: ObservableObject {
                 let elapsedMilliseconds = Int(
                     (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
                 )
-                logger.info("Resolved OpenAI FooterActions Send sibling pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(1_600 - traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                logger.info("Resolved OpenAI FooterActions Send sibling pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(Self.semanticSendNodeBudget - traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
                 return .ready(candidate)
             }
             if unique.count > 1 { return .ambiguous }
             editorBranch = container
         }
+        logSemanticSendSearchFailure(
+            reason: "completedWithoutCandidate",
+            pid: pid,
+            searchStarted: searchStarted,
+            ancestorsVisited: ancestorsVisited,
+            state: traversalState
+        )
+        return .unavailable
+    }
+
+    /// Keep failed live searches diagnosable without logging labels, editor contents,
+    /// window titles, or any other user data. Counts reveal which irreversible Send
+    /// gate rejected Codex while preserving the exact same fail-closed contract.
+    private func logSemanticSendSearchFailure(
+        reason: String,
+        pid: pid_t,
+        searchStarted: TimeInterval,
+        ancestorsVisited: Int,
+        state: BoundedTraversalState
+    ) {
         let elapsedMilliseconds = Int(
             (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
         )
-        logger.notice("Bounded OpenAI FooterActions sibling search found no candidate pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(1_600 - traversalState.remainingNodeBudget, privacy: .public) remainingNodeBudget=\(traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-        return .unavailable
+        logger.notice("Bounded OpenAI FooterActions sibling search found no candidate reason=\(reason, privacy: .public) pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(Self.semanticSendNodeBudget - state.remainingNodeBudget, privacy: .public) remainingNodeBudget=\(state.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+        logger.notice("Bounded OpenAI FooterActions child counts pid=\(pid, privacy: .public) nav=\(state.navigationChildEdges, privacy: .public) visible=\(state.visibleChildEdges, privacy: .public) ordinary=\(state.ordinaryChildEdges, privacy: .public) merged=\(state.mergedChildEdges, privacy: .public) buttons=\(state.buttonNodes, privacy: .public)")
+        logger.notice("Bounded OpenAI FooterActions rejection counts pid=\(pid, privacy: .public) labelSend=\(state.labelledSendButtons, privacy: .public) labelOther=\(state.labelledOtherButtons, privacy: .public) labelUnlabelled=\(state.unlabelledButtons, privacy: .public) labelUnreadable=\(state.unreadableLabelButtons, privacy: .public) auditedUnlabelled=\(state.auditedUnlabelledButtons, privacy: .public) enabled=\(state.enabledButtons, privacy: .public) disabled=\(state.disabledButtons, privacy: .public) enabledUnreadable=\(state.unreadableEnabledButtons, privacy: .public) pressable=\(state.pressableButtons, privacy: .public) unpressable=\(state.unpressableButtons, privacy: .public) windowMatch=\(state.matchingWindowButtons, privacy: .public) windowMismatch=\(state.mismatchedWindowButtons, privacy: .public) frameReadable=\(state.readableFrameButtons, privacy: .public) frameUnreadable=\(state.unreadableFrameButtons, privacy: .public) geometryMatch=\(state.matchingGeometryButtons, privacy: .public) geometryMismatch=\(state.mismatchedGeometryButtons, privacy: .public)")
     }
 
     private func semanticSendCandidate(
@@ -1283,9 +1368,22 @@ final class FocusLockService: ObservableObject {
         window: AXUIElement,
         editorFrame: CGRect,
         app: NSRunningApplication,
-        pid: pid_t
+        pid: pid_t,
+        diagnostics: BoundedTraversalState? = nil
     ) -> NearbySubmitButtonCandidate? {
+        guard !CFEqual(candidateElement, editor),
+              stringAttribute(kAXRoleAttribute, from: candidateElement)
+                == kAXButtonRole else {
+            return nil
+        }
+        diagnostics?.buttonNodes += 1
+
         var candidatePID: pid_t = 0
+        guard AXUIElementGetPid(candidateElement, &candidatePID) == .success,
+              candidatePID == pid else {
+            return nil
+        }
+
         let labelState = submitLabelState(for: candidateElement)
         let label: String?
         let usesAuditedUnlabelledContract: Bool
@@ -1293,31 +1391,66 @@ final class FocusLockService: ObservableObject {
         case .labelled(let value):
             label = value
             usesAuditedUnlabelledContract = false
+            if Self.isProvenSemanticSendLabel(value) {
+                diagnostics?.labelledSendButtons += 1
+            } else {
+                diagnostics?.labelledOtherButtons += 1
+            }
         case .unlabelled:
             label = nil
             usesAuditedUnlabelledContract = Self.matchesAuditedCodexSubmitBuild(app)
+            diagnostics?.unlabelledButtons += 1
+            if usesAuditedUnlabelledContract {
+                diagnostics?.auditedUnlabelledButtons += 1
+            }
         case .unreadable:
+            diagnostics?.unreadableLabelButtons += 1
             return nil
         }
-        guard !CFEqual(candidateElement, editor),
-              AXUIElementGetPid(candidateElement, &candidatePID) == .success,
-              candidatePID == pid,
-              stringAttribute(kAXRoleAttribute, from: candidateElement)
-                == kAXButtonRole,
-              (Self.isProvenSemanticSendLabel(label)
-                || usesAuditedUnlabelledContract),
-              boolAttribute(kAXEnabledAttribute, from: candidateElement) == true,
-              supportsPressAction(candidateElement),
-              owningWindow(for: candidateElement).map({
-                  CFEqual($0, window)
-              }) == true,
-              let candidateFrame = frame(of: candidateElement),
-              Self.semanticSendGeometryMatches(
-                  editorFrame: editorFrame,
-                  candidateFrame: candidateFrame
-              ) else {
+        guard Self.isProvenSemanticSendLabel(label)
+                || usesAuditedUnlabelledContract else {
             return nil
         }
+
+        switch boolAttribute(kAXEnabledAttribute, from: candidateElement) {
+        case true:
+            diagnostics?.enabledButtons += 1
+        case false:
+            diagnostics?.disabledButtons += 1
+            return nil
+        case nil:
+            diagnostics?.unreadableEnabledButtons += 1
+            return nil
+        }
+
+        guard supportsPressAction(candidateElement) else {
+            diagnostics?.unpressableButtons += 1
+            return nil
+        }
+        diagnostics?.pressableButtons += 1
+
+        guard owningWindow(for: candidateElement).map({
+            CFEqual($0, window)
+        }) == true else {
+            diagnostics?.mismatchedWindowButtons += 1
+            return nil
+        }
+        diagnostics?.matchingWindowButtons += 1
+
+        guard let candidateFrame = frame(of: candidateElement) else {
+            diagnostics?.unreadableFrameButtons += 1
+            return nil
+        }
+        diagnostics?.readableFrameButtons += 1
+        guard Self.semanticSendGeometryMatches(
+            editorFrame: editorFrame,
+            candidateFrame: candidateFrame
+        ) else {
+            diagnostics?.mismatchedGeometryButtons += 1
+            return nil
+        }
+        diagnostics?.matchingGeometryButtons += 1
+
         let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
         return NearbySubmitButtonCandidate(
             element: candidateElement,
@@ -1732,7 +1865,7 @@ final class FocusLockService: ObservableObject {
                     return BoundedTraversalResult(completion: .boundaryChanged)
                 }
             }
-            let children = traversalChildren(of: element)
+            let children = traversalChildren(of: element, state: state)
             guard depth < maximumDepth else {
                 if !children.isEmpty { truncated = true }
                 continue
@@ -2251,19 +2384,27 @@ final class FocusLockService: ObservableObject {
         return merged
     }
 
-    private func traversalChildren(of element: AXUIElement) -> [AXUIElement] {
-        Self.mergedTraversalChildren(
-            visible: elementArrayAttribute(
-                kAXVisibleChildrenAttribute,
-                from: element
-            ),
-            ordinary: elementArrayAttribute(kAXChildrenAttribute, from: element),
-            navigationOrder: elementArrayAttribute(
-                "AXChildrenInNavigationOrder",
-                from: element
-            ),
+    private func traversalChildren(
+        of element: AXUIElement,
+        state: BoundedTraversalState
+    ) -> [AXUIElement] {
+        let visible = elementArrayAttribute(kAXVisibleChildrenAttribute, from: element)
+        let ordinary = elementArrayAttribute(kAXChildrenAttribute, from: element)
+        let navigationOrder = elementArrayAttribute(
+            "AXChildrenInNavigationOrder",
+            from: element
+        )
+        let merged = Self.mergedTraversalChildren(
+            visible: visible,
+            ordinary: ordinary,
+            navigationOrder: navigationOrder,
             areEquivalent: { CFEqual($0, $1) }
         )
+        state.navigationChildEdges += navigationOrder.count
+        state.visibleChildEdges += visible.count
+        state.ordinaryChildEdges += ordinary.count
+        state.mergedChildEdges += merged.count
+        return merged
     }
 
     private func boolAttribute(_ attribute: String, from element: AXUIElement) -> Bool? {
