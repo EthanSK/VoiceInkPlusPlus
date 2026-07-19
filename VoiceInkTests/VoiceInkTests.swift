@@ -560,7 +560,7 @@ struct VoiceInkTests {
             of: "postPreparedEvent(\n            move"
         ))
         #expect(lastPreparation.lowerBound < firstPost.lowerBound)
-        #expect(primitive.contains("postPreparedEvent(\n            primerDown"))
+        #expect(primitive.contains("postPreparedEvent(\n                primerDown"))
         #expect(primitive.contains("postPreparedEvent(\n            primerUp"))
         #expect(primitive.contains("postPreparedEvent(\n            targetDown"))
         #expect(primitive.contains("postPreparedEvent(\n            targetUp"))
