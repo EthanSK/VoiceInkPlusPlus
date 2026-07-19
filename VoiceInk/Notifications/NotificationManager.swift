@@ -29,18 +29,38 @@ class NotificationManager {
         if type == .error {
             SoundManager.shared.playEscSound()
         }
+
+        // Errors are diagnostic evidence, not momentary success feedback. Leave them
+        // visible long enough to select and copy, and provide a one-click fallback for
+        // nonactivating panels where the user's current app may still own Command-C.
+        let effectiveDuration = type == .error ? max(duration, 12.0) : duration
+        let effectiveActionButton: (label: String, action: () -> Void)?
+        if let actionButton {
+            effectiveActionButton = actionButton
+        } else if type == .error {
+            effectiveActionButton = (
+                label: String(localized: "Copy"),
+                action: {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(title, forType: .string)
+                }
+            )
+        } else {
+            effectiveActionButton = nil
+        }
         
         let notificationView = AppNotificationView(
             title: title,
             type: type,
-            duration: duration,
+            duration: effectiveDuration,
             onClose: { [weak self] in
                 Task { @MainActor in
                     self?.dismissNotification()
                 }
             },
             onTap: onTap,
-            actionButton: actionButton
+            actionButton: effectiveActionButton
         )
         let hostingController = NSHostingController(rootView: notificationView)
         let size = hostingController.view.fittingSize
@@ -73,7 +93,7 @@ class NotificationManager {
         
         // Schedule a new timer to dismiss the new notification.
         dismissTimer = Timer.scheduledTimer(
-            withTimeInterval: duration,
+            withTimeInterval: effectiveDuration,
             repeats: false
         ) { [weak self] _ in
             self?.dismissNotification()
@@ -116,4 +136,4 @@ class NotificationManager {
 
         })
     }
-} 
+}

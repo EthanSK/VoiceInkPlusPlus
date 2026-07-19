@@ -15,12 +15,12 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "226"
+            buildNumber: "227"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".226")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 226")
+        #expect(presentation.bottomLine == ".227")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 227")
     }
 
     @MainActor
@@ -119,6 +119,49 @@ struct VoiceInkTests {
             return slot != .targetWindowFocused
         })
         #expect(attempted.contains(.previousWindowFocused))
+    }
+
+    @MainActor
+    @Test func backgroundFocusPreservesExplicitlyAbsentPriorEditor() {
+        #expect(FocusLockService.priorFocusedElementReadIsRestorable(.value))
+        #expect(FocusLockService.priorFocusedElementReadIsRestorable(.absent))
+        #expect(!FocusLockService.priorFocusedElementReadIsRestorable(.failed))
+
+        #expect(FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .absent,
+            restoredElementMatchesTarget: false,
+            restoredTargetFocused: nil,
+            expectedTargetFocused: false
+        ))
+        #expect(FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .value,
+            restoredElementMatchesTarget: true,
+            restoredTargetFocused: false,
+            expectedTargetFocused: false
+        ))
+        #expect(!FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .value,
+            restoredElementMatchesTarget: false,
+            restoredTargetFocused: false,
+            expectedTargetFocused: false
+        ))
+        #expect(!FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .value,
+            restoredElementMatchesTarget: true,
+            restoredTargetFocused: true,
+            expectedTargetFocused: false
+        ))
+        #expect(!FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .failed,
+            restoredElementMatchesTarget: false,
+            restoredTargetFocused: nil,
+            expectedTargetFocused: false
+        ))
+    }
+
+    @Test func cooperativeQuitIsBlockedWhileAnySessionIsInFlight() {
+        #expect(AppDelegate.shouldBlockTermination(hasInFlightSessions: true))
+        #expect(!AppDelegate.shouldBlockTermination(hasInFlightSessions: false))
     }
 
     @MainActor

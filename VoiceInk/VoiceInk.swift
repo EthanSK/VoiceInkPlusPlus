@@ -167,6 +167,10 @@ struct VoiceInkApp: App {
         _prewarmService = StateObject(wrappedValue: prewarmService)
 
         appDelegate.menuBarManager = menuBarManager
+        // Cooperative quits (including Codex's signed-app replacement flow) must
+        // consult the live session collection before terminating. This prevents a
+        // release restart from cutting off microphone audio or queued transcription.
+        appDelegate.voiceInkEngine = engine
 
         // Ensure no lingering recording state from previous runs
         Task {

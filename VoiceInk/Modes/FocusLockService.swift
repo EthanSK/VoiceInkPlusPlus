@@ -151,6 +151,7 @@ final class FocusLockService: ObservableObject {
         fileprivate let frontmostPIDAtPreparation: pid_t
         fileprivate let previouslyFocusedWindow: AXUIElement?
         fileprivate let previouslyFocusedElement: AXUIElement?
+        fileprivate let previouslyFocusedElementWasAbsent: Bool
         fileprivate let focusBooleanSnapshot: BackgroundFocusBooleanSnapshot
         fileprivate var lifecycle = BackgroundFocusSessionLifecycle()
         fileprivate var teardownRetryCount = 0
@@ -166,6 +167,7 @@ final class FocusLockService: ObservableObject {
             frontmostPIDAtPreparation: pid_t,
             previouslyFocusedWindow: AXUIElement?,
             previouslyFocusedElement: AXUIElement?,
+            previouslyFocusedElementWasAbsent: Bool,
             focusBooleanSnapshot: BackgroundFocusBooleanSnapshot,
             processIdentifier: pid_t,
             bundleIdentifier: String?
@@ -178,6 +180,7 @@ final class FocusLockService: ObservableObject {
             self.frontmostPIDAtPreparation = frontmostPIDAtPreparation
             self.previouslyFocusedWindow = previouslyFocusedWindow
             self.previouslyFocusedElement = previouslyFocusedElement
+            self.previouslyFocusedElementWasAbsent = previouslyFocusedElementWasAbsent
             self.focusBooleanSnapshot = focusBooleanSnapshot
             self.processIdentifier = processIdentifier
             self.bundleIdentifier = bundleIdentifier
@@ -228,13 +231,29 @@ final class FocusLockService: ObservableObject {
         case unreadable
     }
 
+    enum ElementReferenceAvailability: Equatable {
+        case value
+        case absent
+        case failed
+    }
+
     /// Pointer-valued AX reads must distinguish a genuinely absent value from a
-    /// transport/read failure. Neither state is restorable through the public AX API,
-    /// so prepared background focus requires an exact prior window and editor value.
+    /// transport/read failure. Electron commonly exposes a focused window but no
+    /// focused UI element while inactive. That explicit absence is valid state: the
+    /// bounded session restores the target's prior `AXFocused=false` and accepts only
+    /// absence or that same inactive retained pointer. A failed read remains unsafe.
     private enum ElementReferenceRead {
         case value(AXUIElement)
         case absent
         case failed(Int32)
+
+        var availability: ElementReferenceAvailability {
+            switch self {
+            case .value: return .value
+            case .absent: return .absent
+            case .failed: return .failed
+            }
+        }
 
         var diagnostic: String {
             switch self {
@@ -261,6 +280,30 @@ final class FocusLockService: ObservableObject {
         case retryFullRestoration
         case finishPartialAndEnd
         case waiveWithoutMutation
+    }
+
+    static func priorFocusedElementReadIsRestorable(
+        _ availability: ElementReferenceAvailability
+    ) -> Bool {
+        availability != .failed
+    }
+
+    /// Public AX cannot write a nil focused-element pointer back into Electron. When
+    /// the exact pre-session state was explicitly absent, restoration is nevertheless
+    /// safe if Electron either reports absence again or retains only the same target
+    /// pointer with its readable focused boolean restored to the exact prior `false`.
+    /// A different retained element, an unreadable state, or a focused target fails.
+    static func absentPriorFocusedElementRestorationMatches(
+        restoredAvailability: ElementReferenceAvailability,
+        restoredElementMatchesTarget: Bool,
+        restoredTargetFocused: Bool?,
+        expectedTargetFocused: Bool?
+    ) -> Bool {
+        if restoredAvailability == .absent { return true }
+        return restoredAvailability == .value
+            && restoredElementMatchesTarget
+            && expectedTargetFocused == false
+            && restoredTargetFocused == expectedTargetFocused
     }
 
     private final class BoundedTraversalState {
@@ -426,10 +469,12 @@ final class FocusLockService: ObservableObject {
         let appElement = AXUIElementCreateApplication(target.pid)
         let previouslyFocusedWindow: AXUIElement?
         let previouslyFocusedElement: AXUIElement?
+        let previouslyFocusedElementWasAbsent: Bool
         switch mode {
         case .directExactElement:
             previouslyFocusedWindow = nil
             previouslyFocusedElement = nil
+            previouslyFocusedElementWasAbsent = false
         case .preparedTargetedInput:
             let windowRead = elementReferenceAttribute(
                 kAXFocusedWindowAttribute,
@@ -440,15 +485,28 @@ final class FocusLockService: ObservableObject {
                 from: appElement
             )
             guard case .value(let previousWindow) = windowRead,
-                  case .value(let previousElement) = elementRead else {
-                // VoiceInk++ writes both application pointer attributes below. A nil
-                // or unreadable prior value cannot be restored through public AX, so
-                // this stricter delayed-delivery route must fail before any mutation.
+                  Self.priorFocusedElementReadIsRestorable(
+                    elementRead.availability
+                  ) else {
+                // The previous window must remain exact. For the editor pointer,
+                // `.absent` is a real inactive Electron state; only a transport/read
+                // failure is rejected before mutation.
                 logger.error("Background exact focus refused without restorable prior pointer state targetPid=\(target.pid, privacy: .public) windowRead=\(windowRead.diagnostic, privacy: .public) elementRead=\(elementRead.diagnostic, privacy: .public)")
                 return nil
             }
             previouslyFocusedWindow = previousWindow
-            previouslyFocusedElement = previousElement
+            switch elementRead {
+            case .value(let previousElement):
+                previouslyFocusedElement = previousElement
+                previouslyFocusedElementWasAbsent = false
+            case .absent:
+                previouslyFocusedElement = nil
+                previouslyFocusedElementWasAbsent = true
+            case .failed:
+                // Guarded above; retain a defensive fail-closed branch if the enum
+                // gains another restorable availability without a concrete mapping.
+                return nil
+            }
         }
         // Adapt the useful part of Cua/Trope's MIT-licensed synthetic-focus
         // pattern to VoiceInk++'s stricter exact-input contract: snapshot every
@@ -491,6 +549,7 @@ final class FocusLockService: ObservableObject {
             frontmostPIDAtPreparation: frontmostPID,
             previouslyFocusedWindow: previouslyFocusedWindow,
             previouslyFocusedElement: previouslyFocusedElement,
+            previouslyFocusedElementWasAbsent: previouslyFocusedElementWasAbsent,
             focusBooleanSnapshot: focusBooleanSnapshot,
             processIdentifier: target.pid,
             bundleIdentifier: target.bundleIdentifier
@@ -602,13 +661,12 @@ final class FocusLockService: ObservableObject {
         guard restorationBoundaryIsSafe() else { return }
         let appElement = AXUIElementCreateApplication(session.processIdentifier)
 
-        // First return the app's pointer attributes to their exact former
-        // window/editor. Temporary `true` writes make that transition acceptable to
-        // Electron, but they are not the final state; the boolean snapshot below then
-        // restores every readable value exactly, including prior `false` values.
-        guard let previousWindow = session.previouslyFocusedWindow,
-              let previousElement = session.previouslyFocusedElement else {
-            logger.error("Background internal-focus restoration lost its required prior pointer state targetPid=\(session.processIdentifier, privacy: .public)")
+        // First return every concrete pointer to its exact former value. Electron may
+        // legitimately have had no focused UI element while inactive. Public AX cannot
+        // write nil into the app pointer, so that case restores the target's exact
+        // focused boolean below and accepts only absence or the same inactive pointer.
+        guard let previousWindow = session.previouslyFocusedWindow else {
+            logger.error("Background internal-focus restoration lost its required prior window pointer targetPid=\(session.processIdentifier, privacy: .public)")
             return
         }
         if !CFEqual(previousWindow, session.window) {
@@ -631,7 +689,8 @@ final class FocusLockService: ObservableObject {
                 kCFBooleanTrue
             )
         }
-        if !CFEqual(previousElement, session.element) {
+        if let previousElement = session.previouslyFocusedElement,
+           !CFEqual(previousElement, session.element) {
             guard restorationBoundaryIsSafe() else { return }
             _ = AXUIElementSetAttributeValue(
                 appElement,
@@ -664,9 +723,42 @@ final class FocusLockService: ObservableObject {
         Thread.sleep(forTimeInterval: 0.05)
         guard restorationBoundaryIsSafe() else { return }
         let restoredWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
-        let restoredElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
+        let restoredElementRead = elementReferenceAttribute(
+            kAXFocusedUIElementAttribute,
+            from: appElement
+        )
         let windowRestored = restoredWindow.map { CFEqual($0, previousWindow) } == true
-        let elementRestored = restoredElement.map { CFEqual($0, previousElement) } == true
+        let elementRestored: Bool
+        if let previousElement = session.previouslyFocusedElement {
+            if case .value(let restoredElement) = restoredElementRead {
+                elementRestored = CFEqual(restoredElement, previousElement)
+            } else {
+                elementRestored = false
+            }
+        } else if session.previouslyFocusedElementWasAbsent {
+            let restoredElementMatchesTarget: Bool
+            if case .value(let restoredElement) = restoredElementRead {
+                restoredElementMatchesTarget = CFEqual(
+                    restoredElement,
+                    session.element
+                )
+            } else {
+                restoredElementMatchesTarget = false
+            }
+            elementRestored = Self.absentPriorFocusedElementRestorationMatches(
+                restoredAvailability: restoredElementRead.availability,
+                restoredElementMatchesTarget: restoredElementMatchesTarget,
+                restoredTargetFocused: boolAttribute(
+                    kAXFocusedAttribute,
+                    from: session.element
+                ),
+                expectedTargetFocused: session.focusBooleanSnapshot.values[
+                    .targetElementFocused
+                ]
+            )
+        } else {
+            elementRestored = false
+        }
         let booleansVerified = session.focusBooleanSnapshot.matches { slot in
             guard let (element, attribute) = self.backgroundFocusBooleanTarget(
                 for: slot,
@@ -1391,8 +1483,8 @@ final class FocusLockService: ObservableObject {
                 ])
             }
         } else {
-            // A prepared session may never exist without both exact prior pointers;
-            // include their slots so the defensive apply-time guard also fails closed.
+            // A prepared session may never exist without an exact prior window;
+            // include its slots so the defensive apply-time guard also fails closed.
             required.append(contentsOf: [
                 .previousWindowMain,
                 .previousWindowFocused
@@ -1402,8 +1494,6 @@ final class FocusLockService: ObservableObject {
             if !CFEqual(previousElement, targetElement) {
                 required.append(.previousElementFocused)
             }
-        } else {
-            required.append(.previousElementFocused)
         }
         return required
     }

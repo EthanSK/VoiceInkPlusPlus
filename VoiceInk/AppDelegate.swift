@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     weak var menuBarManager: MenuBarManager?
+    weak var voiceInkEngine: VoiceInkEngine?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         menuBarManager?.applyActivationPolicy()
@@ -20,6 +21,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
+    }
+
+    static func shouldBlockTermination(hasInFlightSessions: Bool) -> Bool {
+        hasInFlightSessions
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let hasInFlightSessions = voiceInkEngine?.sessions.isEmpty == false
+        guard Self.shouldBlockTermination(
+            hasInFlightSessions: hasInFlightSessions
+        ) else {
+            return .terminateNow
+        }
+
+        // A normal quit/release swap must never discard live microphone audio or an
+        // in-flight transcription. Returning terminateCancel also makes the external
+        // installer abort before it renames the bundle. Force-kill/crash recovery is a
+        // separate boundary; this guard protects every cooperative app replacement.
+        NotificationManager.shared.showNotification(
+            title: String(localized: "VoiceInk++ is still recording or transcribing — finish or cancel it before quitting"),
+            type: .error,
+            duration: 12
+        )
+        return .terminateCancel
     }
 
     // Stash URL when app cold-starts to avoid spawning a new window/tab

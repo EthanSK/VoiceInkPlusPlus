@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct AppNotificationView: View {
     let title: String
@@ -52,6 +53,18 @@ struct AppNotificationView: View {
                     .foregroundColor(.white)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                    // Delivery errors often contain the exact failed route. Keep the
+                    // transient HUD useful as evidence: double-click/drag selection
+                    // and the context-menu copy action work without activating the
+                    // target app that VoiceInk++ deliberately left in the background.
+                    .textSelection(.enabled)
+                    .contextMenu {
+                        Button(String(localized: "Copy")) {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(title, forType: .string)
+                        }
+                    }
                 
                 Spacer()
 
@@ -132,12 +145,9 @@ struct AppNotificationView: View {
         .onDisappear {
             timer?.invalidate()
         }
-        .onTapGesture {
-            if let onTap = onTap {
-                onTap()
-                onClose()
-            }
-        }
+        // Do not install an inert parent tap recognizer for ordinary errors: it can
+        // swallow the double-click/drag gestures used by SwiftUI text selection.
+        .modifier(OptionalNotificationTapModifier(onTap: onTap, onClose: onClose))
     }
     
     private func startProgressTimer() {
@@ -152,6 +162,23 @@ struct AppNotificationView: View {
                 timer?.invalidate()
                 timer = nil
             }
+        }
+    }
+}
+
+private struct OptionalNotificationTapModifier: ViewModifier {
+    let onTap: (() -> Void)?
+    let onClose: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let onTap {
+            content.onTapGesture {
+                onTap()
+                onClose()
+            }
+        } else {
+            content
         }
     }
 }
