@@ -14,7 +14,7 @@ Read [VoiceInk++ terminology](TERMINOLOGY.md) for the complete alias map, timing
 
 | Stop action | Paste destination |
 | --- | --- |
-| Primary/thumb/toggle button again | Normal stop: only the exact text input focused when you stop recording; never the recording-start input |
+| Primary/thumb/toggle button again | Normal stop (`focusedAtStop`): base VoiceInk's current caret when the start app remained continuously focused; after any app activation, only the exact input focused at stop; never the recording-start input |
 | **Next button** while recording | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next button** with no recording or retargetable transcription | Its Next Track event passes through normally to Spotify, Music, and other media apps |
@@ -49,6 +49,15 @@ transcription phase that starts after recording stops.
 3. Stop with the normal recording shortcut.
 4. VoiceInk++ pastes into the VS Code editor because it was focused at stop.
 
+### Keep ordinary dictation simple
+
+1. Focus an input in Codex and start recording with the primary button.
+2. Keep Codex as the keyboard-focused app and stop with the primary button.
+3. Keep using Codex while transcription finishes.
+4. VoiceInk++ uses the same plain behavior as base VoiceInk: Cmd-V at the live caret, then one ordinary Return if the Codex Mode enables it. A transient `AXGroup`/missing editable-element snapshot cannot block this path.
+
+Switching to another app at any point—even switching back to Codex before delivery—disables this compatibility path for that recording. The normal route then preserves only its exact stop-time input.
+
 ### Send the transcript back where recording began
 
 1. Focus an input in Codex and start recording with the normal recording shortcut.
@@ -77,9 +86,11 @@ Track stops and chooses the recording-start input. After a normal stop has alrea
 transcription, Next Track is a one-click second chance to choose a new input. It replaces the pending
 target once; it does not toggle or release it.
 
-If a primary normal stop cannot capture or later verify its exact stop-time input, VoiceInk++ must
-fail visibly and preserve the transcript safely. It must not silently fall back to the older
-recording-start input; that input is invoked only by Next while recording.
+If the start app stayed continuously focused, a primary normal stop deliberately does not require
+an exact stop-time Accessibility element: it follows the live caret like base VoiceInk. After any
+app activation, failure to capture or later verify the exact stop-time input must fail visibly and
+preserve the transcript safely. Neither case may silently fall back to the older recording-start
+input; that input is invoked only by Next while recording.
 
 This exact second-chance route was live-confirmed repeatedly on 2026-07-13 after commit `1eabb1b`:
 the trace recorded `focusedDuringTranscription`, `targetAutoSend=enter`, and verified successful

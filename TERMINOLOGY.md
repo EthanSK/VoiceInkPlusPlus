@@ -28,7 +28,7 @@ When diagnosing the hardware mapping, verify G HUB's active profile and resolved
 | State before the press | Control pressed | Result | Destination value |
 | --- | --- | --- | --- |
 | Idle | Primary button | Start a new recording and capture its recording-start input | Not yet final |
-| Recording | Primary button again | **Normal stop** | Exact editable input focused at that stop (`focusedAtStop`) |
+| Recording | Primary button again | **Normal stop** | `focusedAtStop`: base VoiceInk live caret if the start app remained continuously focused; otherwise the exact editable input focused at stop |
 | Recording | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
 | No active recording and no eligible normal-stop result still loading | Next button | Pass the Next Track event through to media normally | No VoiceInk++ destination action |
@@ -39,7 +39,7 @@ If a new recording is active while an older result is transcribing, the active r
 
 ### Primary normal stop never means “paste back to start”
 
-The second press of the primary/thumb/toggle button must use only the exact input focused at stop. It must not reuse, fall back to, or guess from the recording-start input. If the stop-time input cannot be captured or later verified, delivery must fail visibly and preserve the text safely rather than sending it to the old input.
+The second press of the primary/thumb/toggle button always selects `focusedAtStop`; it must not reuse, fall back to, or guess from the recording-start input. If the recording-start app has remained continuously keyboard-focused, this route intentionally behaves like base VoiceInk and pastes into the live caret without requiring stop-time Accessibility identity. A monotonic app-activation watcher makes switching away and back ineligible. Once any app activation occurred, only the exact stop-time input may be used; if that input cannot be captured or later verified, delivery must fail visibly and preserve the text safely rather than sending it to the old input.
 
 The recording-start or “old known” input is invoked only by pressing the Next button while recording.
 
@@ -59,7 +59,7 @@ The recorder's locked app icon is a compact representation of that exact saved i
 
 ### “Current” depends on the decision moment
 
-- During a primary normal stop, “current input” means the input focused at the stop (`focusedAtStop`).
+- During a primary normal stop, “current input” means the live keyboard caret when the start app remained continuously focused; after any app activation, `focusedAtStop` means the exact input captured at the stop.
 - During second chance, it means the input focused when Next is pressed after the normal stop (`focusedDuringTranscription`).
 - At delivery time, whichever input happens to be focused then is irrelevant; the per-session destination already owns the decision.
 

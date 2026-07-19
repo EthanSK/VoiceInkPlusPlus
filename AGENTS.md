@@ -24,7 +24,7 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Canonical mouse terminology
 
-Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop into only the exact input focused at stop (`focusedAtStop`). A primary normal stop must never reuse or fall back to `recordingStart`; capture or verification failure must remain visible and safe.
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop (`focusedAtStop`). When the recording-start app remains continuously keyboard-focused through delivery, that normal route deliberately uses base VoiceInk's live-caret paste and ordinary Return without requiring exact-input capture. After any genuine app activation—even switching away and back—it uses only the exact stop-time input. A primary normal stop must never reuse or fall back to `recordingStart`; capture or verification failure on the exact route must remain visible and safe.
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
@@ -44,7 +44,7 @@ Use **Next button** as the preferred user-facing term. **Next Track**, **Next Tr
 
 VoiceInk++ has three distinct one-click destination routes. Do not merge them, reinterpret them as a toggle, or infer one from another:
 
-1. **Primary button again while recording:** normal stop and save only the exact editable input focused at stop (`focusedAtStop`). Never fall back to the recording-start input.
+1. **Primary button again while recording:** normal stop (`focusedAtStop`). If no genuine app activation has occurred since recording began and the same start app still owns keyboard focus at each irreversible delivery boundary, use base VoiceInk's current-caret Cmd-V plus one ordinary HID Return; this path does not require an AX input identity. Otherwise save/use only the exact editable input focused at stop. Never fall back to the recording-start input.
 2. **Next Track while recording:** stop recording and save the input captured at recording start (`recordingStart`), with the documented safe application fallback for Electron/Chromium.
 3. **Next Track after a normal stop, while the newest result is still transcribing and before post-processing begins:** this is Ethan's **second chance**. Replace that pending session's destination with the exact editable input focused now (`focusedDuringTranscription`). It does not stop anything, toggle anything, or release the target. Never skip an ineligible newer pending result to retarget an older session.
 
@@ -90,7 +90,9 @@ At minimum, preserve the regression test named `secondChanceRetargetCarriesAutoS
 
 - `paste retarget: ... destination=focusedDuringTranscription targetCaptured=true`
 - `pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTranscription`
-- either `paste: background auto-send finished success=true ... verification=verified` for a non-activating exact target or `paste: foreground auto-send finished success=true` for the safe current-input route
+- either `paste: background auto-send finished success=true ... verification=verified` for a non-activating exact target or `paste: foreground immediate HID auto-send issued=true verification=notRequired` for an exact target that still owns the foreground caret
+
+For the uninterrupted primary compatibility route, separately require `paste: primary current-input compatibility selected ... exactCaptureRequired=false` followed by `paste: primary current-input command completed result=commandPosted` and, when its Mode enables Return, `paste: primary current-input immediate HID auto-send issued=true verification=notRequired`. Also test that an activation-generation change rejects this route.
 
 Build only on the Mac Mini. Use Xcode's normal test action as the canonical runner. If TestManager stalls without executing tests, preserve that evidence and run the already-built unit-test bundle directly with `xcrun xctest` plus the app/framework library paths; require named per-test output, not compilation or XCTest's zero-test preamble. Recover and retry the canonical runner when possible, and never enable Developer Mode without Ethan's direction.
 

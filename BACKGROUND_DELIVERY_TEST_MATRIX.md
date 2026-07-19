@@ -14,6 +14,13 @@ If Ethan is using input B in the same frontmost app while input A is latched, Vo
 rewrite the app's internal focus to A. That route may use only direct Accessibility insertion and a
 proven semantic action. Immediate pre/post system focus must remain on B.
 
+This is separate from ordinary primary current-input delivery. When the recording-start app has
+remained continuously keyboard-focused, `focusedAtStop` deliberately uses base VoiceInk's live-caret
+Cmd-V plus one immediate HID Return without requiring an exact AX element. A monotonic app-activation
+generation and start PID are rechecked at irreversible boundaries, so switching away and back rejects
+the fast path. It does not wait for AX text read-back, retry Return, or treat event posting as proof
+that the destination submitted. Both Next-button routes always remain on exact delivery.
+
 ## Required destinations
 
 | Destination | Saved input | Preferred non-activating insertion | Auto-send chain | Verification | v2.0.207 live status |

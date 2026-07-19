@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-19T21:32:23Z
+**Trigger:** Ethan asked that the normal same-app primary case use base VoiceInk behavior so ongoing Next/latch experiments cannot regress his ordinary dictation.
+**Symptom:** An ordinary primary-button stop in the continuously focused app was delayed or flaky, and could show false Return failures because it was routed through exact-input Accessibility verification and background-delivery machinery.
+**Root cause:** The normal foreground path depended on stop-time AX identity/read-back and semantic delivery even though base VoiceInk only needs the live caret; transient Electron AX states could therefore block or delay paste and Return.
+**Fix:** Commit fb3ead7 isolates focusedAtStop behind recording-start app-continuity evidence: uninterrupted Primary uses guarded live-caret Cmd-V plus one immediate HID Return, while any app activation rejects that path and both Next routes remain exact-only.
+**Commit:** fb3ead7
+**Guard:** VoiceInkTests.primaryForegroundContinuityRejectsSwitchAwayAndBack; all 22 named tests passed via xcrun xctest; signed v2.0.236 live trace at 22:27:15 contains primary current-input compatibility selected, commandPosted, and immediate HID auto-send issued=true verification=notRequired; Ethan observed it working.
+---
+
+
+---
 **Date:** 2026-07-19T17:49:05Z
 **Trigger:** Ethan asked for detailed, self-cleaning logs that future agents can reliably correlate with the exact running VoiceInk++ release.
 **Symptom:** The upgraded delivery trace wrote its start header but exited with status 141 before creating the launchd runner, so status immediately reported debugMode=off.
