@@ -128,49 +128,64 @@ struct VoiceInkTests {
         var endCount = 0
 
         #expect(lifecycle.canBegin)
-        #expect(lifecycle.begin {
+        let began = lifecycle.begin {
             beginCount += 1
             return true
-        })
+        }
+        #expect(began)
         #expect(beginCount == 1)
         #expect(!lifecycle.canBegin)
-        #expect(!lifecycle.begin {
+        let beganAgain = lifecycle.begin {
             beginCount += 1
             return true
-        })
+        }
+        #expect(!beganAgain)
         #expect(beginCount == 1)
         #expect(lifecycle.requiresTeardown)
-        #expect(lifecycle.markTeardownRetryScheduled())
+        let scheduledRetry = lifecycle.markTeardownRetryScheduled()
+        #expect(scheduledRetry)
         #expect(lifecycle.state == .teardownRetryScheduled)
-        #expect(!lifecycle.markTeardownRetryScheduled())
-        #expect(lifecycle.finish { endCount += 1 })
+        let scheduledRetryAgain = lifecycle.markTeardownRetryScheduled()
+        #expect(!scheduledRetryAgain)
+        let finished = lifecycle.finish { endCount += 1 }
+        #expect(finished)
         #expect(endCount == 1)
         #expect(lifecycle.state == .finished)
-        #expect(!lifecycle.finish { endCount += 1 })
+        let finishedAgain = lifecycle.finish { endCount += 1 }
+        #expect(!finishedAgain)
         #expect(endCount == 1)
 
         var beginFailed = FocusLockService.BackgroundFocusSessionLifecycle()
-        #expect(!beginFailed.begin {
+        let failedToBegin = beginFailed.begin {
             beginCount += 1
             return false
-        })
+        }
+        #expect(!failedToBegin)
         #expect(beginFailed.state == .ready)
-        #expect(!beginFailed.finish { endCount += 1 })
+        let finishedWithoutBegin = beginFailed.finish { endCount += 1 }
+        #expect(!finishedWithoutBegin)
         #expect(endCount == 1)
 
         var waived = FocusLockService.BackgroundFocusSessionLifecycle()
-        #expect(waived.begin { true })
-        #expect(waived.waiveTeardown())
+        let beganWaivedSession = waived.begin { true }
+        #expect(beganWaivedSession)
+        let waivedSession = waived.waiveTeardown()
+        #expect(waivedSession)
         #expect(waived.state == .teardownWaived)
-        #expect(!waived.finish { endCount += 1 })
+        let finishedWaivedSession = waived.finish { endCount += 1 }
+        #expect(!finishedWaivedSession)
         #expect(endCount == 1)
 
         var waivedAfterRetry = FocusLockService.BackgroundFocusSessionLifecycle()
-        #expect(waivedAfterRetry.begin { true })
-        #expect(waivedAfterRetry.markTeardownRetryScheduled())
-        #expect(waivedAfterRetry.waiveTeardown())
+        let beganRetryWaiver = waivedAfterRetry.begin { true }
+        #expect(beganRetryWaiver)
+        let scheduledRetryBeforeWaiver = waivedAfterRetry.markTeardownRetryScheduled()
+        #expect(scheduledRetryBeforeWaiver)
+        let waivedRetry = waivedAfterRetry.waiveTeardown()
+        #expect(waivedRetry)
         #expect(waivedAfterRetry.state == .teardownWaived)
-        #expect(!waivedAfterRetry.finish { endCount += 1 })
+        let finishedRetryWaiver = waivedAfterRetry.finish { endCount += 1 }
+        #expect(!finishedRetryWaiver)
         #expect(endCount == 1)
     }
 
@@ -263,21 +278,24 @@ struct VoiceInkTests {
         var endCount = 0
         let failedAfterBegin = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
             prepare: {
-                #expect(lifecycle.begin {
+                let began = lifecycle.begin {
                     beginCount += 1
                     return true
-                })
+                }
+                #expect(began)
                 return false
             },
             cleanup: {
-                #expect(lifecycle.finish { endCount += 1 })
+                let finished = lifecycle.finish { endCount += 1 }
+                #expect(finished)
             }
         )
         #expect(!failedAfterBegin)
         #expect(beginCount == 1)
         #expect(endCount == 1)
         #expect(lifecycle.state == .finished)
-        #expect(!lifecycle.finish { endCount += 1 })
+        let finishedAgain = lifecycle.finish { endCount += 1 }
+        #expect(!finishedAgain)
         #expect(endCount == 1)
     }
 
