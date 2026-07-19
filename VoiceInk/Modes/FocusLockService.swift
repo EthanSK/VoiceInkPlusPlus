@@ -211,6 +211,7 @@ final class FocusLockService: ObservableObject {
             case .directExactElement: "directExactElement"
             }
         }
+        @MainActor
         var diagnosticApplicationIdentity: ApplicationIdentitySnapshot {
             FocusLockService.applicationIdentitySnapshot(for: app)
         }
