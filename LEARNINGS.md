@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-19T22:04:03Z
+**Trigger:** Ethan asked for a massive project file covering everything tried and failed in the complete session so future agents do not repeat the same approaches.
+**Symptom:** Agents repeatedly retried delivery mechanisms that compiled, passed mocked tests, or returned AX/CGEvent success but failed on real Codex, ChatGPT, Telegram, or terminal surfaces; version-number rollback guesses also conflated materially different binaries.
+**Root cause:** Negative evidence was fragmented across a 13–19 July task containing 207 user messages, 1,398 assistant messages, and 115 compaction checkpoints. Build 203 was reused, v2.0.207/v2.0.208 were later rejected, v2.0.233 AXPress and v2.0.234 authenticated Return produced false-success signals, and the accepted v2.0.236 observation proved only uninterrupted Primary compatibility while its complete dirty binary was not reproducible from one commit.
+**Fix:** Commit 887e258 adds the 850-line FAILED_APPROACHES.md evidence ledger with a v2.0.203–v2.0.236 chronology, failed mechanisms, app-specific boundaries, HUD/release/trace regressions, DO-NOT-RETRY gates, and bounded reconsideration criteria. It corrects contradictory delivery/matrix claims and updates AGENTS.md, README.md, and the learnings skill so its check script searches rejected evidence before dated learnings.
+**Commit:** 887e258
+**Guard:** bash -n plus representative check.sh searches pass; quick_validate.py reports the learnings skill valid; git diff --check passes; future delivery work must read FAILED_APPROACHES.md and state what new evidence changes a recorded failure condition before retrying it.
+---
+
+
+---
 **Date:** 2026-07-19T03:19:51Z
 **Trigger:** Ethan asked why Codex Computer Use appears able to operate applications with its own mouse in the background while VoiceInk++ struggles with exact non-frontmost Codex paste and Send, and requested a Fable Five review.
 **Symptom:** A visible Computer Use cursor suggested that macOS might provide an independent background mouse and keyboard-focus channel that VoiceInk++ had simply failed to use.
