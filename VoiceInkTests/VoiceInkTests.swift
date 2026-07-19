@@ -15,12 +15,12 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "229"
+            buildNumber: "230"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".229")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 229")
+        #expect(presentation.bottomLine == ".230")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 230")
     }
 
     @MainActor
@@ -41,6 +41,37 @@ struct VoiceInkTests {
             previousText: "latched transcript",
             currentText: "latched transcript\n"
         ) == .modifiedWithoutSubmit)
+
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: nil,
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .unreadable)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript\n",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .unchanged)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "Ask for follow-up changes",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .verifiedCleared)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "Ask for follow-up changes",
+            currentText: "Ask for follow-up changes",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .unchanged)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript\nnew draft",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .modifiedWithoutSubmit)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "unrelated reset status",
+            currentPlaceholder: nil
+        ) == .unreadable)
 
         #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
             verification: .unreadable

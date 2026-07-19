@@ -37,6 +37,11 @@ final class FocusLockService: ObservableObject {
         var hasExactInput: Bool { element != nil }
     }
 
+    struct FocusedInputTextSnapshot {
+        let text: String
+        let placeholder: String?
+    }
+
     enum BackgroundFocusBooleanSlot: CaseIterable, Hashable {
         case targetWindowMain
         case targetWindowFocused
@@ -967,6 +972,20 @@ final class FocusLockService: ObservableObject {
         for target: Target,
         allowApplicationFallback: Bool = false
     ) -> String? {
+        focusedInputTextSnapshot(
+            for: target,
+            allowApplicationFallback: allowApplicationFallback
+        )?.text
+    }
+
+    /// Read the value and placeholder from one resolved editor wrapper. Codex may
+    /// expose its empty reset state through AXValue as the same string published in
+    /// AXPlaceholderValue, so foreground post-Return verification needs both values
+    /// from one snapshot. Delivery never logs either string.
+    func focusedInputTextSnapshot(
+        for target: Target,
+        allowApplicationFallback: Bool = false
+    ) -> FocusedInputTextSnapshot? {
         guard let element = liveElement(for: target, allowApplicationFallback: allowApplicationFallback) else {
             return nil
         }
@@ -978,7 +997,11 @@ final class FocusLockService: ObservableObject {
         ) == .success else {
             return nil
         }
-        return value as? String
+        guard let text = value as? String else { return nil }
+        return FocusedInputTextSnapshot(
+            text: text,
+            placeholder: stringAttribute(kAXPlaceholderValueAttribute, from: element)
+        )
     }
 
     /// Read-only proof that the frozen exact input still owns system keyboard focus.

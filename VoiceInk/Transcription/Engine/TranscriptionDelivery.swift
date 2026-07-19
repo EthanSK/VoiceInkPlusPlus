@@ -41,6 +41,45 @@ final class TranscriptionDelivery {
             : .modifiedWithoutSubmit
     }
 
+    static func classifyForegroundOpenAIAutoSendVerification(
+        previousText: String,
+        currentText: String?,
+        currentPlaceholder: String?
+    ) -> BackgroundAutoSendVerification {
+        guard let currentText else { return .unreadable }
+        let previous = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let placeholder = currentPlaceholder?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        if current.isEmpty {
+            return .verifiedCleared
+        }
+        // Codex can keep one focused AXTextArea wrapper after submission while its
+        // empty visual composer reports the placeholder through AXValue. Treat that
+        // as a proven reset only when AXPlaceholderValue agrees and the pre-submit
+        // text was different; dictating the literal placeholder must still be sent.
+        if let placeholder,
+           !placeholder.isEmpty,
+           current == placeholder,
+           current != previous {
+            return .verifiedCleared
+        }
+        if current == previous {
+            return .unchanged
+        }
+        // A changed value proves failure only while it still contains the complete
+        // submitted transcript. An unrelated Codex reset/status value is not proof
+        // that Return failed, so preserve it as indeterminate telemetry and never
+        // retry or show a false red error.
+        if !previous.isEmpty,
+           current.contains(previous) {
+            return .modifiedWithoutSubmit
+        }
+        return .unreadable
+    }
+
     static func deferredForegroundAutoSendRoute(
         hasExactInput: Bool,
         exactInputOwnsKeyboardFocus: Bool,
@@ -789,24 +828,28 @@ final class TranscriptionDelivery {
     ) async -> BackgroundAutoSendVerification {
         let deadline = ProcessInfo.processInfo.systemUptime + 0.75
         while ProcessInfo.processInfo.systemUptime < deadline {
-            let verification = Self.classifyBackgroundAutoSendVerification(
+            let snapshot = FocusLockService.shared.focusedInputTextSnapshot(
+                for: target,
+                allowApplicationFallback: allowsApplicationFallback
+            )
+            let verification = Self.classifyForegroundOpenAIAutoSendVerification(
                 previousText: previousText,
-                currentText: FocusLockService.shared.focusedInputText(
-                    for: target,
-                    allowApplicationFallback: allowsApplicationFallback
-                )
+                currentText: snapshot?.text,
+                currentPlaceholder: snapshot?.placeholder
             )
             if verification == .verifiedCleared {
                 return verification
             }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        return Self.classifyBackgroundAutoSendVerification(
+        let snapshot = FocusLockService.shared.focusedInputTextSnapshot(
+            for: target,
+            allowApplicationFallback: allowsApplicationFallback
+        )
+        return Self.classifyForegroundOpenAIAutoSendVerification(
             previousText: previousText,
-            currentText: FocusLockService.shared.focusedInputText(
-                for: target,
-                allowApplicationFallback: allowsApplicationFallback
-            )
+            currentText: snapshot?.text,
+            currentPlaceholder: snapshot?.placeholder
         )
     }
 
