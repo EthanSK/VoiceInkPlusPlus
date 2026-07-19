@@ -89,6 +89,24 @@ final class TranscriptionDelivery {
         }
     }
 
+    static func foregroundOpenAIAutoSendOutcome(
+        verification: BackgroundAutoSendVerification,
+        exactTargetStillOwnsKeyboardFocus: Bool
+    ) -> AutoSendOutcome {
+        // Codex replaces its composer AX wrapper after a successful submission. Once
+        // the frozen wrapper no longer owns keyboard focus, a readable value from that
+        // old wrapper is stale telemetry: it cannot prove that Return was ignored or
+        // that the new composer failed to clear. The irreversible Return has already
+        // happened, so classify that post-state as indeterminate and never retry or
+        // show Ethan a false failure. A readable non-empty value is a real failure only
+        // while the exact same saved composer still owns system keyboard focus.
+        if verification != .verifiedCleared,
+           !exactTargetStillOwnsKeyboardFocus {
+            return .indeterminate
+        }
+        return autoSendOutcome(verification: verification)
+    }
+
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     // VIPPDebug: see RecorderUIManager for the filter predicate. Tracks which delivery
     // branch runs and the actual paste (text length) so an empty/suppressed paste is
@@ -873,12 +891,17 @@ final class TranscriptionDelivery {
             target: target,
             allowsApplicationFallback: allowsApplicationFallback
         )
-        var outcome = Self.autoSendOutcome(verification: verification)
+        var exactTargetStillOwnsKeyboardFocus = FocusLockService.shared
+            .targetOwnsSystemKeyboardFocus(target)
+        var outcome = Self.foregroundOpenAIAutoSendOutcome(
+            verification: verification,
+            exactTargetStillOwnsKeyboardFocus: exactTargetStillOwnsKeyboardFocus
+        )
         guard outcome == .failed,
               verification == .unchanged,
-              FocusLockService.shared.targetOwnsSystemKeyboardFocus(target) else {
+              exactTargetStillOwnsKeyboardFocus else {
             if outcome == .indeterminate {
-                vippLog.notice("paste: OpenAI foreground post-state unreadable after one action; no retry and no visible false-failure route=\(primaryRoute, privacy: .public) targetPid=\(targetPID, privacy: .public)")
+                vippLog.notice("paste: OpenAI foreground post-state not authoritative after one action; no retry and no visible false-failure route=\(primaryRoute, privacy: .public) verification=\(String(describing: verification), privacy: .public) exactFocus=\(exactTargetStillOwnsKeyboardFocus, privacy: .public) targetPid=\(targetPID, privacy: .public)")
             }
             return outcome
         }
@@ -901,9 +924,14 @@ final class TranscriptionDelivery {
             target: target,
             allowsApplicationFallback: allowsApplicationFallback
         )
-        outcome = Self.autoSendOutcome(verification: verification)
+        exactTargetStillOwnsKeyboardFocus = FocusLockService.shared
+            .targetOwnsSystemKeyboardFocus(target)
+        outcome = Self.foregroundOpenAIAutoSendOutcome(
+            verification: verification,
+            exactTargetStillOwnsKeyboardFocus: exactTargetStillOwnsKeyboardFocus
+        )
         if outcome == .indeterminate {
-            vippLog.notice("paste: OpenAI foreground post-state unreadable after guarded HID retry; no further action or visible false-failure targetPid=\(targetPID, privacy: .public)")
+            vippLog.notice("paste: OpenAI foreground post-state not authoritative after guarded HID retry; no further action or visible false-failure verification=\(String(describing: verification), privacy: .public) exactFocus=\(exactTargetStillOwnsKeyboardFocus, privacy: .public) targetPid=\(targetPID, privacy: .public)")
         }
         return outcome
     }

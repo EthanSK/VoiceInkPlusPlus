@@ -15,12 +15,12 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "228"
+            buildNumber: "229"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".228")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 228")
+        #expect(presentation.bottomLine == ".229")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 229")
     }
 
     @MainActor
@@ -67,6 +67,27 @@ struct VoiceInkTests {
         #expect(TranscriptionDelivery.autoSendOutcome(
             verification: .modifiedWithoutSubmit
         ) == .failed)
+
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .verifiedCleared,
+            exactTargetStillOwnsKeyboardFocus: false
+        ) == .verified)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ) == .failed)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .modifiedWithoutSubmit,
+            exactTargetStillOwnsKeyboardFocus: true
+        ) == .failed)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: false
+        ) == .indeterminate)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .modifiedWithoutSubmit,
+            exactTargetStillOwnsKeyboardFocus: false
+        ) == .indeterminate)
     }
 
     @MainActor
