@@ -844,58 +844,29 @@ final class TranscriptionDelivery {
             return .failed
         }
 
-        // Prefer one semantic Send action. Codex's normal idle control is unlabelled,
-        // so FocusLockService permits it only for the exact audited app/Chromium tuple
-        // and rejects the labelled Stop state. Otherwise issue one normal foreground
-        // Return while the saved exact input still owns system keyboard focus.
-        var primaryRoute = "semanticSend"
-        var semanticActionReturnedError = false
-        switch await FocusLockService.shared.pressNearbySubmitButton(
-            for: target,
-            allowApplicationFallback: allowsApplicationFallback
-        ) {
-        case .pressed:
-            vippLog.info("paste: OpenAI composer auto-send used nearby Send button targetPid=\(targetPID, privacy: .public)")
-        case .unavailable:
-            guard FocusLockService.shared.targetOwnsSystemKeyboardFocus(target) else {
-                vippLog.notice("paste: OpenAI semantic Send lookup lost exact focus before issuing an action; rerouting to non-activating exact input targetPid=\(targetPID, privacy: .public)")
-                return .needsNonActivatingExactInput
+        // A foreground exact composer already owns the real system keyboard focus.
+        // Walking the Chromium tree twice to discover and revalidate a Send button is
+        // unnecessary here and added 1-3 seconds after the paste before Return. Keep
+        // semantic Send for background delivery, where a normal key would steal or
+        // miss focus. In the foreground, issue one humanized HID Return immediately
+        // after insertion is readable, with the exact saved input re-proved at the
+        // irreversible key boundary. If Ethan clicks away first, no key is posted and
+        // the frozen target gets one non-activating exact-input continuation instead.
+        let primaryRoute = "foregroundHIDReturn"
+        let result = await CursorPaster.performAutoSend(
+            .enter,
+            targetPID: targetPID,
+            method: .cgEvent,
+            canPost: {
+                FocusLockService.shared.targetOwnsSystemKeyboardFocus(target)
             }
-            primaryRoute = "systemEventsReturn"
-            let result = await CursorPaster.performAutoSend(
-                .enter,
-                targetPID: targetPID,
-                method: .systemEvents,
-                canPost: {
-                    FocusLockService.shared.targetOwnsSystemKeyboardFocus(target)
-                }
-            )
-            if result == .actionGuardRefused {
-                vippLog.notice("paste: OpenAI exact focus moved at the guarded Return boundary before any action; rerouting to non-activating exact input targetPid=\(targetPID, privacy: .public)")
-                return .needsNonActivatingExactInput
-            }
-            guard result.didPostAutoSendCommand else { return .failed }
-            vippLog.info("paste: OpenAI composer nearby Send unavailable; guarded System Events Return issued=true targetPid=\(targetPID, privacy: .public)")
-        case .focusLostBeforeAction:
-            // The semantic walk yielded to the run loop and Ethan moved focus before
-            // AXPress. No action happened, so leave the foreground route immediately
-            // and retry once through the exact non-activating session; never press
-            // Return against whichever input now owns the keyboard.
-            vippLog.notice("paste: OpenAI semantic Send lost exact focus before action; rerouting to non-activating exact input targetPid=\(targetPID, privacy: .public)")
+        )
+        if result == .actionGuardRefused {
+            vippLog.notice("paste: OpenAI exact focus moved at the guarded HID Return boundary before any action; rerouting to non-activating exact input targetPid=\(targetPID, privacy: .public)")
             return .needsNonActivatingExactInput
-        case .refusedAfterCandidate:
-            // A once-valid Send candidate changed topology or semantics (notably to
-            // Stop) before AXPress. No action was issued, but Return is not a safe
-            // reinterpretation of that state transition.
-            vippLog.notice("paste: OpenAI semantic Send changed before action; refusing Return fallback targetPid=\(targetPID, privacy: .public)")
-            return .failed
-        case .failed(let error):
-            // The app may handle AXPress before returning an error. Treat this as the
-            // single irreversible attempt and verify only; never fall through to Return.
-            semanticActionReturnedError = true
-            primaryRoute = "semanticSendAXError"
-            vippLog.error("paste: OpenAI semantic Send returned AXError=\(error, privacy: .public); verifying without fallback targetPid=\(targetPID, privacy: .public)")
         }
+        guard result.didPostAutoSendCommand else { return .failed }
+        vippLog.info("paste: OpenAI foreground guarded HID Return issued=true targetPid=\(targetPID, privacy: .public)")
 
         var verification = await waitForForegroundValueChange(
             from: textBeforeSubmit,
@@ -905,7 +876,6 @@ final class TranscriptionDelivery {
         var outcome = Self.autoSendOutcome(verification: verification)
         guard outcome == .failed,
               verification == .unchanged,
-              !semanticActionReturnedError,
               FocusLockService.shared.targetOwnsSystemKeyboardFocus(target) else {
             if outcome == .indeterminate {
                 vippLog.notice("paste: OpenAI foreground post-state unreadable after one action; no retry and no visible false-failure route=\(primaryRoute, privacy: .public) targetPid=\(targetPID, privacy: .public)")

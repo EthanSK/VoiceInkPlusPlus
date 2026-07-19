@@ -15,12 +15,12 @@ struct VoiceInkTests {
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "227"
+            buildNumber: "228"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".227")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 227")
+        #expect(presentation.bottomLine == ".228")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 228")
     }
 
     @MainActor
@@ -494,7 +494,7 @@ struct VoiceInkTests {
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
-    @Test func foregroundSemanticSendFocusLossReroutesWithoutReturn() throws {
+    @Test func foregroundOpenAIReturnBypassesSemanticTraversalAndReroutesOnFocusLoss() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -504,17 +504,21 @@ struct VoiceInkTests {
             ),
             encoding: .utf8
         )
-        let focusLossCase = try #require(source.range(
-            of: "        case .focusLostBeforeAction:"
+        let autoSendStart = try #require(source.range(
+            of: "    private func performAutoSend("
         ))
-        let semanticChangeCase = try #require(source.range(
-            of: "        case .refusedAfterCandidate:",
-            range: focusLossCase.upperBound..<source.endIndex
+        let feedbackStart = try #require(source.range(
+            of: "    private func showAutoSendFailure(",
+            range: autoSendStart.upperBound..<source.endIndex
         ))
-        let focusLossBody = source[focusLossCase.lowerBound..<semanticChangeCase.lowerBound]
+        let autoSendBody = source[autoSendStart.lowerBound..<feedbackStart.lowerBound]
 
-        #expect(focusLossBody.contains("return .needsNonActivatingExactInput"))
-        #expect(!focusLossBody.contains("CursorPaster.performAutoSend"))
+        #expect(autoSendBody.contains("let primaryRoute = \"foregroundHIDReturn\""))
+        #expect(autoSendBody.contains("method: .cgEvent"))
+        #expect(autoSendBody.contains("result == .actionGuardRefused"))
+        #expect(autoSendBody.contains("return .needsNonActivatingExactInput"))
+        #expect(!autoSendBody.contains("pressNearbySubmitButton"))
+        #expect(!autoSendBody.contains("method: .systemEvents"))
     }
 
     @MainActor
