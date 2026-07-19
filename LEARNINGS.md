@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-19T03:19:51Z
+**Trigger:** Ethan asked why Codex Computer Use appears able to operate applications with its own mouse in the background while VoiceInk++ struggles with exact non-frontmost Codex paste and Send, and requested a Fable Five review.
+**Symptom:** A visible Computer Use cursor suggested that macOS might provide an independent background mouse and keyboard-focus channel that VoiceInk++ had simply failed to use.
+**Root cause:** The installed OpenAI helper does not expose a second macOS focus channel. `SkyComputerUseService` and `@oai/sky` expose a software `VirtualCursor`, refetchable Accessibility trees, app/window/element-targeted actions, PID/window-addressed synthesized events, `SyntheticAppFocusEnforcer`, `SystemFocusStealPreventer`, and private CPS focus-state notifications. Its own Window2 type contract says input methods activate their target window automatically. The helper can therefore make a target believe it is active and suppress or repair system focus changes, but that is synthetic internal focus orchestration, not an independent physical mouse. Computer Use normally re-snapshots and acts immediately; VoiceInk++ has the stricter delayed contract of preserving one exact composer across later tab/window/focus changes, inserting once, submitting once, and proving that the saved input cleared without bringing the app forward.
+**Fix:** No runtime change was made. Keep VoiceInk++ on the narrow, bounded per-app delivery design instead of copying a general computer-control stack: exact task/window/editor revalidation, one internal activation-state session, bounded Unicode insertion, a proven semantic Send action, fail-closed Send-versus-Stop checks, and surface-specific verification. Candidate commit `0e8d164` already implements that subset for the audited Codex package; the running ChatGPT-hosted Codex package still needs its exact tuple and live behavior proved before support can be claimed. Fable Five independently passed the static architecture but agreed that source and bundle inspection cannot replace the physical trace.
+**Commit:** none (read-only installed-bundle/public-source investigation; current candidate remains `0e8d164`)
+**Guard:** Never infer background safety or exact delivery from Computer Use's virtual cursor, AX/event acceptance, or a mocked action. The public `openai/codex` tree does not contain the native focus-enforcer implementation, and Computer Use forbids targeting `com.openai.codex`; do not bypass that policy with ad-hoc live AX probes. Require Ethan's disposable-task trace to prove exact insertion, one semantic Send, composer clear/reset, and unchanged system foreground before accepting Codex support.
+---
+
+---
 **Date:** 2026-07-18T23:50:09Z
 **Trigger:** Ethan rejected v2.0.224 after repeated Codex warning-icon and no-paste failures, corrected an unsupported guess that the remembered AX baseline was v2.0.216, and asked for the version to be reconstructed from his session conversation.
 **Symptom:** The signed v2.0.224 app could read the real ChatGPT-hosted Codex `AXTextArea`, but the locked icon remained a warning and exact delivery failed or copied the transcript to the clipboard.
