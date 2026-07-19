@@ -464,22 +464,25 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func CodexTraversalFallsBackToNavigationOrderOnlyWhenNeeded() {
-        #expect(FocusLockService.preferredTraversalChildren(
+    @Test func CodexTraversalMergesNavigationVisibleAndOrdinaryChildren() {
+        #expect(FocusLockService.mergedTraversalChildren(
             visible: [1],
             ordinary: [2],
-            navigationOrder: [3]
-        ) == [1])
-        #expect(FocusLockService.preferredTraversalChildren(
+            navigationOrder: [3],
+            areEquivalent: { $0 == $1 }
+        ) == [3, 1, 2])
+        #expect(FocusLockService.mergedTraversalChildren(
             visible: [],
             ordinary: [2],
-            navigationOrder: [3]
-        ) == [2])
-        #expect(FocusLockService.preferredTraversalChildren(
-            visible: [],
-            ordinary: [],
-            navigationOrder: [3]
-        ) == [3])
+            navigationOrder: [3, 2],
+            areEquivalent: { $0 == $1 }
+        ) == [3, 2])
+        #expect(FocusLockService.mergedTraversalChildren(
+            visible: [2, 3],
+            ordinary: [1, 3],
+            navigationOrder: [3, 2],
+            areEquivalent: { $0 == $1 }
+        ) == [3, 2, 1])
     }
 
     @MainActor

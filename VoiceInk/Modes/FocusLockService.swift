@@ -224,6 +224,7 @@ final class FocusLockService: ObservableObject {
         case ready(NearbySubmitButtonCandidate)
         case unavailable
         case ambiguous
+        case boundaryChanged
     }
 
     /// `nil` is not proof that an OpenAI button is genuinely unlabelled: AX can also
@@ -952,6 +953,7 @@ final class FocusLockService: ObservableObject {
             app: session.app,
             pid: session.processIdentifier,
             preserveSystemFocusAcrossAction: session.mode == .directExactElement,
+            waitForUnavailableCandidate: true,
             traversalPreflight: { [weak self] in
                 self?.backgroundDeliveryFastBoundaryMatches(session) == true
             },
@@ -1093,6 +1095,7 @@ final class FocusLockService: ObservableObject {
             app: target.app,
             pid: target.pid,
             preserveSystemFocusAcrossAction: false,
+            waitForUnavailableCandidate: false,
             traversalPreflight: { [weak self] in
                 self?.retainedTargetOwnsSystemKeyboardFocus(target) == true
             },
@@ -1109,24 +1112,45 @@ final class FocusLockService: ObservableObject {
         app: NSRunningApplication,
         pid: pid_t,
         preserveSystemFocusAcrossAction: Bool,
+        waitForUnavailableCandidate: Bool,
         traversalPreflight: () -> Bool,
         actionPreflight: () -> Bool,
         postActionFocusGuard: () -> Bool
     ) async -> NearbySubmitButtonResult {
         guard !app.isTerminated, traversalPreflight() else { return .unavailable }
-        let lookup = await nearbySubmitButtonLookup(
-            editor: element,
-            window: window,
-            app: app,
-            pid: pid,
-            boundary: traversalPreflight
-        )
-        guard case .ready(let candidate) = lookup else {
-            if case .ambiguous = lookup {
+        // React may publish or enable the exact Send wrapper just after Accessibility
+        // insertion completes. Background delivery has no safe key fallback, so give
+        // only that route a bounded chance to re-resolve the complete relationship.
+        // Foreground callers return immediately to their exact-focus HID path.
+        let readinessDeadline = ProcessInfo.processInfo.systemUptime + 0.8
+        var candidate: NearbySubmitButtonCandidate?
+        repeat {
+            let lookup = await nearbySubmitButtonLookup(
+                editor: element,
+                window: window,
+                app: app,
+                pid: pid,
+                boundary: traversalPreflight
+            )
+            switch lookup {
+            case .ready(let readyCandidate):
+                candidate = readyCandidate
+            case .ambiguous:
                 logger.notice("Semantic Send lookup was ambiguous; no action issued pid=\(pid, privacy: .public)")
+                return .unavailable
+            case .boundaryChanged:
+                return .unavailable
+            case .unavailable:
+                guard waitForUnavailableCandidate,
+                      traversalPreflight(),
+                      !Task.isCancelled,
+                      ProcessInfo.processInfo.systemUptime < readinessDeadline else {
+                    return .unavailable
+                }
+                try? await Task.sleep(nanoseconds: 25_000_000)
             }
-            return .unavailable
-        }
+        } while candidate == nil
+        guard let candidate else { return .unavailable }
         guard actionPreflight() else { return .focusLostBeforeAction }
         guard !Task.isCancelled else { return .refusedAfterCandidate }
 
@@ -1177,13 +1201,15 @@ final class FocusLockService: ObservableObject {
         pid: pid_t,
         boundary: () -> Bool
     ) async -> NearbySubmitButtonLookup {
-        guard boundary(),
-              let editorFrame = frame(of: editor) else {
+        guard boundary() else { return .boundaryChanged }
+        guard let editorFrame = frame(of: editor) else {
             return .unavailable
         }
 
-        let deadline = ProcessInfo.processInfo.systemUptime + 0.35
+        let searchStarted = ProcessInfo.processInfo.systemUptime
+        let deadline = searchStarted + 0.35
         let traversalState = BoundedTraversalState(nodeBudget: 1_600)
+        var ancestorsVisited = 0
         var editorBranch = editor
         var ancestor = elementAttribute(kAXParentAttribute, from: editor)
         for _ in 0..<16 {
@@ -1194,6 +1220,7 @@ final class FocusLockService: ObservableObject {
                   !CFEqual(container, window) else {
                 break
             }
+            ancestorsVisited += 1
             ancestor = elementAttribute(kAXParentAttribute, from: container)
             var candidates: [NearbySubmitButtonCandidate] = []
             let siblingBranches = traversalChildren(of: container).filter {
@@ -1225,18 +1252,28 @@ final class FocusLockService: ObservableObject {
                     break
                 case .stoppedByVisitor:
                     return .ambiguous
-                case .exhausted, .cancelled, .boundaryChanged:
+                case .cancelled, .boundaryChanged:
+                    return .boundaryChanged
+                case .exhausted:
                     return .unavailable
                 }
             }
 
             let unique = uniqueCandidates(candidates)
             if unique.count == 1, let candidate = unique.first {
+                let elapsedMilliseconds = Int(
+                    (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
+                )
+                logger.info("Resolved OpenAI FooterActions Send sibling pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(1_600 - traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
                 return .ready(candidate)
             }
             if unique.count > 1 { return .ambiguous }
             editorBranch = container
         }
+        let elapsedMilliseconds = Int(
+            (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
+        )
+        logger.notice("Bounded OpenAI FooterActions sibling search found no candidate pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(1_600 - traversalState.remainingNodeBudget, privacy: .public) remainingNodeBudget=\(traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
         return .unavailable
     }
 
@@ -2196,22 +2233,26 @@ final class FocusLockService: ObservableObject {
         return elements
     }
 
-    /// Chromium can publish FooterActions only through navigation order. Preserve the
-    /// ordinary visible/children preference and use navigation order only when both are
-    /// empty, so the same bounded tree topology remains deterministic.
-    static func preferredTraversalChildren<Element>(
+    /// Chromium can publish FooterActions only through navigation order even while it
+    /// also exposes a populated but incomplete ordinary child list. Start with the
+    /// compact navigation order, then merge visible and ordinary children, deduplicated
+    /// by AX identity. The existing node/depth/deadline bounds still cap the walk.
+    static func mergedTraversalChildren<Element>(
         visible: [Element],
-        ordinary: @autoclosure () -> [Element],
-        navigationOrder: @autoclosure () -> [Element]
+        ordinary: [Element],
+        navigationOrder: [Element],
+        areEquivalent: (Element, Element) -> Bool
     ) -> [Element] {
-        guard visible.isEmpty else { return visible }
-        let ordinary = ordinary()
-        guard ordinary.isEmpty else { return ordinary }
-        return navigationOrder()
+        var merged: [Element] = []
+        for candidate in navigationOrder + visible + ordinary where
+            !merged.contains(where: { areEquivalent($0, candidate) }) {
+            merged.append(candidate)
+        }
+        return merged
     }
 
     private func traversalChildren(of element: AXUIElement) -> [AXUIElement] {
-        Self.preferredTraversalChildren(
+        Self.mergedTraversalChildren(
             visible: elementArrayAttribute(
                 kAXVisibleChildrenAttribute,
                 from: element
@@ -2220,7 +2261,8 @@ final class FocusLockService: ObservableObject {
             navigationOrder: elementArrayAttribute(
                 "AXChildrenInNavigationOrder",
                 from: element
-            )
+            ),
+            areEquivalent: { CFEqual($0, $1) }
         )
     }
 
