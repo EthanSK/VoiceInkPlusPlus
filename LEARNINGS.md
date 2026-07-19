@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-19T17:49:05Z
+**Trigger:** Ethan asked for detailed, self-cleaning logs that future agents can reliably correlate with the exact running VoiceInk++ release.
+**Symptom:** The upgraded delivery trace wrote its start header but exited with status 141 before creating the launchd runner, so status immediately reported debugMode=off.
+**Root cause:** record_runtime_identity used codesign piped into an awk action that exited on the first CDHash match. With set -o pipefail, awk's early exit gave codesign SIGPIPE and correctly failed the whole trace start.
+**Fix:** Commit cd9843f records the installed VoiceInk++ marketing version, build, PID, and CDHash at trace start and app restarts, while making awk consume the complete codesign output so the strict pipefail contract remains useful.
+**Commit:** cd9843f
+**Guard:** A real stop/start/status/show cycle now reports debugMode=on with launchd runner and log-stream PIDs, and the trace contains version=2.0 build=228 pid plus the installed CDHash; bash syntax and skill validation pass.
+---
+
+
+---
 **Date:** 2026-07-19T17:46:05Z
 **Trigger:** Ethan asked agents to always check logs during frequent live use, add detailed self-cleaning one-week diagnostics for the current debug period, and remember to turn debug mode off when the work is done.
 **Symptom:** Runtime regressions were repeatedly changed without first correlating Ethan's newest physical use with the exact installed build and delivery trace; the reusable trace lived in one temporary file with no explicit weekly retention or debug-mode shutdown contract.
