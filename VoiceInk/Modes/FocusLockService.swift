@@ -38,21 +38,85 @@ final class FocusLockService: ObservableObject {
     }
 
     struct BackgroundDeliverySession {
+        fileprivate enum Mode: Equatable {
+            case preparedTargetedInput
+            case directExactElement
+        }
+
+        fileprivate let target: Target
         fileprivate let element: AXUIElement
         fileprivate let window: AXUIElement
         fileprivate let app: NSRunningApplication
-        fileprivate let frontmostPIDAtStart: pid_t
+        fileprivate let mode: Mode
+        fileprivate let frontmostPIDAtPreparation: pid_t
         fileprivate let previouslyFocusedWindow: AXUIElement?
         fileprivate let previouslyFocusedElement: AXUIElement?
         let processIdentifier: pid_t
         let bundleIdentifier: String?
-        var expectedFrontmostProcessIdentifier: pid_t { frontmostPIDAtStart }
+        var frontmostProcessIdentifierAtPreparation: pid_t {
+            frontmostPIDAtPreparation
+        }
+        var usesPreparedTargetedInput: Bool {
+            mode == .preparedTargetedInput
+        }
     }
 
     enum NearbySubmitButtonResult: Equatable {
         case pressed
         case unavailable
+        case focusLostBeforeAction
+        case refusedAfterCandidate
         case failed(Int32)
+    }
+
+    enum BackgroundTextInsertionResult: Equatable {
+        case acceptedSelectedText
+        case unavailable
+        case failed(Int32)
+        case focusSafetyViolation
+    }
+
+    private struct NearbySubmitButtonCandidate {
+        let element: AXUIElement
+        let usesAuditedUnlabelledContract: Bool
+        let score: CGFloat
+    }
+
+    private enum NearbySubmitButtonLookup {
+        case ready(NearbySubmitButtonCandidate)
+        case unavailable
+        case ambiguous
+    }
+
+    /// `nil` is not proof that an OpenAI button is genuinely unlabelled: AX can also
+    /// return no string when the renderer is busy or the wrapper has gone stale. Keep
+    /// those states distinct so a failed label read can never inherit the audited
+    /// unlabelled-Send exception and accidentally press Stop.
+    private enum SubmitLabelState {
+        case labelled(String)
+        case unlabelled
+        case unreadable
+    }
+
+    private final class BoundedTraversalState {
+        var remainingNodeBudget: Int
+        var visitedNodeHashes = Set<CFHashCode>()
+
+        init(nodeBudget: Int) {
+            remainingNodeBudget = nodeBudget
+        }
+    }
+
+    private enum BoundedTraversalCompletion {
+        case completed
+        case exhausted
+        case cancelled
+        case boundaryChanged
+        case stoppedByVisitor
+    }
+
+    private struct BoundedTraversalResult {
+        let completion: BoundedTraversalCompletion
     }
 
     static let shared = FocusLockService()
@@ -62,9 +126,16 @@ final class FocusLockService: ObservableObject {
     private(set) var stopHoldDecisionPending = false
 
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
-    private let activationTimeout: TimeInterval = 1
-    private let focusVerificationTimeout: TimeInterval = 0.25
-    private let focusPollInterval: UInt64 = 20_000_000
+    // Codex 26.707.72221 renders its idle submit control as the only enabled,
+    // unlabelled button in the nearest composer container. Its bundled React source
+    // gives the *Stop* state a non-empty aria label, while the idle Send state passes
+    // `aria-label: undefined`. This exact tuple is intentionally fail-closed: an app
+    // update must be re-audited before VoiceInk++ may press an unlabelled control.
+    private static let auditedCodexSubmitBuild = (
+        shortVersion: "26.707.72221",
+        build: "5307",
+        chromium: "150.0.7871.115"
+    )
 
     private init() {}
 
@@ -111,9 +182,10 @@ final class FocusLockService: ObservableObject {
             logger.info("Captured editable input pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(role ?? "nil", privacy: .public) subrole=\(subrole ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
         } else {
             // Electron/Chromium frequently reports AXWebArea while a global shortcut's
-            // modifiers are down. Preserve the owning app for the recording-start/Next
-            // Track route; delivery can reactivate that app and use its retained focus even
-            // when macOS did not expose the exact editor wrapper at capture time.
+            // modifiers are down. Preserve the owning app only for recording-start/Next.
+            // Delivery may promote this to the already-frontmost app's one exact focused
+            // editor; it must never activate a background fallback or guess from retained
+            // application focus.
             logger.notice("Captured recording-start application fallback pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) rejectedRole=\(role ?? "nil", privacy: .public) rejectedSubrole=\(subrole ?? "nil", privacy: .public)")
         }
 
@@ -158,113 +230,42 @@ final class FocusLockService: ObservableObject {
         )
     }
 
-    func restoreFocus(to target: Target, allowApplicationFallback: Bool = false) async -> Bool {
-        guard AXIsProcessTrusted() else {
-            logger.error("Focused input restore failed because Accessibility is not trusted")
-            return false
-        }
-        guard !target.app.isTerminated else {
-            logger.error("Focused input restore failed because the target application terminated")
-            return false
-        }
-
-        let restoreStarted = ProcessInfo.processInfo.systemUptime
-        let frontmostPIDBeforeRestore = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
-        let targetRole = target.element.flatMap { self.stringAttribute(kAXRoleAttribute, from: $0) } ?? "app-fallback"
-        let targetSubrole = target.element.flatMap { self.stringAttribute(kAXSubroleAttribute, from: $0) } ?? "nil"
-        let targetElementHash = target.element.map { String(CFHash($0)) } ?? "nil"
-        logger.info("Focused input restore BEGIN targetPid=\(target.pid, privacy: .public) targetBundle=\(target.bundleIdentifier ?? "nil", privacy: .public) targetRole=\(targetRole, privacy: .public) targetSubrole=\(targetSubrole, privacy: .public) targetElementHash=\(targetElementHash, privacy: .public) frontmostPid=\(frontmostPIDBeforeRestore, privacy: .public)")
-
-        if frontmostPIDBeforeRestore != target.pid {
-            guard await activateApplication(target.app) else {
-                logger.error("Focused input restore failed waiting for target app to become frontmost targetPid=\(target.pid, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public) waitedMillis=\(Int((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1_000), privacy: .public)")
-                return false
-            }
-            logger.info("Focused input restore target app became frontmost targetPid=\(target.pid, privacy: .public) waitedMillis=\(Int((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1_000), privacy: .public)")
-        } else {
-            logger.info("Focused input restore skipped app activation because target is already frontmost targetPid=\(target.pid, privacy: .public)")
-        }
-
-        guard let element = resolvedExactElement(for: target) else {
-            guard allowApplicationFallback else {
-                logger.error("Focused input restore could not uniquely resolve the saved exact input")
-                return false
-            }
-            logger.notice("Foreground recording-start exact input became unavailable; using the saved app's current focus targetPid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-            return true
-        }
-
-        let appElement = AXUIElementCreateApplication(target.pid)
-        if let window = liveWindow(for: target, resolvedElement: element) {
-            _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
-            let windowResult = AXUIElementSetAttributeValue(
-                appElement,
-                kAXFocusedWindowAttribute as CFString,
-                window
-            )
-            _ = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            guard windowResult == .success else {
-                if allowApplicationFallback {
-                    logger.notice("Foreground recording-start window became stale; using the saved app's current focus pid=\(target.pid, privacy: .public) AXError=\(windowResult.rawValue, privacy: .public)")
-                    return true
-                }
-                logger.error("Focused input restore failed to select the saved window pid=\(target.pid, privacy: .public) AXError=\(windowResult.rawValue, privacy: .public)")
-                return false
-            }
-        }
-        let restoreResult = AXUIElementSetAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            element
-        )
-        guard restoreResult == .success else {
-            if allowApplicationFallback {
-                logger.notice("Foreground recording-start input became stale; using the saved app's current focus pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) AXError=\(restoreResult.rawValue, privacy: .public)")
-                return true
-            }
-            logger.error("Focused input restore failed with AX error \(restoreResult.rawValue) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-            return false
-        }
-
-        guard await waitForFocusedElement(
-            pid: target.pid,
-            element: element,
-            timeout: focusVerificationTimeout
-        ) else {
-            let actualFocus = systemFocusedElement()
-            if allowApplicationFallback, actualFocus?.pid == target.pid {
-                logger.notice("Foreground recording-start input wrapper changed; using the saved app's current focus targetPid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(element), privacy: .public) actualElementHash=\(actualFocus.map { String(CFHash($0.element)) } ?? "nil", privacy: .public)")
-                return true
-            }
-            logger.error("Focused input restore was accepted by AX but verification failed targetPid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(element), privacy: .public) actualPid=\(actualFocus?.pid ?? -1, privacy: .public) actualElementHash=\(actualFocus.map { String(CFHash($0.element)) } ?? "nil", privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return false
-        }
-
-        logger.info("Restored and verified focused input pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public) totalMillis=\(Int((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1_000), privacy: .public)")
-        return true
-    }
-
-    /// Prepare one exact saved editor for process-targeted background delivery without
-    /// activating its application. Electron only acknowledges its background editor
-    /// after the same inactive→active notification sequence used by a real app switch;
-    /// every AX setter and the frontmost PID are verified before any text event is sent.
+    /// Prepare one exact saved editor for non-activating delivery. A background
+    /// Electron target gets exactly one bounded internal activation-state session.
+    /// When the saved app is frontmost but another input owns the keyboard, no internal
+    /// focus is rewritten; that route may use only direct AXSelectedText insertion.
     func prepareBackgroundDelivery(to target: Target) async -> BackgroundDeliverySession? {
         guard AXIsProcessTrusted(),
               target.hasExactInput,
               !target.app.isTerminated,
+              let frontmostPID = NSWorkspace.shared.frontmostApplication?
+                .processIdentifier,
+              let keyboardFocus = systemFocusedElement(),
               let element = resolvedExactElement(for: target),
               let window = liveWindow(for: target, resolvedElement: element) else {
             logger.error("Background exact-input preparation could not resolve a live saved element/window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return nil
         }
 
+        let exactInputOwnsKeyboardFocus = keyboardFocus.pid == target.pid
+            && CFEqual(keyboardFocus.element, element)
+        guard !exactInputOwnsKeyboardFocus else {
+            logger.error("Non-activating delivery preparation refused because the exact target already owns system keyboard focus pid=\(target.pid, privacy: .public)")
+            return nil
+        }
+        let mode: BackgroundDeliverySession.Mode =
+            frontmostPID == target.pid || keyboardFocus.pid == target.pid
+                ? .directExactElement
+                : .preparedTargetedInput
+
         let appElement = AXUIElementCreateApplication(target.pid)
         let session = BackgroundDeliverySession(
+            target: target,
             element: element,
             window: window,
             app: target.app,
-            frontmostPIDAtStart: NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1,
+            mode: mode,
+            frontmostPIDAtPreparation: frontmostPID,
             previouslyFocusedWindow: elementAttribute(
                 kAXFocusedWindowAttribute,
                 from: appElement
@@ -276,47 +277,59 @@ final class FocusLockService: ObservableObject {
             processIdentifier: target.pid,
             bundleIdentifier: target.bundleIdentifier
         )
-        guard await applyBackgroundFocus(session) else {
-            CursorPaster.endTargetedInputSession(pid: target.pid)
-            return nil
+
+        switch mode {
+        case .directExactElement:
+            guard backgroundSessionRemainsPrepared(session) else { return nil }
+        case .preparedTargetedInput:
+            guard await applyBackgroundFocus(session) else {
+                if preparedTargetFocusBoundaryIsSafe(session) {
+                    CursorPaster.endTargetedInputSession(pid: target.pid)
+                }
+                return nil
+            }
         }
 
-        logger.info("Background exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) frontmostPid=\(session.frontmostPIDAtStart, privacy: .public)")
+        logger.info("Non-activating exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) mode=\(String(describing: mode), privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         return session
     }
 
-    func refreshBackgroundFocus(_ session: BackgroundDeliverySession) async -> Bool {
-        await applyBackgroundFocus(session)
-    }
-
     func finishBackgroundDelivery(_ session: BackgroundDeliverySession) {
-        defer { CursorPaster.endTargetedInputSession(pid: session.processIdentifier) }
-
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier
-                == session.frontmostPIDAtStart,
-              CursorPaster.beginTargetedInputSession(pid: session.processIdentifier) else {
-            logger.notice("Background internal-focus restoration skipped because the frontmost app changed targetPid=\(session.processIdentifier, privacy: .public) expectedFrontmostPid=\(session.frontmostPIDAtStart, privacy: .public) actualFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        guard session.mode == .preparedTargetedInput else { return }
+        // The synthetic active state belongs only to the one bounded background
+        // session. If Ethan has brought Codex forward, do not post a fake deactivation
+        // or rewrite its now-live internal focus.
+        guard preparedTargetFocusBoundaryIsSafe(session) else {
+            logger.notice("Background internal-focus restoration skipped because the target acquired system focus targetPid=\(session.processIdentifier, privacy: .public)")
             return
         }
+        defer {
+            if preparedTargetFocusBoundaryIsSafe(session) {
+                CursorPaster.endTargetedInputSession(pid: session.processIdentifier)
+            }
+        }
 
-        // Electron processes the synthetic activation state asynchronously. The same
-        // bounded 50 ms settlement used by preparation is required before and after
-        // restoring its previous internal window/editor; immediate setters were
-        // accepted but left Codex attached to the delivery window in the live probe.
+        // Electron settles its private activation state asynchronously. Keep the
+        // session open and re-check the target-not-system-focused boundary before every
+        // internal mutation; never begin a nested/repeated activation session.
         Thread.sleep(forTimeInterval: 0.05)
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return }
         let appElement = AXUIElementCreateApplication(session.processIdentifier)
         if let previousWindow = session.previouslyFocusedWindow,
            !CFEqual(previousWindow, session.window) {
+            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
             _ = AXUIElementSetAttributeValue(
                 previousWindow,
                 kAXMainAttribute as CFString,
                 kCFBooleanTrue
             )
+            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
             _ = AXUIElementSetAttributeValue(
                 appElement,
                 kAXFocusedWindowAttribute as CFString,
                 previousWindow
             )
+            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
             _ = AXUIElementSetAttributeValue(
                 previousWindow,
                 kAXFocusedAttribute as CFString,
@@ -325,11 +338,13 @@ final class FocusLockService: ObservableObject {
         }
         if let previousElement = session.previouslyFocusedElement,
            !CFEqual(previousElement, session.element) {
+            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
             _ = AXUIElementSetAttributeValue(
                 appElement,
                 kAXFocusedUIElementAttribute as CFString,
                 previousElement
             )
+            guard preparedTargetFocusBoundaryIsSafe(session) else { return }
             _ = AXUIElementSetAttributeValue(
                 previousElement,
                 kAXFocusedAttribute as CFString,
@@ -338,6 +353,7 @@ final class FocusLockService: ObservableObject {
         }
 
         Thread.sleep(forTimeInterval: 0.05)
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return }
         let restoredWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
         let restoredElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
         let windowRestored = session.previouslyFocusedWindow.map { previousWindow in
@@ -350,7 +366,8 @@ final class FocusLockService: ObservableObject {
     }
 
     func backgroundInputText(for session: BackgroundDeliverySession) -> String? {
-        stringAttribute(kAXValueAttribute, from: session.element)
+        guard backgroundDeliveryFastBoundaryMatches(session) else { return nil }
+        return stringAttribute(kAXValueAttribute, from: session.element)
     }
 
     func backgroundWindowContains(
@@ -358,7 +375,10 @@ final class FocusLockService: ObservableObject {
         for session: BackgroundDeliverySession,
         excludingSavedInput: Bool = false
     ) -> Bool {
-        descendants(of: session.window).contains { element in
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session) else {
+            return false
+        }
+        return descendants(of: session.window).contains { element in
             if excludingSavedInput, CFEqual(element, session.element) {
                 return false
             }
@@ -366,10 +386,106 @@ final class FocusLockService: ObservableObject {
         }
     }
 
+    /// Same-app/different-input delivery is element-addressed. Never replace a generic
+    /// AXValue: rich editors can lose formatting. If AXSelectedText is unavailable,
+    /// fail closed instead of internally focusing the saved input.
+    func insertTextUsingAccessibility(
+        _ text: String,
+        for session: BackgroundDeliverySession
+    ) -> BackgroundTextInsertionResult {
+        guard session.mode == .directExactElement,
+              !text.isEmpty,
+              backgroundSessionRemainsPrepared(session) else {
+            return .unavailable
+        }
+        var settable = DarwinBoolean(false)
+        let settableResult = AXUIElementIsAttributeSettable(
+            session.element,
+            kAXSelectedTextAttribute as CFString,
+            &settable
+        )
+        guard settableResult == .success, settable.boolValue else {
+            return .unavailable
+        }
+        guard backgroundSessionRemainsPrepared(session) else {
+            return .focusSafetyViolation
+        }
+        let result = AXUIElementSetAttributeValue(
+            session.element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        )
+        guard backgroundSessionRemainsPrepared(session) else {
+            return .focusSafetyViolation
+        }
+        return result == .success
+            ? .acceptedSelectedText
+            : .failed(result.rawValue)
+    }
+
+    func backgroundDeliveryBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        backgroundSessionRemainsPrepared(session)
+    }
+
+    /// Cheap per-chunk/readback guard. Full document/task re-resolution happens before,
+    /// at bounded checkpoints, and after targeted typing; every individual 20-unit
+    /// chunk still proves the retained wrapper, window, internal focus, and system-focus
+    /// boundary without repeatedly walking a large Chromium tree.
+    func backgroundDeliveryFastBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session),
+              stringAttribute(kAXRoleAttribute, from: session.element).map({
+                  isEditableInput(
+                      role: $0,
+                      subrole: stringAttribute(
+                          kAXSubroleAttribute,
+                          from: session.element
+                      )
+                  )
+              }) == true,
+              owningWindow(for: session.element).map({
+                  CFEqual($0, session.window)
+              }) == true else {
+            return false
+        }
+        guard session.mode == .preparedTargetedInput else { return true }
+        let appElement = AXUIElementCreateApplication(session.processIdentifier)
+        return elementAttribute(kAXFocusedWindowAttribute, from: appElement).map({
+            CFEqual($0, session.window)
+        }) == true && elementAttribute(
+            kAXFocusedUIElementAttribute,
+            from: appElement
+        ).map({
+            CFEqual($0, session.element)
+        }) == true
+    }
+
     func pressNearbySubmitButton(
         for session: BackgroundDeliverySession
-    ) -> NearbySubmitButtonResult {
-        pressNearbySubmitButton(element: session.element, pid: session.processIdentifier)
+    ) async -> NearbySubmitButtonResult {
+        guard backgroundSessionRemainsPrepared(session) else {
+            logger.error("Background submit refused because exact internal focus or target-not-frontmost proof was lost pid=\(session.processIdentifier, privacy: .public)")
+            return .unavailable
+        }
+        return await pressNearbySubmitButton(
+            element: session.element,
+            window: session.window,
+            app: session.app,
+            pid: session.processIdentifier,
+            preserveSystemFocusAcrossAction: session.mode == .directExactElement,
+            traversalPreflight: { [weak self] in
+                self?.backgroundDeliveryFastBoundaryMatches(session) == true
+            },
+            actionPreflight: { [weak self] in
+                self?.backgroundSessionRemainsPrepared(session) == true
+            },
+            postActionFocusGuard: { [weak self] in
+                self?.backgroundFocusBoundaryIsSafeAfterSubmission(session) == true
+            }
+        )
     }
 
     /// Read the live editor text for bounded delivery verification. This is not used
@@ -408,168 +524,457 @@ final class FocusLockService: ObservableObject {
             && CFEqual(focusedInput.element, targetElement)
     }
 
-    /// Some Electron chat editors expose an adjacent accessibility button labelled
-    /// "Send" even when their text area ignores synthetic Return. Restrict this to
-    /// the caller-selected OpenAI composer path and to a small ancestor radius; never
-    /// press generic/default buttons elsewhere in the target window.
+    private func retainedTargetOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
+        guard let retainedElement = target.element,
+              let retainedWindow = target.window,
+              let focusedInput = systemFocusedElement(),
+              focusedInput.pid == target.pid,
+              CFEqual(focusedInput.element, retainedElement),
+              owningWindow(for: retainedElement).map({
+                  CFEqual($0, retainedWindow)
+              }) == true else {
+            return false
+        }
+        return true
+    }
+
+    /// A recording-start application fallback is only a capture-time convenience.
+    /// Before foreground Cmd-V, freeze the one editable element that currently owns
+    /// keyboard focus so paste, verification, and Return all share exact identity.
+    func promoteForegroundApplicationFallbackToExactInput(_ target: Target) -> Target? {
+        guard !target.hasExactInput,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
+              let focused = systemFocusedElement(),
+              focused.pid == target.pid else {
+            return nil
+        }
+        let role = stringAttribute(kAXRoleAttribute, from: focused.element)
+        let subrole = stringAttribute(kAXSubroleAttribute, from: focused.element)
+        guard isEditableInput(role: role, subrole: subrole),
+              let window = owningWindow(for: focused.element),
+              let identity = exactInputIdentity(for: focused.element, in: window) else {
+            return nil
+        }
+        return Target(
+            element: focused.element,
+            window: window,
+            identity: identity,
+            app: target.app,
+            pid: target.pid,
+            bundleIdentifier: target.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: target.displayInfo.applicationName,
+                inputName: inputDisplayName(for: focused.element),
+                applicationIcon: target.displayInfo.applicationIcon
+            )
+        )
+    }
+
+    /// OpenAI chat surfaces expose Send in a sibling FooterActions subtree rather than
+    /// as a direct editor sibling. Discovery is bounded to the exact editor's ancestor
+    /// chain and same window. Exact system keyboard focus is the authority here: a
+    /// non-activating panel may own it while NSWorkspace reports another app frontmost.
+    /// The action is revalidated after the asynchronous walk so an idle Send wrapper
+    /// that turns into Stop can never cross the AXPress boundary.
     func pressNearbySubmitButton(
         for target: Target,
         allowApplicationFallback: Bool = false
-    ) -> NearbySubmitButtonResult {
+    ) async -> NearbySubmitButtonResult {
         guard AXIsProcessTrusted() else {
             return .failed(AXError.apiDisabled.rawValue)
         }
         guard !target.app.isTerminated,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
+              targetOwnsSystemKeyboardFocus(target),
               let element = liveElement(
-                for: target,
-                allowApplicationFallback: allowApplicationFallback
-              ) else {
+                  for: target,
+                  allowApplicationFallback: allowApplicationFallback
+              ),
+              let window = owningWindow(for: element) else {
             return .unavailable
         }
 
-        return pressNearbySubmitButton(element: element, pid: target.pid)
+        return await pressNearbySubmitButton(
+            element: element,
+            window: window,
+            app: target.app,
+            pid: target.pid,
+            preserveSystemFocusAcrossAction: false,
+            traversalPreflight: { [weak self] in
+                self?.retainedTargetOwnsSystemKeyboardFocus(target) == true
+            },
+            actionPreflight: { [weak self] in
+                self?.targetOwnsSystemKeyboardFocus(target) == true
+            },
+            postActionFocusGuard: { true }
+        )
     }
 
     private func pressNearbySubmitButton(
         element: AXUIElement,
-        pid: pid_t
-    ) -> NearbySubmitButtonResult {
-        var ancestor = element
-        for _ in 0..<4 {
-            for child in elementArrayAttribute(kAXChildrenAttribute, from: ancestor) {
-                guard stringAttribute(kAXRoleAttribute, from: child) == kAXButtonRole,
-                      isNearbySubmitLabel(submitLabel(for: child)),
-                      boolAttribute(kAXEnabledAttribute, from: child) != false else {
-                    continue
-                }
-
-                let result = AXUIElementPerformAction(child, kAXPressAction as CFString)
-                logger.info("Nearby submit-button press attempted pid=\(pid, privacy: .public) label=\(self.submitLabel(for: child) ?? "nil", privacy: .public) result=\(result.rawValue, privacy: .public)")
-                return result == .success ? .pressed : .failed(result.rawValue)
+        window: AXUIElement,
+        app: NSRunningApplication,
+        pid: pid_t,
+        preserveSystemFocusAcrossAction: Bool,
+        traversalPreflight: () -> Bool,
+        actionPreflight: () -> Bool,
+        postActionFocusGuard: () -> Bool
+    ) async -> NearbySubmitButtonResult {
+        guard !app.isTerminated, traversalPreflight() else { return .unavailable }
+        let lookup = await nearbySubmitButtonLookup(
+            editor: element,
+            window: window,
+            app: app,
+            pid: pid,
+            boundary: traversalPreflight
+        )
+        guard case .ready(let candidate) = lookup else {
+            if case .ambiguous = lookup {
+                logger.notice("Semantic Send lookup was ambiguous; no action issued pid=\(pid, privacy: .public)")
             }
+            return .unavailable
+        }
+        guard actionPreflight() else { return .focusLostBeforeAction }
+        guard !Task.isCancelled else { return .refusedAfterCandidate }
 
-            guard let parent = elementAttribute(kAXParentAttribute, from: ancestor) else {
-                break
-            }
-            ancestor = parent
+        // The first traversal discovers a candidate; the second is the irreversible
+        // action-time topology proof. Re-run the entire nearest-composer lookup and
+        // require the same sole candidate so a newly appeared sibling Send/Stop button
+        // cannot be hidden by merely rechecking the retained wrapper's own attributes.
+        let actionTimeLookup = await nearbySubmitButtonLookup(
+            editor: element,
+            window: window,
+            app: app,
+            pid: pid,
+            boundary: traversalPreflight
+        )
+        guard actionPreflight() else { return .focusLostBeforeAction }
+        guard case .ready(let actionTimeCandidate) = actionTimeLookup,
+              CFEqual(actionTimeCandidate.element, candidate.element),
+              !Task.isCancelled else {
+            logger.notice("Semantic Send action-time topology changed; no action issued pid=\(pid, privacy: .public)")
+            return .refusedAfterCandidate
+        }
+        let result = pressVerifiedSubmitButton(
+            actionTimeCandidate,
+            editor: element,
+            window: window,
+            app: app,
+            pid: pid,
+            preserveSystemFocusAcrossAction: preserveSystemFocusAcrossAction,
+            preflight: actionPreflight,
+            postActionFocusGuard: postActionFocusGuard
+        )
+        // A candidate existed and was uniquely re-found, so a final refusal means its
+        // semantics or exact boundary changed (for example idle Send became Stop).
+        // Preserve that distinction so callers never reinterpret it as permission to
+        // fall back to Return.
+        if result == .unavailable {
+            return actionPreflight()
+                ? .refusedAfterCandidate
+                : .focusLostBeforeAction
+        }
+        return result
+    }
+
+    private func nearbySubmitButtonLookup(
+        editor: AXUIElement,
+        window: AXUIElement,
+        app: NSRunningApplication,
+        pid: pid_t,
+        boundary: () -> Bool
+    ) async -> NearbySubmitButtonLookup {
+        guard boundary(),
+              let editorFrame = frame(of: editor) else {
+            return .unavailable
         }
 
-        logger.notice("Nearby submit button unavailable pid=\(pid, privacy: .public)")
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.35
+        let traversalState = BoundedTraversalState(nodeBudget: 1_600)
+        var editorBranch = editor
+        var ancestor = elementAttribute(kAXParentAttribute, from: editor)
+        for _ in 0..<16 {
+            guard boundary(), !Task.isCancelled,
+                  ProcessInfo.processInfo.systemUptime < deadline,
+                  traversalState.remainingNodeBudget > 0,
+                  let container = ancestor,
+                  !CFEqual(container, window) else {
+                break
+            }
+            ancestor = elementAttribute(kAXParentAttribute, from: container)
+            var candidates: [NearbySubmitButtonCandidate] = []
+            let siblingBranches = traversalChildren(of: container).filter {
+                !CFEqual($0, editorBranch)
+            }
+            for sibling in siblingBranches {
+                let traversal = await visitBoundedDescendants(
+                    of: sibling,
+                    maximumDepth: 10,
+                    state: traversalState,
+                    deadline: deadline,
+                    boundary: boundary,
+                    visitor: { candidateElement in
+                        if let candidate = self.semanticSendCandidate(
+                            candidateElement,
+                            editor: editor,
+                            window: window,
+                            editorFrame: editorFrame,
+                            app: app,
+                            pid: pid
+                        ) {
+                            candidates.append(candidate)
+                        }
+                        return self.uniqueCandidateCount(candidates) < 2
+                    }
+                )
+                switch traversal.completion {
+                case .completed:
+                    break
+                case .stoppedByVisitor:
+                    return .ambiguous
+                case .exhausted, .cancelled, .boundaryChanged:
+                    return .unavailable
+                }
+            }
+
+            let unique = uniqueCandidates(candidates)
+            if unique.count == 1, let candidate = unique.first {
+                return .ready(candidate)
+            }
+            if unique.count > 1 { return .ambiguous }
+            editorBranch = container
+        }
         return .unavailable
     }
 
-    /// Bring a known application to the foreground and verify that macOS actually
-    /// made it frontmost. `NSRunningApplication.activate` returned `false` for Codex
-    /// and VS Code during real cross-app delivery, so both destination activation and
-    /// post-delivery workspace restoration share the `NSWorkspace` fallback here.
-    func activateApplication(_ application: NSRunningApplication) async -> Bool {
-        let pid = application.processIdentifier
-        guard !application.isTerminated else {
-            logger.error("Application activation failed because the app terminated pid=\(pid, privacy: .public)")
-            return false
+    private func semanticSendCandidate(
+        _ candidateElement: AXUIElement,
+        editor: AXUIElement,
+        window: AXUIElement,
+        editorFrame: CGRect,
+        app: NSRunningApplication,
+        pid: pid_t
+    ) -> NearbySubmitButtonCandidate? {
+        var candidatePID: pid_t = 0
+        let labelState = submitLabelState(for: candidateElement)
+        let label: String?
+        let usesAuditedUnlabelledContract: Bool
+        switch labelState {
+        case .labelled(let value):
+            label = value
+            usesAuditedUnlabelledContract = false
+        case .unlabelled:
+            label = nil
+            usesAuditedUnlabelledContract = Self.matchesAuditedCodexSubmitBuild(app)
+        case .unreadable:
+            return nil
         }
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-            return true
+        guard !CFEqual(candidateElement, editor),
+              AXUIElementGetPid(candidateElement, &candidatePID) == .success,
+              candidatePID == pid,
+              stringAttribute(kAXRoleAttribute, from: candidateElement)
+                == kAXButtonRole,
+              (Self.isProvenSemanticSendLabel(label)
+                || usesAuditedUnlabelledContract),
+              boolAttribute(kAXEnabledAttribute, from: candidateElement) == true,
+              supportsPressAction(candidateElement),
+              owningWindow(for: candidateElement).map({
+                  CFEqual($0, window)
+              }) == true,
+              let candidateFrame = frame(of: candidateElement),
+              Self.semanticSendGeometryMatches(
+                  editorFrame: editorFrame,
+                  candidateFrame: candidateFrame
+              ) else {
+            return nil
         }
-
-        let directAccepted = application.activate(options: .activateAllWindows)
-        logger.info("Application activation requested through NSRunningApplication pid=\(pid, privacy: .public) accepted=\(directAccepted, privacy: .public)")
-        if directAccepted,
-           await waitForFrontmostApplication(pid: pid, timeout: activationTimeout) {
-            return true
-        }
-
-        guard let bundleURL = application.bundleURL else {
-            logger.error("Application activation fallback unavailable because the app has no bundle URL pid=\(pid, privacy: .public)")
-            return false
-        }
-
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.addsToRecentItems = false
-        let openedExpectedProcess = await withCheckedContinuation { continuation in
-            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { openedApplication, error in
-                if let error {
-                    self.logger.error("Application activation fallback failed pid=\(pid, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-                let matched = openedApplication?.processIdentifier == pid
-                self.logger.info("Application activation fallback completed pid=\(pid, privacy: .public) openedPid=\(openedApplication?.processIdentifier ?? -1, privacy: .public) matched=\(matched, privacy: .public)")
-                continuation.resume(returning: matched)
-            }
-        }
-        guard openedExpectedProcess else { return false }
-
-        let becameFrontmost = await waitForFrontmostApplication(pid: pid, timeout: activationTimeout)
-        if !becameFrontmost {
-            logger.error("Application activation fallback completed but app never became frontmost pid=\(pid, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-        }
-        return becameFrontmost
+        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        return NearbySubmitButtonCandidate(
+            element: candidateElement,
+            usesAuditedUnlabelledContract: usesAuditedUnlabelledContract,
+            score: abs(center.x - editorFrame.maxX)
+                + abs(center.y - editorFrame.maxY)
+        )
     }
 
-    private func waitForFrontmostApplication(pid: pid_t, timeout: TimeInterval) async -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: focusPollInterval)
-        }
-        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-    }
-
-    private func waitForFocusedElement(
+    private func pressVerifiedSubmitButton(
+        _ candidate: NearbySubmitButtonCandidate,
+        editor: AXUIElement,
+        window: AXUIElement,
+        app: NSRunningApplication,
         pid: pid_t,
-        element: AXUIElement,
-        timeout: TimeInterval
-    ) async -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if let focusedInput = systemFocusedElement(),
-               focusedInput.pid == pid,
-               CFEqual(focusedInput.element, element) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: focusPollInterval)
+        preserveSystemFocusAcrossAction: Bool,
+        preflight: () -> Bool,
+        postActionFocusGuard: () -> Bool
+    ) -> NearbySubmitButtonResult {
+        guard preflight(), !Task.isCancelled,
+              let editorFrame = frame(of: editor),
+              let candidateFrame = frame(of: candidate.element) else {
+            return .unavailable
         }
-        guard let focusedInput = systemFocusedElement() else { return false }
-        return focusedInput.pid == pid && CFEqual(focusedInput.element, element)
+        let revalidatedCandidate = semanticSendCandidate(
+            candidate.element,
+            editor: editor,
+            window: window,
+            editorFrame: editorFrame,
+            app: app,
+            pid: pid
+        )
+        let revalidatedSameElement = revalidatedCandidate.map {
+            CFEqual($0.element, candidate.element)
+        } == true
+        var candidatePID: pid_t = 0
+        guard revalidatedSameElement,
+              AXUIElementGetPid(candidate.element, &candidatePID) == .success,
+              candidatePID == pid,
+              owningWindow(for: candidate.element).map({
+                  CFEqual($0, window)
+              }) == true,
+              Self.semanticSendGeometryMatches(
+                  editorFrame: editorFrame,
+                  candidateFrame: candidateFrame
+              ),
+              stringAttribute(kAXRoleAttribute, from: candidate.element)
+                == kAXButtonRole,
+              boolAttribute(kAXEnabledAttribute, from: candidate.element) == true,
+              supportsPressAction(candidate.element),
+              !Task.isCancelled else {
+            return .unavailable
+        }
+
+        let auditedBuildStillMatches = candidate.usesAuditedUnlabelledContract
+            && Self.matchesAuditedCodexSubmitBuild(app)
+        guard preflight(), !Task.isCancelled else { return .unavailable }
+        let focusBeforeAction: (element: AXUIElement, pid: pid_t)?
+        if preserveSystemFocusAcrossAction {
+            guard let currentFocus = systemFocusedElement() else {
+                return .unavailable
+            }
+            focusBeforeAction = currentFocus
+        } else {
+            focusBeforeAction = nil
+        }
+
+        // This must be the final AX read before AXPress. Codex reuses the same control
+        // for idle Send and active Stop, so an earlier label snapshot is not semantic
+        // proof at the irreversible boundary. A renderer/read failure is fail-closed,
+        // never treated as the audited genuinely-unlabelled idle state.
+        let finalLabelState = submitLabelState(for: candidate.element)
+        let currentLabel: String?
+        let labelWasReadable: Bool
+        let currentAuditedUnlabelledContract: Bool
+        switch finalLabelState {
+        case .labelled(let value):
+            currentLabel = value
+            labelWasReadable = true
+            currentAuditedUnlabelledContract = false
+        case .unlabelled:
+            currentLabel = nil
+            labelWasReadable = true
+            currentAuditedUnlabelledContract = auditedBuildStillMatches
+        case .unreadable:
+            currentLabel = nil
+            labelWasReadable = false
+            currentAuditedUnlabelledContract = false
+        }
+
+        var actionResult: AXError?
+        let result = Self.performProvenSemanticSend(
+            isUnambiguous: true,
+            pidMatches: true,
+            windowMatches: true,
+            geometryMatches: true,
+            roleMatches: true,
+            enabled: true,
+            label: currentLabel,
+            labelWasReadable: labelWasReadable,
+            allowsAuditedUnlabelledSend: currentAuditedUnlabelledContract,
+            hasPressAction: true,
+            boundaryMatches: true,
+            action: {
+                let value = AXUIElementPerformAction(
+                    candidate.element,
+                    kAXPressAction as CFString
+                )
+                actionResult = value
+                return value.rawValue
+            }
+        )
+        guard result != .unavailable else { return result }
+
+        if let focusBeforeAction {
+            let focusAfterAction = systemFocusedElement()
+            guard focusAfterAction?.pid == focusBeforeAction.pid,
+                  focusAfterAction.map({
+                      CFEqual($0.element, focusBeforeAction.element)
+                  }) == true else {
+                logger.error("Semantic Send changed the user's system-focused input pid=\(pid, privacy: .public)")
+                return .failed(AXError.cannotComplete.rawValue)
+            }
+        }
+        guard postActionFocusGuard() else {
+            logger.error("Semantic Send violated the non-activating focus boundary pid=\(pid, privacy: .public)")
+            return .failed(AXError.cannotComplete.rawValue)
+        }
+        logger.info("Verified semantic Send press attempted pid=\(pid, privacy: .public) route=\(currentAuditedUnlabelledContract ? "auditedCodexIdleSend" : "labelledSend", privacy: .public) label=\(currentLabel ?? "nil", privacy: .public) result=\(actionResult?.rawValue ?? -1, privacy: .public)")
+        return result
+    }
+
+    private func uniqueCandidates(
+        _ candidates: [NearbySubmitButtonCandidate]
+    ) -> [NearbySubmitButtonCandidate] {
+        var unique: [NearbySubmitButtonCandidate] = []
+        for candidate in candidates.sorted(by: { $0.score < $1.score }) where
+            !unique.contains(where: { CFEqual($0.element, candidate.element) }) {
+            unique.append(candidate)
+        }
+        return unique
+    }
+
+    private func uniqueCandidateCount(
+        _ candidates: [NearbySubmitButtonCandidate]
+    ) -> Int {
+        min(uniqueCandidates(candidates).count, 2)
     }
 
     private func applyBackgroundFocus(_ session: BackgroundDeliverySession) async -> Bool {
-        guard !session.app.isTerminated,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == session.frontmostPIDAtStart,
+        guard session.mode == .preparedTargetedInput,
+              preparedTargetFocusBoundaryIsSafe(session),
               CursorPaster.beginTargetedInputSession(pid: session.processIdentifier) else {
-            logger.error("Background exact focus refused because the target/frontmost process changed targetPid=\(session.processIdentifier, privacy: .public) expectedFrontmostPid=\(session.frontmostPIDAtStart, privacy: .public) actualFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            logger.error("Background exact focus refused before its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
             return false
         }
 
         try? await Task.sleep(nanoseconds: 50_000_000)
+        guard preparedTargetFocusBoundaryIsSafe(session) else {
+            logger.error("Background exact focus refused because the target became frontmost during activation-state settlement targetPid=\(session.processIdentifier, privacy: .public)")
+            return false
+        }
         let appElement = AXUIElementCreateApplication(session.processIdentifier)
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
         let mainResult = AXUIElementSetAttributeValue(
             session.window,
             kAXMainAttribute as CFString,
             kCFBooleanTrue
         )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
         let windowResult = AXUIElementSetAttributeValue(
             appElement,
             kAXFocusedWindowAttribute as CFString,
             session.window
         )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
         let windowFocusedResult = AXUIElementSetAttributeValue(
             session.window,
             kAXFocusedAttribute as CFString,
             kCFBooleanTrue
         )
-        let raiseResult = AXUIElementPerformAction(
-            session.window,
-            kAXRaiseAction as CFString
-        )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
         let elementResult = AXUIElementSetAttributeValue(
             appElement,
             kAXFocusedUIElementAttribute as CFString,
             session.element
         )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
         let elementFocusedResult = AXUIElementSetAttributeValue(
             session.element,
             kAXFocusedAttribute as CFString,
@@ -579,21 +984,223 @@ final class FocusLockService: ObservableObject {
 
         let actualWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
         let actualElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
-        let stayedInBackground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            == session.frontmostPIDAtStart
         // Setter/action return codes are diagnostics, not proof. Electron has
         // returned success while ignoring events, and some apps report an unsupported
         // redundant setter after accepting the essential focus change. The verified
-        // live internal window + element and unchanged macOS frontmost PID are the
-        // load-bearing conditions.
+        // live internal window + element and target-not-system-focused check are the
+        // load-bearing conditions. Ethan may move freely between unrelated apps.
         let verified = actualWindow.map { CFEqual($0, session.window) } == true
             && actualElement.map { CFEqual($0, session.element) } == true
-            && stayedInBackground
+            && preparedTargetFocusBoundaryIsSafe(session)
 
         if !verified {
-            logger.error("Background exact focus verification failed targetPid=\(session.processIdentifier, privacy: .public) expectedWindowHash=\(CFHash(session.window), privacy: .public) actualWindowHash=\(actualWindow.map { String(CFHash($0)) } ?? "nil", privacy: .public) expectedElementHash=\(CFHash(session.element), privacy: .public) actualElementHash=\(actualElement.map { String(CFHash($0)) } ?? "nil", privacy: .public) mainAX=\(mainResult.rawValue, privacy: .public) windowAX=\(windowResult.rawValue, privacy: .public) windowFocusedAX=\(windowFocusedResult.rawValue, privacy: .public) raiseAX=\(raiseResult.rawValue, privacy: .public) elementAX=\(elementResult.rawValue, privacy: .public) elementFocusedAX=\(elementFocusedResult.rawValue, privacy: .public) expectedFrontmostPid=\(session.frontmostPIDAtStart, privacy: .public) actualFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            logger.error("Background exact focus verification failed targetPid=\(session.processIdentifier, privacy: .public) expectedWindowHash=\(CFHash(session.window), privacy: .public) actualWindowHash=\(actualWindow.map { String(CFHash($0)) } ?? "nil", privacy: .public) expectedElementHash=\(CFHash(session.element), privacy: .public) actualElementHash=\(actualElement.map { String(CFHash($0)) } ?? "nil", privacy: .public) mainAX=\(mainResult.rawValue, privacy: .public) windowAX=\(windowResult.rawValue, privacy: .public) windowFocusedAX=\(windowFocusedResult.rawValue, privacy: .public) elementAX=\(elementResult.rawValue, privacy: .public) elementFocusedAX=\(elementFocusedResult.rawValue, privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) actualFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         }
         return verified
+    }
+
+    private func preparedTargetFocusBoundaryIsSafe(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard !session.app.isTerminated,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier
+                != session.processIdentifier,
+              let systemFocus = systemFocusedElement() else {
+            return false
+        }
+        return systemFocus.pid != session.processIdentifier
+    }
+
+    private func backgroundFocusBoundaryIsSafeAfterSubmission(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard !session.app.isTerminated,
+              let systemFocus = systemFocusedElement() else {
+            return false
+        }
+        switch session.mode {
+        case .preparedTargetedInput:
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    != session.processIdentifier
+                && systemFocus.pid != session.processIdentifier
+        case .directExactElement:
+            return systemFocus.pid != session.processIdentifier
+                || !CFEqual(systemFocus.element, session.element)
+        }
+    }
+
+    /// Read-only proof for every insertion chunk and irreversible Send boundary.
+    /// It intentionally permits Ethan to move from unrelated app A to B.
+    private func backgroundSessionRemainsPrepared(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard backgroundDeliveryFastBoundaryMatches(session),
+              resolvedExactElement(for: session.target).map({
+                  CFEqual($0, session.element)
+              }) == true,
+              liveWindow(for: session.target, resolvedElement: session.element).map({
+                  CFEqual($0, session.window)
+              }) == true else {
+            return false
+        }
+        return true
+    }
+
+    private func visitBoundedDescendants(
+        of root: AXUIElement,
+        maximumDepth: Int,
+        state: BoundedTraversalState,
+        deadline: TimeInterval,
+        boundary: () -> Bool,
+        visitor: (AXUIElement) -> Bool
+    ) async -> BoundedTraversalResult {
+        var queue: [(AXUIElement, Int)] = [(root, 0)]
+        var cursor = 0
+        var visitedCount = 0
+        var truncated = false
+        while cursor < queue.count {
+            guard boundary() else {
+                return BoundedTraversalResult(completion: .boundaryChanged)
+            }
+            guard !Task.isCancelled else {
+                return BoundedTraversalResult(completion: .cancelled)
+            }
+            guard state.remainingNodeBudget > 0,
+                  ProcessInfo.processInfo.systemUptime < deadline else {
+                return BoundedTraversalResult(completion: .exhausted)
+            }
+            let (element, depth) = queue[cursor]
+            cursor += 1
+            guard state.visitedNodeHashes.insert(CFHash(element)).inserted else {
+                continue
+            }
+            state.remainingNodeBudget -= 1
+            visitedCount += 1
+            guard visitor(element) else {
+                return BoundedTraversalResult(completion: .stoppedByVisitor)
+            }
+            if visitedCount.isMultiple(of: 24) {
+                await Task.yield()
+                guard boundary() else {
+                    return BoundedTraversalResult(completion: .boundaryChanged)
+                }
+            }
+            let children = traversalChildren(of: element)
+            guard depth < maximumDepth else {
+                if !children.isEmpty { truncated = true }
+                continue
+            }
+            let pendingCount = queue.count - cursor
+            let availableSlots = max(
+                0,
+                state.remainingNodeBudget - pendingCount
+            )
+            if children.count > availableSlots { truncated = true }
+            queue.append(contentsOf: children.prefix(availableSlots).map {
+                ($0, depth + 1)
+            })
+        }
+        guard boundary() else {
+            return BoundedTraversalResult(completion: .boundaryChanged)
+        }
+        return BoundedTraversalResult(
+            completion: truncated ? .exhausted : .completed
+        )
+    }
+
+    static func isAuditedCodexSubmitBuild(
+        bundleIdentifier: String?,
+        shortVersion: String?,
+        build: String?,
+        chromium: String?
+    ) -> Bool {
+        bundleIdentifier == "com.openai.codex"
+            && shortVersion == auditedCodexSubmitBuild.shortVersion
+            && build == auditedCodexSubmitBuild.build
+            && chromium == auditedCodexSubmitBuild.chromium
+    }
+
+    static func semanticSendGeometryMatches(
+        editorFrame: CGRect,
+        candidateFrame: CGRect
+    ) -> Bool {
+        guard candidateFrame.width >= 14,
+              candidateFrame.width <= 96,
+              candidateFrame.height >= 14,
+              candidateFrame.height <= 96 else {
+            return false
+        }
+        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        return editorFrame.insetBy(dx: -360, dy: -320).contains(center)
+    }
+
+    /// Own the action closure inside the final semantic proof so rejected states have
+    /// zero side effects in production and unit tests. The unlabelled exception remains
+    /// valid only when the caller has re-proven the exact audited Codex tuple and the
+    /// button still has no accepted label at this same boundary.
+    static func performProvenSemanticSend(
+        isUnambiguous: Bool,
+        pidMatches: Bool,
+        windowMatches: Bool,
+        geometryMatches: Bool,
+        roleMatches: Bool,
+        enabled: Bool,
+        label: String?,
+        labelWasReadable: Bool,
+        allowsAuditedUnlabelledSend: Bool,
+        hasPressAction: Bool,
+        boundaryMatches: Bool,
+        action: () -> Int32
+    ) -> NearbySubmitButtonResult {
+        guard isUnambiguous,
+              pidMatches,
+              windowMatches,
+              geometryMatches,
+              roleMatches,
+              enabled,
+              labelWasReadable,
+              (isProvenSemanticSendLabel(label)
+                || (allowsAuditedUnlabelledSend && label == nil)),
+              hasPressAction,
+              boundaryMatches else {
+            return .unavailable
+        }
+        let result = action()
+        return result == AXError.success.rawValue
+            ? .pressed
+            : .failed(result)
+    }
+
+    static func isProvenSemanticSendLabel(_ label: String?) -> Bool {
+        guard let label else { return false }
+        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "send", "send message", "send follow-up", "submit":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func matchesAuditedCodexSubmitBuild(
+        _ app: NSRunningApplication
+    ) -> Bool {
+        guard let bundleURL = app.bundleURL,
+              bundleURL.lastPathComponent == "Codex.app",
+              let bundle = Bundle(url: bundleURL) else {
+            return false
+        }
+        return isAuditedCodexSubmitBuild(
+            bundleIdentifier: bundle.bundleIdentifier,
+            shortVersion: bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String,
+            build: bundle.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String,
+            chromium: bundle.object(
+                forInfoDictionaryKey: "ChromiumBaseVersion"
+            ) as? String
+        )
     }
 
     private func systemFocusedElement() -> (element: AXUIElement, pid: pid_t)? {
@@ -955,6 +1562,34 @@ final class FocusLockService: ObservableObject {
         return elements
     }
 
+    /// Chromium can publish FooterActions only through navigation order. Preserve the
+    /// ordinary visible/children preference and use navigation order only when both are
+    /// empty, so the same bounded tree topology remains deterministic.
+    static func preferredTraversalChildren<Element>(
+        visible: [Element],
+        ordinary: @autoclosure () -> [Element],
+        navigationOrder: @autoclosure () -> [Element]
+    ) -> [Element] {
+        guard visible.isEmpty else { return visible }
+        let ordinary = ordinary()
+        guard ordinary.isEmpty else { return ordinary }
+        return navigationOrder()
+    }
+
+    private func traversalChildren(of element: AXUIElement) -> [AXUIElement] {
+        Self.preferredTraversalChildren(
+            visible: elementArrayAttribute(
+                kAXVisibleChildrenAttribute,
+                from: element
+            ),
+            ordinary: elementArrayAttribute(kAXChildrenAttribute, from: element),
+            navigationOrder: elementArrayAttribute(
+                "AXChildrenInNavigationOrder",
+                from: element
+            )
+        )
+    }
+
     private func boolAttribute(_ attribute: String, from element: AXUIElement) -> Bool? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
@@ -963,21 +1598,40 @@ final class FocusLockService: ObservableObject {
         return value as? Bool
     }
 
-    private func submitLabel(for element: AXUIElement) -> String? {
-        [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute]
-            .lazy
-            .compactMap { self.stringAttribute($0, from: element) }
-            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private func submitLabelState(for element: AXUIElement) -> SubmitLabelState {
+        for attribute in [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute] {
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(
+                element,
+                attribute as CFString,
+                &value
+            )
+            switch result {
+            case .success:
+                guard let value else { continue }
+                guard let string = value as? String else { return .unreadable }
+                let normalized = string.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !normalized.isEmpty {
+                    return .labelled(normalized.lowercased())
+                }
+            case .noValue, .attributeUnsupported:
+                continue
+            default:
+                return .unreadable
+            }
+        }
+        return .unlabelled
     }
 
-    private func isNearbySubmitLabel(_ label: String?) -> Bool {
-        guard let label else { return false }
-        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "send", "send message", "send follow-up", "submit":
-            return true
-        default:
+    private func supportsPressAction(_ element: AXUIElement) -> Bool {
+        var actionNames: CFArray?
+        guard AXUIElementCopyActionNames(element, &actionNames) == .success,
+              let names = actionNames as? [String] else {
             return false
         }
+        return names.contains(kAXPressAction as String)
     }
 
     private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {

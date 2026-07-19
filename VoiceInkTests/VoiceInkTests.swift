@@ -6,6 +6,8 @@
 //
 
 import Testing
+import CoreGraphics
+import Foundation
 @testable import VoiceInkPlusPlus
 
 struct VoiceInkTests {
@@ -41,25 +43,131 @@ struct VoiceInkTests {
         ) == .modifiedWithoutSubmit)
 
         #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
-            verification: .unreadable,
-            targetStayedBackground: true
+            verification: .unreadable
         ) == .none)
         #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
-            verification: .verifiedCleared,
-            targetStayedBackground: true
+            verification: .verifiedCleared
         ) == .none)
         #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
-            verification: .unchanged,
-            targetStayedBackground: true
+            verification: .unchanged
         ) == .unchangedComposerError)
         #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
-            verification: .modifiedWithoutSubmit,
-            targetStayedBackground: true
+            verification: .modifiedWithoutSubmit
         ) == .modifiedWithoutSubmitError)
-        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
-            verification: .unreadable,
-            targetStayedBackground: false
-        ) == .focusSafetyError)
+
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .verifiedCleared
+        ) == .verified)
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .unreadable
+        ) == .indeterminate)
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .unchanged
+        ) == .failed)
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .modifiedWithoutSubmit
+        ) == .failed)
+    }
+
+    @MainActor
+    @Test func unlabelledCodexSendExceptionIsPinnedToTheAuditedBuildTuple() {
+        #expect(FocusLockService.isAuditedCodexSubmitBuild(
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72221",
+            build: "5307",
+            chromium: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.isAuditedCodexSubmitBuild(
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72222",
+            build: "5308",
+            chromium: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.isAuditedCodexSubmitBuild(
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72221",
+            build: "5307",
+            chromium: nil
+        ))
+        #expect(!FocusLockService.isAuditedCodexSubmitBuild(
+            bundleIdentifier: "com.openai.chat",
+            shortVersion: "26.707.72221",
+            build: "5307",
+            chromium: "150.0.7871.115"
+        ))
+    }
+
+    @MainActor
+    @Test func semanticSendFinalGateRejectsStopAndUnauditedUnlabelledButtons() {
+        var actionCount = 0
+        func attempt(
+            label: String?,
+            allowsAuditedUnlabelledSend: Bool,
+            labelWasReadable: Bool = true
+        ) -> FocusLockService.NearbySubmitButtonResult {
+            FocusLockService.performProvenSemanticSend(
+                isUnambiguous: true,
+                pidMatches: true,
+                windowMatches: true,
+                geometryMatches: true,
+                roleMatches: true,
+                enabled: true,
+                label: label,
+                labelWasReadable: labelWasReadable,
+                allowsAuditedUnlabelledSend: allowsAuditedUnlabelledSend,
+                hasPressAction: true,
+                boundaryMatches: true,
+                action: {
+                    actionCount += 1
+                    return 0
+                }
+            )
+        }
+
+        #expect(attempt(label: "Stop", allowsAuditedUnlabelledSend: true) == .unavailable)
+        #expect(attempt(label: nil, allowsAuditedUnlabelledSend: false) == .unavailable)
+        #expect(attempt(
+            label: nil,
+            allowsAuditedUnlabelledSend: true,
+            labelWasReadable: false
+        ) == .unavailable)
+        #expect(actionCount == 0)
+        #expect(attempt(label: "Send", allowsAuditedUnlabelledSend: false) == .pressed)
+        #expect(actionCount == 1)
+        #expect(attempt(label: nil, allowsAuditedUnlabelledSend: true) == .pressed)
+        #expect(actionCount == 2)
+    }
+
+    @MainActor
+    @Test func CodexTraversalFallsBackToNavigationOrderOnlyWhenNeeded() {
+        #expect(FocusLockService.preferredTraversalChildren(
+            visible: [1],
+            ordinary: [2],
+            navigationOrder: [3]
+        ) == [1])
+        #expect(FocusLockService.preferredTraversalChildren(
+            visible: [],
+            ordinary: [2],
+            navigationOrder: [3]
+        ) == [2])
+        #expect(FocusLockService.preferredTraversalChildren(
+            visible: [],
+            ordinary: [],
+            navigationOrder: [3]
+        ) == [3])
+    }
+
+    @MainActor
+    @Test func semanticSendGeometryRejectsRemoteButtons() {
+        let editor = CGRect(x: 100, y: 100, width: 600, height: 100)
+        #expect(FocusLockService.semanticSendGeometryMatches(
+            editorFrame: editor,
+            candidateFrame: CGRect(x: 650, y: 150, width: 32, height: 32)
+        ))
+        #expect(!FocusLockService.semanticSendGeometryMatches(
+            editorFrame: editor,
+            candidateFrame: CGRect(x: 1_500, y: 900, width: 32, height: 32)
+        ))
     }
 
     @MainActor
@@ -78,17 +186,62 @@ struct VoiceInkTests {
             hasExactInput: true,
             exactInputOwnsKeyboardFocus: false,
             targetIsFrontmost: true
-        ) == .failClosed)
+        ) == .nonActivatingExactInput)
         #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
             hasExactInput: true,
             exactInputOwnsKeyboardFocus: true,
             targetIsFrontmost: false
-        ) == .nonActivatingExactInput)
+        ) == .foregroundExactInput)
         #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
             hasExactInput: false,
             exactInputOwnsKeyboardFocus: false,
             targetIsFrontmost: false
         ) == .failClosed)
+    }
+
+    @Test func foregroundDeliveryRemainsAwaitedInsideSerializedPipeline() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let pasteStart = try #require(source.range(of: "    private func paste("))
+        let backgroundStart = try #require(source.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: pasteStart.upperBound..<source.endIndex
+        ))
+        let pasteBody = source[pasteStart.lowerBound..<backgroundStart.lowerBound]
+
+        #expect(pasteBody.contains("let pasteResult = await pasteTask.value"))
+        #expect(pasteBody.contains("defer { FocusLockService.shared.clearLock() }"))
+        #expect(!pasteBody.contains("Task { @MainActor in"))
+    }
+
+    @Test func foregroundSemanticSendFocusLossReroutesWithoutReturn() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let focusLossCase = try #require(source.range(
+            of: "        case .focusLostBeforeAction:"
+        ))
+        let semanticChangeCase = try #require(source.range(
+            of: "        case .refusedAfterCandidate:",
+            range: focusLossCase.upperBound..<source.endIndex
+        ))
+        let focusLossBody = source[focusLossCase.lowerBound..<semanticChangeCase.lowerBound]
+
+        #expect(focusLossBody.contains("return .needsNonActivatingExactInput"))
+        #expect(!focusLossBody.contains("CursorPaster.performAutoSend"))
     }
 
     @MainActor

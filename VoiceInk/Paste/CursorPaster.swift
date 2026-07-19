@@ -11,6 +11,7 @@ class CursorPaster {
     enum PasteResult: Equatable {
         case commandPosted
         case commandNotPosted
+        case actionGuardRefused
 
         var didPostPasteCommand: Bool {
             self == .commandPosted
@@ -20,6 +21,7 @@ class CursorPaster {
     enum AutoSendResult: Equatable {
         case commandPosted
         case commandNotPosted
+        case actionGuardRefused
 
         var didPostAutoSendCommand: Bool {
             self == .commandPosted
@@ -46,9 +48,12 @@ class CursorPaster {
 
     @MainActor
     @discardableResult
-    static func startPasteAtCursor(_ text: String) -> Task<PasteResult, Never> {
+    static func startPasteAtCursor(
+        _ text: String,
+        canPost: @escaping @MainActor () -> Bool = { true }
+    ) -> Task<PasteResult, Never> {
         Task { @MainActor in
-            await performPasteSession(text)
+            await performPasteSession(text, canPost: canPost)
         }
     }
 
@@ -58,7 +63,10 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func performPasteSession(_ text: String) async -> PasteResult {
+    private static func performPasteSession(
+        _ text: String,
+        canPost: @escaping @MainActor () -> Bool
+    ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
         let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
@@ -75,8 +83,17 @@ class CursorPaster {
 
         await wait(prePasteDelay)
 
-        let pasteResult = await postPasteCommand()
-        if shouldRestoreClipboard {
+        // Clipboard preparation intentionally precedes the delay, but Cmd-V is
+        // irreversible. Revalidate the saved exact input at this last boundary so a
+        // newer click cannot receive the transcription or trigger a compensating focus
+        // rewrite. A refused paste leaves the transcript safely on the clipboard.
+        guard canPost() else {
+            logger.error("Refused foreground paste because the exact-input action guard changed")
+            return .actionGuardRefused
+        }
+
+        let pasteResult = await postPasteCommand(canPost: canPost)
+        if shouldRestoreClipboard, pasteResult != .actionGuardRefused {
             scheduleClipboardRestore(
                 savedContents,
                 expectedText: text,
@@ -100,11 +117,14 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func postPasteCommand() async -> PasteResult {
+    private static func postPasteCommand(
+        canPost: @escaping @MainActor () -> Bool
+    ) async -> PasteResult {
+        guard canPost() else { return .actionGuardRefused }
         if PasteMethod.current() == .appleScript {
             return pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
         } else {
-            return await pasteFromClipboard()
+            return await pasteFromClipboard(canPost: canPost)
         }
     }
 
@@ -193,7 +213,9 @@ class CursorPaster {
 
     // Posts Cmd+V via CGEvent without modifying the active input source.
     @MainActor
-    private static func pasteFromClipboard() async -> PasteResult {
+    private static func pasteFromClipboard(
+        canPost: @escaping @MainActor () -> Bool
+    ) async -> PasteResult {
         guard AXIsProcessTrusted() else {
             logger.error("Accessibility permission is required to paste with simulated key events")
             return .commandNotPosted
@@ -213,8 +235,16 @@ class CursorPaster {
         vDown.flags   = .maskCommand
         vUp.flags     = .maskCommand
 
+        guard canPost() else { return .actionGuardRefused }
         cmdDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
+        // Cmd-down and V-down are separated only to match a real shortcut. Re-prove
+        // the exact input after that suspension; on refusal, release Command without
+        // ever posting V so a newer click cannot receive the transcript.
+        guard canPost() else {
+            cmdUp.post(tap: .cghidEventTap)
+            return .actionGuardRefused
+        }
         vDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
         vUp.post(tap: .cghidEventTap)
@@ -265,17 +295,41 @@ class CursorPaster {
     }
 
     @MainActor
-    static func typeTextIntoTargetedProcess(_ text: String, pid: pid_t) async -> Bool {
+    /// Emit bounded Unicode only after FocusLockService has opened and verified one
+    /// exact internal activation-state session. This function deliberately does not
+    /// begin/end its own nested session; text and any later semantic Send action must
+    /// remain bound to the same prepared editor until the caller finishes it.
+    static func typeTextIntoPreparedTargetedProcess(
+        _ text: String,
+        pid: pid_t,
+        canPost: @escaping @MainActor () -> Bool,
+        canRevalidateContext: @escaping @MainActor () -> Bool
+    ) async -> Bool {
         guard !text.isEmpty,
               AXIsProcessTrusted(),
-              beginTargetedInputSession(pid: pid) else {
+              canPost(),
+              canRevalidateContext() else {
             return false
         }
-        defer { endTargetedInputSession(pid: pid) }
 
         let source = CGEventSource(stateID: .hidSystemState)
         let utf16 = Array(text.utf16)
         for start in stride(from: 0, to: utf16.count, by: 20) {
+            // PID-addressed Unicode follows Electron's current internal editor. Recheck
+            // the exact window/editor plus target-not-system-focused boundary before
+            // every chunk so a long transcript cannot split into a newer composer.
+            guard canPost() else {
+                logger.error("Stopped targeted Unicode because the exact session boundary changed pid=\(pid, privacy: .public) utf16Offset=\(start, privacy: .public)")
+                return false
+            }
+            // The full task/document resolver is intentionally less frequent than the
+            // fast per-chunk boundary: Chromium history trees can be large. Re-run it
+            // every 200 UTF-16 units so context drift cannot persist through long text.
+            if start > 0, start.isMultiple(of: 200),
+               !canRevalidateContext() {
+                logger.error("Stopped targeted Unicode because exact context revalidation failed pid=\(pid, privacy: .public) utf16Offset=\(start, privacy: .public)")
+                return false
+            }
             let end = min(start + 20, utf16.count)
             let chunk = Array(utf16[start..<end])
             guard let keyDown = CGEvent(
@@ -304,57 +358,9 @@ class CursorPaster {
             await wait(0.005)
         }
         await wait(0.05)
+        guard canPost(), canRevalidateContext() else { return false }
         logger.info("Issued targeted Unicode text events pid=\(pid, privacy: .public) utf16Units=\(utf16.count, privacy: .public)")
         return true
-    }
-
-    @MainActor
-    static func performTargetedAutoSend(
-        _ key: AutoSendKey,
-        pid: pid_t
-    ) async -> AutoSendResult {
-        guard key.isEnabled,
-              AXIsProcessTrusted(),
-              beginTargetedInputSession(pid: pid) else {
-            return .commandNotPosted
-        }
-        defer { endTargetedInputSession(pid: pid) }
-
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let keyDown = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 0x24,
-            keyDown: true
-        ),
-        let keyUp = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 0x24,
-            keyDown: false
-        ) else {
-            logger.error("Failed to create targeted auto-send events pid=\(pid, privacy: .public)")
-            return .commandNotPosted
-        }
-
-        switch key {
-        case .none:
-            return .commandNotPosted
-        case .enter:
-            keyDown.flags = []
-            keyUp.flags = []
-        case .shiftEnter:
-            keyDown.flags = .maskShift
-            keyUp.flags = .maskShift
-        case .commandEnter:
-            keyDown.flags = .maskCommand
-            keyUp.flags = .maskCommand
-        }
-
-        keyDown.postToPid(pid)
-        await wait(0.03)
-        keyUp.postToPid(pid)
-        await wait(0.05)
-        logger.info("Issued targeted background auto-send key=\(key.rawValue, privacy: .public) pid=\(pid, privacy: .public)")
-        return .commandPosted
     }
 
     @MainActor
@@ -378,43 +384,17 @@ class CursorPaster {
 
     // MARK: - Auto Send Keys
 
-    // Feature B (robust double-Enter) tunables.
-    //
-    // Problem: on a lagging Mac, a SINGLE auto-Enter sometimes doesn't register, so
-    // the message never submits (worse on longer transcripts — the field is busy
-    // settling the just-pasted text when the Enter arrives, so the keystroke gets
-    // dropped). Fix: for a plain Return auto-send, post Return once immediately, then
-    // post a SECOND Return after a short delay.
-    //
-    // Why this is safe (no double-send): after the first Enter submits, the input
-    // field is empty, so a second Return is a harmless no-op. But if the first Enter
-    // was DROPPED under load, the second one still submits. Net = redundancy without
-    // ever sending twice.
-    //
-    // We ONLY double-fire for plain `.enter`. Shift+Enter / Cmd+Enter are typically
-    // "insert newline" / "send" chord variants where a stray second keystroke could
-    // add an unwanted newline, so those stay single-fire.
-
-    // Base gap before the redundant Enter (covers ordinary, non-lagging cases).
-    private static let doubleEnterBaseDelay: TimeInterval = 0.12   // 120ms
-    // Extra delay added per character of pasted transcript — longer paste means the
-    // field settles slower, so the redundant Enter needs a touch more headroom.
-    private static let doubleEnterPerCharDelay: TimeInterval = 0.0004 // 0.4ms/char
-    // Hard ceiling so a very long transcript can't make the redundant Enter feel
-    // sluggish. ~600ms total keeps it imperceptible-to-snappy in practice.
-    private static let doubleEnterMaxDelay: TimeInterval = 0.60     // 600ms
-
-    // `transcriptLength` scales the optional redundant Enter delay. The caller
-    // chooses System Events for OpenAI's Electron composer because a real live trace
-    // showed it ignoring zero-duration CGEvents while Terminal accepted them. Both
-    // routes remain foreground-only so a Return can never drift into another app.
+    // This primitive issues exactly one system-keyboard-focused key. That includes a
+    // non-activating panel which owns real keyboard focus while another application is
+    // still reported frontmost. Any retry belongs in the surface-specific verifier:
+    // only a readable unchanged OpenAI composer may receive one exact-focus-guarded
+    // HID Return retry. Generic editors and terminals never receive a second Return.
     @MainActor
     static func performAutoSend(
         _ key: AutoSendKey,
-        transcriptLength: Int = 0,
-        expectedFrontmostPID: pid_t,
+        targetPID: pid_t,
         method: AutoSendMethod = .cgEvent,
-        sendRedundantEnter: Bool = true
+        canPost: @escaping @MainActor () -> Bool
     ) async -> AutoSendResult {
         guard key.isEnabled else {
             logger.error("Refused to auto-send a disabled key")
@@ -424,43 +404,12 @@ class CursorPaster {
             logger.error("Accessibility permission is required to auto-send Return")
             return .commandNotPosted
         }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedFrontmostPID else {
-            logger.error("Refused to auto-send Return because the saved destination is not frontmost expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return .commandNotPosted
+        guard canPost() else {
+            logger.error("Refused to auto-send Return because the exact input no longer owns system keyboard focus targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            return .actionGuardRefused
         }
 
-        let firstResult = await issueAutoSendKey(key, method: method)
-        guard firstResult.didPostAutoSendCommand else { return firstResult }
-
-        // Feature B: schedule a SECOND Return ONLY for plain Enter, after a
-        // length-scaled delay, to survive a lag-dropped first keystroke.
-        guard sendRedundantEnter, key == .enter else { return .commandPosted }
-
-        let scaledDelay = min(
-            doubleEnterBaseDelay + Double(max(transcriptLength, 0)) * doubleEnterPerCharDelay,
-            doubleEnterMaxDelay
-        )
-
-        await wait(scaledDelay)
-
-        // The primary Return was posted successfully, so a failed safety retry is
-        // logged but does not turn the whole delivery into a visible false failure.
-        // Most importantly, never let the redundant Return land in another app.
-        guard AXIsProcessTrusted() else {
-            logger.error("Skipped redundant auto-send Return because Accessibility permission was revoked")
-            return .commandPosted
-        }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedFrontmostPID else {
-            logger.notice("Skipped redundant auto-send Return because focus moved expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return .commandPosted
-        }
-
-        let retryResult = await issueAutoSendKey(.enter, method: method)
-        if !retryResult.didPostAutoSendCommand {
-            logger.error("Failed to issue redundant auto-send Return")
-        }
-
-        return .commandPosted
+        return await issueAutoSendKey(key, method: method)
     }
 
     @MainActor
