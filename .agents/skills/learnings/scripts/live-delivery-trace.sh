@@ -44,6 +44,28 @@ append_trace_line() {
   printf '%s\n' "$1" >> "$trace_file"
 }
 
+record_runtime_identity() {
+  local app="/Applications/VoiceInkPlusPlus.app"
+  local version="missing"
+  local build="missing"
+  local pid="not-running"
+  local cdhash="unavailable"
+
+  if [ -f "$app/Contents/Info.plist" ]; then
+    version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || printf 'unknown')"
+    build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist" 2>/dev/null || printf 'unknown')"
+    # Let awk consume all codesign output. Exiting on the first match makes
+    # codesign receive SIGPIPE, which `set -o pipefail` correctly treats as a
+    # failed trace start even though the CDHash was read.
+    cdhash="$(codesign -dvvv "$app" 2>&1 | awk -F= '/^CDHash=/{print $2}')"
+    [ -n "$cdhash" ] || cdhash="unavailable"
+  fi
+  pid="$(pgrep -x VoiceInkPlusPlus 2>/dev/null | tail -1 || true)"
+  [ -n "$pid" ] || pid="not-running"
+
+  append_trace_line "# runtime identity recordedAt=$(date -u '+%Y-%m-%dT%H:%M:%SZ') version=$version build=$build pid=$pid cdhash=$cdhash"
+}
+
 read_pid() {
   local file="$1"
   local value=""
@@ -263,6 +285,11 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Accessibility permission is required to paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'* )
         append_trace_line "$line"
+        case "$line" in
+          *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Event-tap health monitoring active'*)
+            record_runtime_identity
+            ;;
+        esac
         now_epoch="$(date '+%s')"
         if [ $((now_epoch - last_prune_epoch)) -ge 3600 ]; then
           prune_old_traces
@@ -291,6 +318,7 @@ start_trace() {
   ensure_trace_storage
   prune_old_traces
   append_trace_line "# VoiceInk++ debug trace started $(date -u '+%Y-%m-%dT%H:%M:%SZ'); delivery metadata only; transcript contents are intentionally excluded."
+  record_runtime_identity
   # A plain background/nohup process is still a descendant of Codex's bounded
   # command runner and is killed as soon as that tool call closes. Submit one
   # launchd-owned job so `start` really survives into the user's physical test.
