@@ -457,7 +457,7 @@ final class FocusLockService: ObservableObject {
         // delayed delivery must restore the exact prior internal destination.
         let focusBooleanSnapshot = BackgroundFocusBooleanSnapshot { slot in
             guard mode == .preparedTargetedInput else { return nil }
-            self.backgroundFocusBoolean(
+            return self.backgroundFocusBoolean(
                 slot,
                 targetWindow: window,
                 targetElement: element,
