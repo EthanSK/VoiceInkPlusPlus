@@ -61,10 +61,13 @@ final class TranscriptionDelivery {
            current != previous {
             return .verifiedCleared
         }
-        if current == previous {
+        // Preserve the raw editor value at this boundary. Trimming before equality
+        // would collapse "transcript" and "transcript\n" into the same state even
+        // though the latter is the exact background-Return failure we need to expose.
+        if currentText == previousText {
             return .unchanged
         }
-        return !previous.isEmpty && current.contains(previous)
+        return !previousText.isEmpty && currentText.contains(previousText)
             ? .modifiedWithoutSubmit
             : .unreadable
     }
