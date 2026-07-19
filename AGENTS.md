@@ -4,27 +4,20 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Repository learnings contract
 
-- Use the public `.agents/skills/learnings` skill automatically before fixes, regressions, fragile workflow changes, destination/delivery work, or investigations that resemble an earlier failure.
-- After any feature, fix, deployment, or investigation, add every durable verified project lesson to `LEARNINGS.md` during the same task. Do not record guesses, secrets, duplicate knowledge, or transient runtime state.
+- Use the public `.agents/skills/learnings` skill automatically before fixes, regressions, fragile workflow changes, destination/delivery work, or investigations that resemble an earlier failure. Search both `LEARNINGS.md` and `FAILED_APPROACHES.md` before proposing a mechanism.
+- After any feature, fix, deployment, or investigation, add every durable verified project lesson to `LEARNINGS.md` during the same task. Add reproducible rejected mechanisms and the exact condition required to reconsider them to `FAILED_APPROACHES.md`. Do not record guesses, secrets, duplicate knowledge, or transient runtime state.
 - When a lesson changes the reusable workflow, terminology, safety rules, or validation procedure, update the learnings skill itself, retest its affected scripts/behavior, and validate the skill before finishing.
 - Codex discovers the canonical skill in `.agents/skills`; Claude Code uses the same folder through `.claude/skills/learnings`. Never maintain divergent copies.
-
-## Live diagnostic discipline
-
-- Ethan uses VoiceInk++ frequently while agents work. At the start of every runtime regression investigation, after each reported physical reproduction, and before changing another delivery mechanism, inspect the installed app's version/build/PID and the newest VoiceInk++ routing logs. Correlate the report time with the exact Primary/Next route, captured destination, focus boundary, paste result, auto-send decision, latency, and verification outcome. Do not guess from source or from an earlier run when current logs are available.
-- During an active destination/delivery reliability investigation, keep `.agents/skills/learnings/scripts/live-delivery-trace.sh start` running and use `status` plus `show` repeatedly as Ethan continues normal use. The trace is a temporary debug mode: it retains only allowlisted action and delivery metadata, writes private daily files under `~/Library/Logs/VoiceInkPlusPlus/DeliveryTrace`, and deletes files after seven complete days. Never broaden it to transcript, prompt, clipboard, selected-text, audio, terminal-buffer, chat-message, URL, or other content.
-- Logs establish what VoiceInk++ attempted; they do not prove the destination app handled paste or Return. Require the surface-specific verifier and Ethan's observed result for live acceptance, and record unavailable evidence honestly.
-- When the reliability investigation is genuinely closed, run `live-delivery-trace.sh stop`, confirm `debugMode=off`, and state that in the completion handoff. Do not leave the temporary debug stream running indefinitely merely because its files self-clean.
 
 ## Behavioral-intent comments
 
 - Preserve the reason for VoiceInk++'s deliberately unusual behavior in the code beside the branch or safety check that enforces it. In particular, comments must distinguish all three destination routes, explain why input plus Mode/auto-send are atomic per-session state, and document why exact-input identity, non-activating delivery, surface-specific submission, one-shot fallbacks, and fail-closed checks exist.
 - Update those comments whenever behavior changes. Do not remove a constraint as "redundant," merge routes, or replace a bounded app-specific path with a generic shortcut unless the adjacent comment and accepted contract prove that simplification safe.
-- Comment intent and invariants, not obvious syntax. `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, and `BACKGROUND_DELIVERY_TEST_MATRIX.md` are the long-form source of truth; code comments must make the relevant intent visible without requiring a future agent to guess which rule applies.
+- Comment intent and invariants, not obvious syntax. `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, `BACKGROUND_DELIVERY_TEST_MATRIX.md`, and `FAILED_APPROACHES.md` are the long-form source of truth; code comments must make the relevant intent visible without requiring a future agent to guess which rule applies.
 
 ## Canonical mouse terminology
 
-Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop (`focusedAtStop`). When the recording-start app remains continuously keyboard-focused through delivery, that normal route deliberately uses base VoiceInk's live-caret paste and ordinary Return without requiring exact-input capture. After any genuine app activation—even switching away and back—it uses only the exact stop-time input. A primary normal stop must never reuse or fall back to `recordingStart`; capture or verification failure on the exact route must remain visible and safe.
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop into only the exact input focused at stop (`focusedAtStop`). A primary normal stop must never reuse or fall back to `recordingStart`; capture or verification failure must remain visible and safe.
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
@@ -44,7 +37,7 @@ Use **Next button** as the preferred user-facing term. **Next Track**, **Next Tr
 
 VoiceInk++ has three distinct one-click destination routes. Do not merge them, reinterpret them as a toggle, or infer one from another:
 
-1. **Primary button again while recording:** normal stop (`focusedAtStop`). If no genuine app activation has occurred since recording began and the same start app still owns keyboard focus at each irreversible delivery boundary, use base VoiceInk's current-caret Cmd-V plus one ordinary HID Return; this path does not require an AX input identity. Otherwise save/use only the exact editable input focused at stop. Never fall back to the recording-start input.
+1. **Primary button again while recording:** normal stop and save only the exact editable input focused at stop (`focusedAtStop`). Never fall back to the recording-start input.
 2. **Next Track while recording:** stop recording and save the input captured at recording start (`recordingStart`), with the documented safe application fallback for Electron/Chromium.
 3. **Next Track after a normal stop, while the newest result is still transcribing and before post-processing begins:** this is Ethan's **second chance**. Replace that pending session's destination with the exact editable input focused now (`focusedDuringTranscription`). It does not stop anything, toggle anything, or release the target. Never skip an ineligible newer pending result to retarget an older session.
 
@@ -82,7 +75,7 @@ The saved input and its target app's complete Mode are one atomic, per-session d
 
 ## Required reading and validation
 
-Before changing this behavior, read `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, and the newest relevant entries in `LEARNINGS.md`. The current accepted shipped/runtime baseline is rollback commit `b2aeaa2`, which restores native source exactly to commit `96e494e` and the signed v2.0.206 app. Commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`) remains the accepted behavioral contract for the second-chance route, with `cba45ba` as its earlier retarget foundation. The later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`. The v2.0.207/v2.0.208 delivery rewrite is rejected evidence, not an accepted implementation.
+Before changing this behavior, read `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, `FAILED_APPROACHES.md`, and the newest relevant entries in `LEARNINGS.md`. The accepted rollback floor is commit `b2aeaa2`, which restores native source exactly to commit `96e494e` and the signed v2.0.206 app. Commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`) remains the accepted behavioral contract for the second-chance route, with `cba45ba` as its earlier retarget foundation. The later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`. The v2.0.207/v2.0.208 delivery rewrite is rejected evidence, not an accepted implementation. `FAILED_APPROACHES.md` records the later v2.0.209–v2.0.236 evidence and must be consulted before reviving any event, Accessibility, focus, verification, or release experiment.
 
 Read `BACKGROUND_DELIVERY_TEST_MATRIX.md` before delivery work. Ethan's required compatibility set is Codex desktop, ChatGPT's Option-Space floating window, Claude Code in its terminal/editor host, Telegram, Google Chrome, and a selected card/editor in Notion (`notion.id`). Use disposable targets for live tests—especially a disposable Notion card/page, never Ethan's current to-do board—and report unavailable surfaces as not tested.
 
@@ -90,9 +83,7 @@ At minimum, preserve the regression test named `secondChanceRetargetCarriesAutoS
 
 - `paste retarget: ... destination=focusedDuringTranscription targetCaptured=true`
 - `pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTranscription`
-- either `paste: background auto-send finished success=true ... verification=verified` for a non-activating exact target or `paste: foreground immediate HID auto-send issued=true verification=notRequired` for an exact target that still owns the foreground caret
-
-For the uninterrupted primary compatibility route, separately require `paste: primary current-input compatibility selected ... exactCaptureRequired=false` followed by `paste: primary current-input command completed result=commandPosted` and, when its Mode enables Return, `paste: primary current-input immediate HID auto-send issued=true verification=notRequired`. Also test that an activation-generation change rejects this route.
+- either `paste: background auto-send finished success=true ... verification=verified` for a non-activating exact target or `paste: foreground auto-send finished success=true` for the safe current-input route
 
 Build only on the Mac Mini. Use Xcode's normal test action as the canonical runner. If TestManager stalls without executing tests, preserve that evidence and run the already-built unit-test bundle directly with `xcrun xctest` plus the app/framework library paths; require named per-test output, not compilation or XCTest's zero-test preamble. Recover and retry the canonical runner when possible, and never enable Developer Mode without Ethan's direction.
 

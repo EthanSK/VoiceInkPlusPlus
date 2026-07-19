@@ -126,6 +126,16 @@ Exact Apple Terminal/iTerm delivery also needs the optional Automation grant sho
 
 If you re-sign a local build after Xcode finishes, the outer app signature must explicitly use `VoiceInk/VoiceInk.local.entitlements`. A generic replacement signature can remove the Automation entitlement even when `codesign --verify --deep --strict` still accepts the nested bundle. Inspect the final outer entitlements and require `com.apple.security.automation.apple-events` to be true before testing Terminal or iTerm delivery.
 
+On Ethan's Mac Mini, pass that checked-in file to the local signing helper explicitly:
+
+```sh
+~/Projects/VoiceInk-build/resign-local.sh \
+  ~/Downloads/VoiceInkPlusPlus.app \
+  "$PWD/VoiceInk/VoiceInk.local.entitlements"
+```
+
+The helper must fail closed when the file is missing and verify the outer Automation entitlement after signing. Do not assume the helper is safe merely because its certificate and deep/strict signature verify.
+
 ### The first build cannot find Whisper
 
 Run the dependency step directly, then retry:

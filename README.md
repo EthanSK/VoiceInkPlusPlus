@@ -130,6 +130,7 @@ open ~/Downloads/VoiceInkPlusPlus.app
 - [Translate Ethan's mouse-button terminology](TERMINOLOGY.md)
 - [Understand the Next button and recording destinations](RECORDING_DESTINATIONS.md)
 - [Read the accepted implementation learnings](LEARNINGS.md)
+- [Review failed approaches before retrying delivery work](FAILED_APPROACHES.md)
 - [Use the self-improving Codex/Claude Code learnings skill](.agents/skills/learnings/SKILL.md)
 - [Review update guidance](UPDATING.md)
 - [Report a VoiceInk++ issue](https://github.com/EthanSK/VoiceInkPlusPlus/issues)

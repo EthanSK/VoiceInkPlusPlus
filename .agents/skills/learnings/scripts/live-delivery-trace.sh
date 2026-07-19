@@ -2,68 +2,22 @@
 # Run one privacy-bounded VoiceInk++ unified-log trace without orphaning log stream.
 
 set -euo pipefail
-umask 077
 
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 TRACE_ROOT="${VOICEINK_TRACE_STATE_DIR:-/tmp/voiceink-plus-plus-live-delivery-trace-$(id -u)}"
-TRACE_LOG_DIR="${VOICEINK_TRACE_LOG_DIR:-$HOME/Library/Logs/VoiceInkPlusPlus/DeliveryTrace}"
 RUNNER_PID_FILE="$TRACE_ROOT/runner.pid"
 STREAM_PID_FILE="$TRACE_ROOT/stream.pid"
+TRACE_FILE="$TRACE_ROOT/trace.log"
 FIFO_PATH="$TRACE_ROOT/stream.fifo"
 LOCK_DIR="$TRACE_ROOT/operation.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
 LAUNCHD_LABEL="com.ethansk.voiceink.live-delivery-trace.$(id -u)"
 LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
-RETENTION_DAYS=7
 
 PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster")))'
 
 usage() {
   printf 'usage: %s start|status|stop|show [line-count]\n' "$0" >&2
-}
-
-trace_file_for_today() {
-  printf '%s/trace-%s.log\n' "$TRACE_LOG_DIR" "$(date '+%Y-%m-%d')"
-}
-
-ensure_trace_storage() {
-  mkdir -p "$TRACE_LOG_DIR"
-  chmod 700 "$TRACE_LOG_DIR"
-}
-
-prune_old_traces() {
-  ensure_trace_storage
-  # BSD find rounds -mtime down to whole 24-hour periods. +6 removes a trace
-  # only after seven complete days while keeping the current rolling week.
-  find "$TRACE_LOG_DIR" -type f -name 'trace-*.log' -mtime +6 -delete
-}
-
-append_trace_line() {
-  local trace_file=""
-  trace_file="$(trace_file_for_today)"
-  printf '%s\n' "$1" >> "$trace_file"
-}
-
-record_runtime_identity() {
-  local app="/Applications/VoiceInkPlusPlus.app"
-  local version="missing"
-  local build="missing"
-  local pid="not-running"
-  local cdhash="unavailable"
-
-  if [ -f "$app/Contents/Info.plist" ]; then
-    version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || printf 'unknown')"
-    build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist" 2>/dev/null || printf 'unknown')"
-    # Let awk consume all codesign output. Exiting on the first match makes
-    # codesign receive SIGPIPE, which `set -o pipefail` correctly treats as a
-    # failed trace start even though the CDHash was read.
-    cdhash="$(codesign -dvvv "$app" 2>&1 | awk -F= '/^CDHash=/{print $2}')"
-    [ -n "$cdhash" ] || cdhash="unavailable"
-  fi
-  pid="$(pgrep -x VoiceInkPlusPlus 2>/dev/null | tail -1 || true)"
-  [ -n "$pid" ] || pid="not-running"
-
-  append_trace_line "# runtime identity recordedAt=$(date -u '+%Y-%m-%dT%H:%M:%SZ') version=$version build=$build pid=$pid cdhash=$cdhash"
 }
 
 read_pid() {
@@ -214,12 +168,8 @@ cleanup_stale_state() {
 
 run_trace() {
   local stream_pid=""
-  local last_prune_epoch=0
-  local now_epoch=0
 
   mkdir -p "$TRACE_ROOT"
-  ensure_trace_storage
-  prune_old_traces
   atomic_pid_write "$$" "$RUNNER_PID_FILE"
   rm -f "$FIFO_PATH"
   mkfifo "$FIFO_PATH"
@@ -262,13 +212,11 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused input restore'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Restored and verified focused input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background exact'*|\
-      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background auto-send diagnostic'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram retained'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background internal focus'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact-input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Semantic Send'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'semantic Send'*|\
-      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Targeted OpenAI Send'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Bounded OpenAI FooterActions'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Resolved OpenAI FooterActions'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Retained exact submit'*|\
@@ -285,21 +233,8 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground CGEvent paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to prepare clipboard for paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Accessibility permission is required to paste'*|\
-      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'*|\
-      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'targeted OpenAI Send'*|\
-      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Targeted OpenAI Send'*|\
-      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Issued one targeted OpenAI Send'* )
-        append_trace_line "$line"
-        case "$line" in
-          *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Event-tap health monitoring active'*)
-            record_runtime_identity
-            ;;
-        esac
-        now_epoch="$(date '+%s')"
-        if [ $((now_epoch - last_prune_epoch)) -ge 3600 ]; then
-          prune_old_traces
-          last_prune_epoch="$now_epoch"
-        fi
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'* )
+        printf '%s\n' "$line" >> "$TRACE_FILE"
         ;;
     esac
   done < "$FIFO_PATH"
@@ -315,22 +250,19 @@ start_trace() {
   acquire_lock
   if ! cleanup_stale_state; then
     runner_pid="$(read_pid "$RUNNER_PID_FILE")"
-    printf 'trace already running runnerPid=%s traceDir=%s current=%s\n' "$runner_pid" "$TRACE_LOG_DIR" "$(trace_file_for_today)"
+    printf 'trace already running runnerPid=%s trace=%s\n' "$runner_pid" "$TRACE_FILE"
     release_lock
     return 0
   fi
 
-  ensure_trace_storage
-  prune_old_traces
-  append_trace_line "# VoiceInk++ debug trace started $(date -u '+%Y-%m-%dT%H:%M:%SZ'); delivery metadata only; transcript contents are intentionally excluded."
-  record_runtime_identity
+  : > "$TRACE_FILE"
+  printf '# VoiceInk++ delivery metadata trace; transcript contents are intentionally excluded.\n' >> "$TRACE_FILE"
   # A plain background/nohup process is still a descendant of Codex's bounded
   # command runner and is killed as soon as that tool call closes. Submit one
   # launchd-owned job so `start` really survives into the user's physical test.
   # The runner writes its own PID file before opening the log-stream FIFO.
   launchctl submit -l "$LAUNCHD_LABEL" -- \
     /usr/bin/env "VOICEINK_TRACE_STATE_DIR=$TRACE_ROOT" \
-    "VOICEINK_TRACE_LOG_DIR=$TRACE_LOG_DIR" \
     "$SCRIPT_PATH" __run
 
   for attempt in $(seq 1 60); do
@@ -339,7 +271,7 @@ start_trace() {
     if [ -n "$runner_pid" ] && [ -n "$stream_pid" ] && \
        pid_is_live "$runner_pid" && runner_is_ours "$runner_pid" && \
        pid_is_live "$stream_pid" && stream_is_ours "$stream_pid"; then
-      printf 'trace started debugMode=on runnerPid=%s streamPid=%s traceDir=%s current=%s retentionDays=%s\n' "$runner_pid" "$stream_pid" "$TRACE_LOG_DIR" "$(trace_file_for_today)" "$RETENTION_DAYS"
+      printf 'trace started runnerPid=%s streamPid=%s trace=%s\n' "$runner_pid" "$stream_pid" "$TRACE_FILE"
       release_lock
       return 0
     fi
@@ -364,20 +296,18 @@ status_trace() {
   stream_pid="$(read_pid "$STREAM_PID_FILE" || true)"
   if [ -n "$runner_pid" ] && pid_is_live "$runner_pid" && runner_is_ours "$runner_pid" && \
      [ -n "$stream_pid" ] && pid_is_live "$stream_pid" && stream_is_ours "$stream_pid"; then
-    prune_old_traces
-    printf 'running debugMode=on runnerPid=%s streamPid=%s traceDir=%s current=%s retentionDays=%s\n' "$runner_pid" "$stream_pid" "$TRACE_LOG_DIR" "$(trace_file_for_today)" "$RETENTION_DAYS"
+    printf 'running runnerPid=%s streamPid=%s trace=%s\n' "$runner_pid" "$stream_pid" "$TRACE_FILE"
     return 0
   fi
   if [ -n "$stream_pid" ] && pid_is_live "$stream_pid" && stream_is_ours "$stream_pid"; then
-    printf 'unhealthy orphanStreamPid=%s traceDir=%s (run stop or start to clean it)\n' "$stream_pid" "$TRACE_LOG_DIR" >&2
+    printf 'unhealthy orphanStreamPid=%s trace=%s (run stop or start to clean it)\n' "$stream_pid" "$TRACE_FILE" >&2
     return 1
   fi
   if [ -n "$runner_pid" ] && pid_is_live "$runner_pid" && runner_is_ours "$runner_pid"; then
-    printf 'unhealthy runnerPid=%s traceDir=%s (run stop or start to clean it)\n' "$runner_pid" "$TRACE_LOG_DIR" >&2
+    printf 'unhealthy runnerPid=%s trace=%s (run stop or start to clean it)\n' "$runner_pid" "$TRACE_FILE" >&2
     return 1
   fi
-  prune_old_traces
-  printf 'stopped debugMode=off traceDir=%s retentionDays=%s\n' "$TRACE_LOG_DIR" "$RETENTION_DAYS"
+  printf 'stopped trace=%s\n' "$TRACE_FILE"
 }
 
 stop_trace() {
@@ -407,9 +337,7 @@ stop_trace() {
   fi
 
   rm -f "$RUNNER_PID_FILE" "$STREAM_PID_FILE" "$FIFO_PATH"
-  append_trace_line "# VoiceInk++ debug trace stopped $(date -u '+%Y-%m-%dT%H:%M:%SZ')."
-  prune_old_traces
-  printf 'trace stopped debugMode=off traceDir=%s retentionDays=%s\n' "$TRACE_LOG_DIR" "$RETENTION_DAYS"
+  printf 'trace stopped trace=%s\n' "$TRACE_FILE"
   release_lock
 }
 
@@ -422,15 +350,11 @@ show_trace() {
     printf 'line-count must be between 1 and 5000\n' >&2
     exit 2
   fi
-  ensure_trace_storage
-  prune_old_traces
-  if ! find "$TRACE_LOG_DIR" -type f -name 'trace-*.log' -print -quit | grep -q .; then
-    printf 'no trace exists in %s\n' "$TRACE_LOG_DIR"
+  if [ ! -f "$TRACE_FILE" ]; then
+    printf 'no trace exists at %s\n' "$TRACE_FILE"
     return 0
   fi
-  for trace_file in "$TRACE_LOG_DIR"/trace-*.log; do
-    [ -f "$trace_file" ] && cat "$trace_file"
-  done | tail -n "$lines"
+  tail -n "$lines" "$TRACE_FILE"
 }
 
 COMMAND="${1:-}"

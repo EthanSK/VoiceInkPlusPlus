@@ -1,8 +1,8 @@
 # Learnings
 
-Per-repo institutional memory for fixes. Every entry below is a real bug we hit + how we solved it. Check this file BEFORE attempting a same-looking fix.
+Per-repo institutional memory for fixes. Every entry below is a real bug we hit + how we solved it. Check this file BEFORE attempting a same-looking fix. Read [FAILED_APPROACHES.md](FAILED_APPROACHES.md) as the mandatory negative-evidence companion before retrying a mechanism that previously compiled, passed tests, or returned API success without satisfying the real app.
 
-Maintained by the public, self-improving `learnings` skill at `.agents/skills/learnings/SKILL.md`. Codex discovers that canonical folder directly; Claude Code follows `.claude/skills/learnings` to the same skill.
+Maintained by the public, self-improving `learnings` skill at `.agents/skills/learnings/SKILL.md`. Codex discovers that canonical folder directly; Claude Code follows `.claude/skills/learnings` to the same skill. Newer entries and the failure ledger may explicitly supersede an older entry whose initial evidence was later disproved; never select a historical implementation by version number alone.
 
 ## Format
 
@@ -25,40 +25,113 @@ Each entry looks like:
 (newest first)
 
 ---
-**Date:** 2026-07-19T21:32:23Z
-**Trigger:** Ethan asked that the normal same-app primary case use base VoiceInk behavior so ongoing Next/latch experiments cannot regress his ordinary dictation.
-**Symptom:** An ordinary primary-button stop in the continuously focused app was delayed or flaky, and could show false Return failures because it was routed through exact-input Accessibility verification and background-delivery machinery.
-**Root cause:** The normal foreground path depended on stop-time AX identity/read-back and semantic delivery even though base VoiceInk only needs the live caret; transient Electron AX states could therefore block or delay paste and Return.
-**Fix:** Commit fb3ead7 isolates focusedAtStop behind recording-start app-continuity evidence: uninterrupted Primary uses guarded live-caret Cmd-V plus one immediate HID Return, while any app activation rejects that path and both Next routes remain exact-only.
-**Commit:** fb3ead7
-**Guard:** VoiceInkTests.primaryForegroundContinuityRejectsSwitchAwayAndBack; all 22 named tests passed via xcrun xctest; signed v2.0.236 live trace at 22:27:15 contains primary current-input compatibility selected, commandPosted, and immediate HID auto-send issued=true verification=notRequired; Ethan observed it working.
+**Date:** 2026-07-19T22:04:03Z
+**Trigger:** Ethan asked for a massive project file covering everything tried and failed in the complete session so future agents do not repeat the same approaches.
+**Symptom:** Agents repeatedly retried delivery mechanisms that compiled, passed mocked tests, or returned AX/CGEvent success but failed on real Codex, ChatGPT, Telegram, or terminal surfaces; version-number rollback guesses also conflated materially different binaries.
+**Root cause:** Negative evidence was fragmented across a 13–19 July task containing 207 user messages, 1,398 assistant messages, and 115 compaction checkpoints. Build 203 was reused, v2.0.207/v2.0.208 were later rejected, v2.0.233 AXPress and v2.0.234 authenticated Return produced false-success signals, and the accepted v2.0.236 observation proved only uninterrupted Primary compatibility while its complete dirty binary was not reproducible from one commit.
+**Fix:** Commit 887e258 adds the 850-line FAILED_APPROACHES.md evidence ledger with a v2.0.203–v2.0.236 chronology, failed mechanisms, app-specific boundaries, HUD/release/trace regressions, DO-NOT-RETRY gates, and bounded reconsideration criteria. It corrects contradictory delivery/matrix claims and updates AGENTS.md, README.md, and the learnings skill so its check script searches rejected evidence before dated learnings.
+**Commit:** 887e258
+**Guard:** bash -n plus representative check.sh searches pass; quick_validate.py reports the learnings skill valid; git diff --check passes; future delivery work must read FAILED_APPROACHES.md and state what new evidence changes a recorded failure condition before retrying it.
 ---
 
 
 ---
-**Date:** 2026-07-19T17:49:05Z
-**Trigger:** Ethan asked for detailed, self-cleaning logs that future agents can reliably correlate with the exact running VoiceInk++ release.
-**Symptom:** The upgraded delivery trace wrote its start header but exited with status 141 before creating the launchd runner, so status immediately reported debugMode=off.
-**Root cause:** record_runtime_identity used codesign piped into an awk action that exited on the first CDHash match. With set -o pipefail, awk's early exit gave codesign SIGPIPE and correctly failed the whole trace start.
-**Fix:** Commit cd9843f records the installed VoiceInk++ marketing version, build, PID, and CDHash at trace start and app restarts, while making awk consume the complete codesign output so the strict pipefail contract remains useful.
-**Commit:** cd9843f
-**Guard:** A real stop/start/status/show cycle now reports debugMode=on with launchd runner and log-stream PIDs, and the trace contains version=2.0 build=228 pid plus the installed CDHash; bash syntax and skill validation pass.
+**Date:** 2026-07-19T03:19:51Z
+**Trigger:** Ethan asked why Codex Computer Use appears able to operate applications with its own mouse in the background while VoiceInk++ struggles with exact non-frontmost Codex paste and Send, and requested a Fable Five review.
+**Symptom:** A visible Computer Use cursor suggested that macOS might provide an independent background mouse and keyboard-focus channel that VoiceInk++ had simply failed to use.
+**Root cause:** The installed OpenAI helper does not expose a second macOS focus channel. `SyntheticAppFocusEnforcer` and `SystemFocusStealPreventer` are OpenAI `AccessibilitySupport` implementation types inside the compiled helper, not documented Apple APIs or reusable system classes. Their public Apple building blocks include `AXUIElementSetAttributeValue`, the writable `AXFocused`/`AXMain` attributes, `AXUIElementPerformAction`, and `CGEventPostToPid`; the helper also exposes private CPS focus-state notifications that do not appear in Apple's public SDK. `SkyComputerUseService` and bundled `@oai/sky` 0.4.20 combine those mechanisms with a software `VirtualCursor`, refetchable Accessibility trees, and app/window/element-targeted actions. The package is absent from the public npm registry, documents publication only to OpenAI-internal Artifactory/Azure, requires the trusted Codex `nodeRepl` runtime, and connects to a private Unix socket whose service authenticates peer/responsible-process code-signing identity; VoiceInk++ has no TeamIdentifier and does not satisfy that supported client boundary. The public Responses API `computer` tool returns UI actions for the caller's own harness to execute; it does not expose Codex's local macOS driver. The helper can make a target believe it is active and suppress or repair system focus changes, but that is synthetic internal focus orchestration, not an independent physical mouse. Computer Use normally re-snapshots and acts immediately; VoiceInk++ has the stricter delayed contract of preserving one exact composer across later tab/window/focus changes, inserting once, submitting once, and proving that the saved input cleared without bringing the app forward.
+**Fix:** No runtime change was made. Do not import, extract, redistribute, or runtime-depend on OpenAI's unsupported bundled helper; borrow only the proven pattern. Public MIT alternatives now exist: `trycua/cua` provides the actively maintained Rust Cua Driver, while `tropeai/trope-cua` is a third-party rebrand/snapshot of Cua's former Swift driver and exposes `CuaDriverCore` as a Swift package. Neither is OpenAI source. Both need a narrow provenance, private-SPI, OS-version, latency, and exact-composer safety audit before any code is ported; current Cua Rust explicitly lacks the Swift synthetic AX-focus layers and retains only the reactive focus-steal layer, while Trope's fuller Swift path uses undocumented SkyLight/SLPS mechanisms. AXSwift and AXorcist are useful public AX wrappers but do not supply this complete focus orchestration. Keep VoiceInk++ on the narrow, bounded per-app delivery design: exact task/window/editor revalidation, one internal activation-state session, bounded Unicode insertion, a proven semantic Send action, fail-closed Send-versus-Stop checks, and surface-specific verification. Candidate commit `0e8d164` already implements that subset for the audited Codex package; the running ChatGPT-hosted Codex package still needs its exact tuple and live behavior proved before support can be claimed. Fable Five independently passed the static architecture but agreed that source and bundle inspection cannot replace the physical trace.
+**Commit:** none (read-only installed-bundle/public-source investigation; current candidate remains `0e8d164`)
+**Guard:** Never infer background safety or exact delivery from Computer Use's virtual cursor, AX/event acceptance, or a mocked action. The public `openai/codex` tree does not contain the native focus-enforcer implementation; the bundled `@oai/sky` package is not a public SDK; and the public OpenAI Computer Use API still requires a caller-owned execution harness. Do not bypass Computer Use's `com.openai.codex` policy with ad-hoc live AX probes. If evaluating Cua/Trope source, isolate the smallest mechanism, enumerate every private SPI, and prove it against VoiceInk++'s delayed exact-input contract rather than adopting a general driver wholesale. Require Ethan's disposable-task trace to prove exact insertion, one semantic Send, composer clear/reset, and unchanged system foreground before accepting Codex support.
+---
+
+---
+**Date:** 2026-07-18T23:50:09Z
+**Trigger:** Ethan rejected v2.0.224 after repeated Codex warning-icon and no-paste failures, corrected an unsupported guess that the remembered AX baseline was v2.0.216, and asked for the version to be reconstructed from his session conversation.
+**Symptom:** The signed v2.0.224 app could read the real ChatGPT-hosted Codex `AXTextArea`, but the locked icon remained a warning and exact delivery failed or copied the transcript to the clipboard.
+**Root cause:** The v2.0.224 description/placeholder relaxation still left the real composer with an incomplete bounded context fingerprint. Separately, choosing a rollback by spoken version proximity was invalid: build 203 had been reused for several binaries, and later partial successes belonged to materially different foreground, background, and compatibility engines. The decisive evidence was the timestamped user message immediately after each verified install, not the nearest-sounding version.
+**Fix:** Session reconstruction separated two proven artifacts. Build 203/CDHash `715d9686a428e9c7d9a9064236f21e942901bc2b` at commit `1eabb1b` was the repeatedly celebrated three-route foreground restore/paste/Return build. Build 206/CDHash `a88d4bbe7ab463ba5a1f62509757b349d98d7f97` at source anchor `96e494e` was the first matching non-frontmost background AX build: Ethan confirmed background Codex paste and Return despite a false warning, identified Option-Space as paste-only, and later explicitly preserved v2.0.206 because it pasted into the right saved location. The byte-preserved v2.0.206 bundle was therefore restored; v2.0.216, v2.0.224, and current source were preserved.
+**Commit:** none (evidence-backed operational rollback to preserved build 206; rejected v2.0.224 source is `3639f60`, and current source was not rewound)
+**Guard:** Historical rollback selection must correlate the user's acceptance/failure timestamp with the immediately preceding install event and the artifact's build, CDHash, checksum, and delivery architecture. The installed app reports v2.0.206 with the expected CDHash and deep/strict-valid local signature; `/Applications/VoiceInk.app` remained byte-identical. Treat v2.0.206 as an exact-location Codex debugging floor, not universal compatibility proof.
+---
+
+---
+**Date:** 2026-07-18T21:02:15Z
+**Trigger:** Ethan corrected that the warning icon must remain until real app detection succeeds and requested more left/right recording-bar padding
+**Symptom:** v2.0.222 showed only the current-app icon in compatibility mode, and shared ChatGPT/Codex host identity could leave exact Codex capture at a warning
+**Root cause:** Locked-slot visibility was incorrectly gated by the exact-delivery flag, while selected-task identity reused the installed host surface instead of the embedded composer's product scope
+**Fix:** Commit 3c44ebc keeps two slots for every active session, renders nil as the honest warning with no stale outline, separates host and task-scope surfaces for Codex inside ChatGPT.app, and adds 16-point mini-bar side padding
+**Commit:** 3c44ebc
+**Guard:** Mac Mini direct xctest ran all 56 named tests including compatibilityRecorderNeverAdvertisesStaleExactOwnership and Codex scope regressions; canonical Xcode test compiled then stalled in TestManager; disposable live Codex trace remains the release acceptance gate
+---
+
+---
+**Date:** 2026-07-18T18:17:02Z
+**Trigger:** Ethan asked to pull the completed Mac Mini VoiceInk++ work back to the MacBook and boot that build locally.
+**Symptom:** A successful recursive `scp` of the signed v2.0.220 app created the bundle directories and nested payloads but silently omitted top-level `Contents/Info.plist` and `PkgInfo`, leaving an unrecognizable bundle.
+**Root cause:** Raw recursive SCP did not preserve the complete macOS app-bundle layout on this transfer path; command success therefore did not prove a usable or signed candidate.
+**Fix:** Re-transferred the exact Mini artifact through a `tar` archive stream, rejected the incomplete copy before installation, and required local version/build, deep/strict signature, CDHash, and Automation-entitlement verification before the five-second warned replacement. Signed v2.0.220 was installed with the exact-delivery preference still off; `/Applications/VoiceInk.app` remained unchanged.
+**Commit:** 13fb3a9 (implementation; learning follow-up 769fadb)
+**Guard:** Never install a transferred `.app` based on copy exit status alone. Require `Info.plist`, expected version/build, `codesign --verify --deep --strict`, the expected signing identity/CDHash, and `com.apple.security.automation.apple-events=true` both before and after installation.
 ---
 
 
 ---
-**Date:** 2026-07-19T17:46:05Z
-**Trigger:** Ethan asked agents to always check logs during frequent live use, add detailed self-cleaning one-week diagnostics for the current debug period, and remember to turn debug mode off when the work is done.
-**Symptom:** Runtime regressions were repeatedly changed without first correlating Ethan's newest physical use with the exact installed build and delivery trace; the reusable trace lived in one temporary file with no explicit weekly retention or debug-mode shutdown contract.
-**Root cause:** The project instructions did not require a current log check after every reported reproduction, and live-delivery-trace.sh truncated one /tmp trace on start instead of retaining a bounded rolling evidence window.
-**Fix:** Commit 6434efb makes live delivery tracing an explicit temporary debug mode, keeps privacy-allowlisted action/focus/paste/auto-send metadata in private daily files under ~/Library/Logs/VoiceInkPlusPlus/DeliveryTrace, prunes files after seven complete days, and requires agents to inspect current build/PID plus logs before another mechanism change and stop the trace when the investigation closes.
-**Commit:** 6434efb
-**Guard:** An isolated retention test removed a nine-day-old trace while preserving today's file; live start/status/show reported debugMode=on with retentionDays=7 and a launchd-owned runner; bash syntax, git diff --check, and skill quick_validate all passed. Transcript and app content remain excluded by the existing allowlist.
+**Date:** 2026-07-18T11:01:33Z
+**Trigger:** Ethan directed the Mac Mini to stop monitoring, take ownership, and emulate the Codex failure locally.
+**Symptom:** The exact-input candidate never landed on authoritative main, Release unit tests could not see makeTestingTarget, and Codex submit discovery missed a Chromium subtree.
+**Root cause:** The prior work remained a root-snapshot candidate; the Release test action excluded a DEBUG-only seam; and Chromium exposed useful controls only through AXChildrenInNavigationOrder.
+**Fix:** Rebuilt the candidate as a normal branch from d3819c12, added navigation-order fallback plus an exact audited Codex idle-Send contract behind a default-off legacy flag, and kept the internal test seam available to Release test builds.
+**Commit:** 13fb3a9
+**Guard:** Require the canonical Release build attempt plus all 55 named tests through the bounded Debug xctest fallback, keep exact delivery off by default, and do not install or ship without a disposable live Codex trace.
+---
+
+---
+**Date:** 2026-07-18T00:20:37Z
+**Trigger:** Ethan asked whether VoiceInk++ should replace his tuned Deepgram Nova-3 setup with OpenAI's new realtime speech/translation models, and whether those models are faster or better than AssemblyAI or Deepgram.
+**Symptom:** The vendor names hide incompatible jobs and transports: `gpt-realtime-translate` is live speech-to-speech interpretation rather than ordinary dictation, while `gpt-realtime-whisper` requires a realtime PCM session and cannot be selected in VoiceInk++'s completed-file OpenAI-compatible request by changing only a model string. The repository also still lists AssemblyAI `universal-3-pro`, although AssemblyAI's current recommended model is `universal-3-5-pro`.
+**Root cause:** VoiceInk++'s custom-provider route uploads one completed multipart recording and carries Vocabulary through the standard `prompt` field; OpenAI's GA realtime Whisper endpoint uses a dedicated streaming protocol and does not support prompt steering. Deepgram Nova-3 and AssemblyAI Universal-3.5 Pro expose native keyterm prompting, which is material to Ethan's proper-noun-heavy dictation. Separately, the built-in Deepgram batch wrapper currently accepts but does not forward `customVocabulary`; Ethan's custom local proxy is the path that extracts VoiceInk++'s marked block into repeated Nova-3 `keyterm` parameters.
+**Fix:** No provider or runtime configuration was changed. Keep the tuned Deepgram proxy as the default until a same-audio evaluation proves a replacement; use `gpt-4o-transcribe` as the drop-in OpenAI quality comparator because it supports completed-file transcription plus prompt context. Treat `gpt-realtime-whisper`, `gpt-realtime-translate`, and AssemblyAI Universal-3.5 Pro as separate integration/evaluation candidates rather than silent model-name substitutions.
+**Commit:** none (read-only provider/model investigation in the intentionally dirty `main` checkout)
+**Guard:** Compare identical representative WAVs and identical Vocabulary across providers. Record stop-to-final p50/p95 latency, proper-noun/keyterm hit rate, omissions or hallucinations, punctuation/edit burden, and cost; do not claim a universal winner from vendor benchmarks. Before testing AssemblyAI, update and verify the stale model registry deliberately. Before testing OpenAI realtime, implement its dedicated stream and account for the lack of prompt steering. Never infer built-in Deepgram batch vocabulary support from the unused method parameter.
+---
+
+---
+**Date:** 2026-07-17T23:04:58Z
+**Trigger:** Ethan asked for an immediate base-VoiceInk fallback because the exact saved-input engine had regressed Codex paste/Return and recorder responsiveness.
+**Symptom:** The first fallback draft selected current-cursor delivery but still ran exact Accessibility capture at recording start and primary stop, so it could retain the same HUD/start-stop latency and destination-owned Mode work it was meant to escape.
+**Root cause:** The engine switch was initially applied only at Next handling, recorder target UI, and final paste. `VoiceInkEngine.toggleRecord` still synchronously captured and resolved saved inputs before the microphone session and at normal stop, while pipeline post-processing still read the saved target Mode.
+**Fix:** v2.0.219 made `VIPPExactInputDeliveryEnabled=false` a complete compatibility boundary: no saved-input capture at start/stop, Next Track passed through, current Mode owned post-processing/output, final paste plus optional Return followed the current keyboard input, and locked-target UI stayed hidden. The exact three-route engine remained compiled behind the Settings toggle for isolated repair. Ethan later live-confirmed that fallback in Codex; v2.0.223 supersedes only the hidden-slot UI contract by showing an honest warning while compatibility mode owns no exact target.
+**Commit:** pending (installed v2.0.219 from the intentionally dirty `main` checkout at HEAD `d3819c1`; do not infer that HEAD alone reproduces this binary)
+**Guard:** The Mac Mini direct Swift Testing run named all 54 tests and passed, including `exactInputDeliveryFlagDefaultsToLegacyAndRemainsSwitchable` and `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt`; the canonical test action compiled but its UI runner stalled and is preserved in `/private/tmp/voiceink-v219-test4.xcresult`. Installed build 219 verified deep/strict, stable signing authority, Automation=true, running PID, flag=0, and an unchanged `/Applications/VoiceInk.app`. The historical hidden-slot choice is not the current contract; v2.0.223's active two-slot regression test is authoritative.
+---
+
+
+---
+**Date:** 2026-07-16T17:51:56Z
+**Trigger:** v2.0.211 release signing gate
+**Symptom:** The first signed v2.0.211 artifact passed certificate and deep/strict verification but its outer signature contained no Automation entitlement.
+**Root cause:** The Mac Mini resign-local.sh still replaced the outer app signature without passing VoiceInk.local.entitlements even though the repository documentation already required it.
+**Fix:** Patched the real Mini helper to accept the checked-in entitlements as argument 2, fail closed when they are missing, sign the outer app with them, and verify Automation afterward; BUILDING.md and UPDATING.md now give the exact invocation.
+**Commit:** ff33fb2
+**Guard:** The helper's real v2.0.211 invocation now passes deep/strict verification and dumps com.apple.security.automation.apple-events=true; the installed app was checked again after transfer.
+---
+
+
+---
+**Date:** 2026-07-15T22:28:08Z
+**Trigger:** Ethan rejected v2.0.208 and asked to revert everything after slow recorder start/stop, failed background ChatGPT Enter, and ChatGPT focus instability.
+**Symptom:** v2.0.208 inherited v2.0.207 recorder latency and could paste into the saved ChatGPT composer but failed to submit it in the background; repeated live activation-state probing then destabilized ChatGPT focus and the app restarted.
+**Root cause:** The v2.0.207 delivery rewrite added expensive exact-input/context work to recording decisions and removed the v2.0.206 process-targeted Return fallback. When a ChatGPT task is running, its exact composer exposes an explicit Stop control rather than a safe Send control, so the hardened route correctly had no semantic background submit action. Unit tests and AX return codes did not prove a real ChatGPT send.
+**Fix:** Commit b2aeaa2 reverted native source, tests, runtime docs, and public copy exactly to the v2.0.206 baseline; the preserved signed build 206 with CDHash a88d4bbe7ab463ba5a1f62509757b349d98d7f97 was reinstalled and launched. Keep later safety knowledge as investigation guidance, but do not claim universal background Enter.
+**Commit:** b2aeaa2
+**Guard:** Before another delivery release, measure recorder start/stop latency and live-test the exact /Applications/ChatGPT.app surface in a disposable target. Never bypass blocked Computer Use by repeatedly posting private activation-state events to Ethan live ChatGPT process; one app-owned bounded delivery session is the maximum, and an actual cleared composer trace is required.
 ---
 
 
 ---
 **Date:** 2026-07-15T15:52:35Z
+**Superseded:** The complete 13–19 July audit and explicit `b2aeaa2` rollback later established that v2.0.207/v2.0.208 were rejected, not accepted releases. Preserve the safety constraints below only when independently re-proven; do not resurrect the rewrite or treat its tests/install as runtime success. See `FAILED_APPROACHES.md`.
 **Trigger:** Ethan made reliable exact-input background paste and Enter the primary objective and required compatibility tracking for his main apps.
 **Symptom:** Exact saved-input paste could work while Return was inconsistent or unsafe across Codex, ChatGPT quick window, Terminal/iTerm, Telegram, Chrome, Notion, and same-app different-input cases.
 **Root cause:** Saved AX wrappers can be replaced or reused across windows, tabs, chats, and editors; global Mode can drift after focus changes; process-targeted Command-V or Return is not reliable submission proof; and a generic unlabelled button or whole rich-editor AXValue mutation can target the wrong control or damage content.
