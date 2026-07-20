@@ -1215,9 +1215,15 @@ final class TranscriptionDelivery {
     }
 
     private func showAutoSendFailure(_ title: String, detail: String) {
+        // Paste already succeeded here. Host submission verification is intentionally
+        // conservative and can report a false negative after an Electron composer has
+        // actually submitted, so keep the selectable warning but do not punish routine
+        // dictation with the global error sound. Capture, paste, and transcription
+        // failures use their normal notification paths and remain audible.
         NotificationManager.shared.showNotification(
             title: title,
-            type: .error
+            type: .error,
+            playSound: false
         )
         vippLog.error("paste: auto-send failed after successful paste; \(detail, privacy: .public)")
     }

@@ -764,6 +764,40 @@ struct VoiceInkTests {
         #expect(!autoSendBody.contains("method: .systemEvents"))
     }
 
+    @Test func autoSendFailureWarningStaysVisibleButSilent() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let failureStart = try #require(deliverySource.range(
+            of: "    private func showAutoSendFailure("
+        ))
+        let nextFunction = try #require(deliverySource.range(
+            of: "    private func handleMissingPasteTarget(",
+            range: failureStart.upperBound..<deliverySource.endIndex
+        ))
+        let failureBody = deliverySource[
+            failureStart.lowerBound..<nextFunction.lowerBound
+        ]
+
+        #expect(failureBody.contains("type: .error"))
+        #expect(failureBody.contains("playSound: false"))
+
+        let notificationSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Notifications/NotificationManager.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(notificationSource.contains("playSound: Bool = true"))
+        #expect(notificationSource.contains("if type == .error && playSound"))
+    }
+
     @MainActor
     @Test func secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt() {
         let session = RecordingSession()

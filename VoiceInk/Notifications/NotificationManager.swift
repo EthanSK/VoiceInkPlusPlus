@@ -14,6 +14,7 @@ class NotificationManager {
         title: String,
         type: AppNotificationView.NotificationType,
         duration: TimeInterval = 3.0,
+        playSound: Bool = true,
         onTap: (() -> Void)? = nil,
         actionButton: (label: String, action: () -> Void)? = nil
     ) {
@@ -25,8 +26,9 @@ class NotificationManager {
             notificationWindow = nil
         }
         
-        // Play esc sound for error notifications
-        if type == .error {
+        // Errors remain audible by default. Callers may suppress only the sound when
+        // a warning is intentionally advisory while preserving the visible evidence.
+        if type == .error && playSound {
             SoundManager.shared.playEscSound()
         }
 
