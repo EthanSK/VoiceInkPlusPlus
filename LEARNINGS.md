@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-20T21:54:29Z
+**Trigger:** Ethan designated v2.0.243 as the checkpoint and chose Telegram as the next compatibility target.
+**Symptom:** v2.0.243 kept Primary usable but both tested Telegram Next routes failed before insertion because the saved Telegram window could not be re-resolved after backgrounding.
+**Root cause:** Telegram 12.9 build 282526 exposes a parentless message AXTextArea and no readable selected-chat title in that window's AX descendants, so the generic saved-window resolver could neither prove ownership nor safely identify the selected chat after backgrounding.
+**Fix:** Commits bc060a2 and 4fa8ec9 add an isolated Telegram path: exactly one same-PID enclosing window may own the parentless composer; readable AX chat anchors are preferred, otherwise only the pinned Telegram tuple and header-crop SHA-256 identity may cross the gate; identity is revalidated before one-shot AXSelectedText insertion and an explicit labelled Send. Signed v2.0.244 is installed with exact delivery enabled, while v2.0.243 remains the rollback checkpoint.
+**Commit:** 4fa8ec9a10ecdc68f57f2c71314ad20d23272e52
+**Guard:** The canonical Mini runner compiled but stalled before named tests; a fresh Debug direct xcrun xctest run named and passed all 29 tests, including secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt and the Telegram identity/insertion tests. Installed v2.0.244 has CDHash 98859c850d863e194281355fc4384a867f795d98, passed deep/strict verification, retains Automation=true, and left official VoiceInk build 202 untouched. Do not accept Telegram until Saved Messages physically proves Primary plus both Next routes, no focus theft, Send clear/reset, and wrong-chat rejection where safely available.
+---
+
+
+---
 **Date:** 2026-07-20T20:54:19Z
 **Trigger:** Ethan clarified that v2.0.243's normal Primary route works but the latch behavior does not, designated v2.0.243 as a checkpoint, and chose Telegram as the next app to focus on.
 **Symptom:** A Codex second-chance trace showed exact capture, verified background insertion, bounded Send-control resolution, and one issued action, but the post-action composer became unreadable and the user-visible latch result did not submit. The immediately following Primary current-input runs did submit. Two Telegram latch runs failed earlier, before insertion, because the saved Telegram window could not be re-resolved after it was backgrounded.
