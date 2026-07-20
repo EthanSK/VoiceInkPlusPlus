@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-20T20:42:32Z
+**Trigger:** Ethan physically confirmed that the restored Codex Next-button route was working, while noting that it can still feel unreliable when the Mac is lagging.
+**Symptom:** Later cross-app work obscured the last accepted Codex baseline, and the current ChatGPT-hosted Codex build rejected the otherwise-working audited Send path after the host updated from build 5551 to 5591.
+**Root cause:** Timestamped install and user-verdict reconstruction identified commit `bfef0e4` (v2.0.238), not v2.0.236, as the accepted isolated Codex implementation. Its delivery mechanism remained valid; the current `/Applications/ChatGPT.app` host tuple had changed to version 26.715.52143 build 5591, while subsequent Telegram/Terminal/Claude changes made later cumulative candidates unsuitable as a Codex rollback.
+**Fix:** Commit `5475ef2` reconstructs a clean v2.0.243 branch directly from the v2.0.238 source, adds only the audited ChatGPT build-5591 tuple and its acceptance/rejection tests, and increments the build. The signed app was installed with exact delivery enabled. In the 21:38 physical trace, Next while recording retained `recordingStart`, captured the exact Codex `AXTextArea`, inserted 21 characters while VS Code remained frontmost, resolved the FooterActions Send control twice, issued exactly one targeted Send action, and never activated Codex. The post-action wrapper was unreadable, so VoiceInk++ correctly made no retry or false warning; Ethan then confirmed the message actually submitted.
+**Commit:** 5475ef20428ee20d78e98917a31ec30bfddc671e
+**Guard:** The fresh Mini test bundle named and passed all 23 tests; the signed installed v2.0.243 artifact has CDHash `5be83c4f545772472a836306d64eded1253f1c63` and executable SHA-256 `f8f0fa0b6b29c2c533e5069e70124d6d0f732ab70b39abba57ca2da003bc231b`. Treat this as the Codex-only baseline for ChatGPT 26.715.52143 build 5591, not universal app support. The reported lag sensitivity remains a separate unresolved timing/load issue: correlate a failed physical attempt with its exact trace before changing capture, cleanup, insertion, or the one-shot Send path, and never add a blind retry.
+---
+
+---
 **Date:** 2026-07-19T22:04:03Z
 **Trigger:** Ethan asked for a massive project file covering everything tried and failed in the complete session so future agents do not repeat the same approaches.
 **Symptom:** Agents repeatedly retried delivery mechanisms that compiled, passed mocked tests, or returned AX/CGEvent success but failed on real Codex, ChatGPT, Telegram, or terminal surfaces; version-number rollback guesses also conflated materially different binaries.

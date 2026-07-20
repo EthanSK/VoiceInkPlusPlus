@@ -4,13 +4,23 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
-**Current runtime state verified 2026-07-19:** signed VoiceInk++ v2.0.236 is installed and running as
-PID 3326 with CDHash `5074d3bbb946ee5815ee10bd043e696db73255e7`. Its accepted trace proves only
-the uninterrupted Primary current-input compatibility route from `fb3ead7`: live-caret guarded
-Command-V followed immediately by one ordinary HID Return. It does not prove either Next route or
-exact background Send. The installed bundle also contains uncommitted v2.0.235/SkyLight source, so
-the complete binary is not reproducible from `fb3ead7` or the branch HEAD and must not become a
-source baseline.
+**Current runtime state verified 2026-07-20:** signed VoiceInk++ v2.0.243 is installed from reproducible
+commit `5475ef2` with CDHash `5be83c4f545772472a836306d64eded1253f1c63`. It reconstructs the
+accepted v2.0.238 Codex source at `bfef0e4`, adding only the audited ChatGPT 26.715.52143 build-5591
+tuple, tuple tests, and the unique build number; later Telegram, Terminal, and Claude delivery work is
+absent. Ethan confirmed a physical **Next while recording** run submitted into the saved Codex composer
+while VS Code remained frontmost. Its trace proves `recordingStart`, exact capture, verified background
+insertion, bounded FooterActions Send resolution, one targeted Send action, and no focus theft. The
+post-action wrapper became unreadable, so verification remained honestly indeterminate and no retry or
+false warning occurred; Ethan's matching visible result supplies the acceptance evidence. This proves
+only that exact ChatGPT-hosted Codex tuple and route, not every OpenAI build or destination. Ethan also
+reports intermittent sensitivity when the Mac is lagging; no v2.0.243 failed trace has yet isolated its
+cause, so the accepted delivery mechanism must not be changed on that report alone.
+
+The earlier signed v2.0.236 checkpoint proved only the uninterrupted Primary current-input compatibility
+route from `fb3ead7`: live-caret guarded Command-V followed immediately by one ordinary HID Return. Its
+installed bundle also contained uncommitted v2.0.235/SkyLight source, so that complete binary is not a
+reproducible source baseline.
 
 The byte-preserved signed v2.0.206 remains the accepted exact-location rollback floor (CDHash
 `a88d4bbe7ab463ba5a1f62509757b349d98d7f97`, source anchor `96e494e`, restored by `b2aeaa2`). Ethan
@@ -45,9 +55,9 @@ proven semantic action. Immediate pre/post system focus must remain on B.
 
 ## Required destinations
 
-| Destination | Saved input | Preferred non-activating insertion | Auto-send chain | Verification | Audited live evidence through v2.0.236 |
+| Destination | Saved input | Preferred non-activating insertion | Auto-send chain | Verification | Audited live evidence through v2.0.243 |
 | --- | --- | --- | --- | --- | --- |
-| Codex desktop | Exact Codex task composer | Targeted Unicode after verified internal window/editor focus | Explicit nearby semantic Send only; ordinary HID Return only while the exact composer owns system keyboard focus, with at most one retry after a readable unchanged composer | Exact composer clears/resets; rendered-message echo is optional telemetry | Exact capture/insertion succeeded in bounded v206/v231–234 runs; v223/v224 capture failed; v236 Primary foreground compatibility is accepted; exact background and both Next routes remain unverified |
+| Codex desktop | Exact Codex task composer | Targeted Unicode after verified internal window/editor focus | Explicit nearby semantic Send only; ordinary HID Return only while the exact composer owns system keyboard focus, with at most one retry after a readable unchanged composer | Exact composer clears/resets; rendered-message echo is optional telemetry; one issued action followed by an unreadable replacement remains indeterminate and requires matching user-visible confirmation | v243 commit `5475ef2` is accepted for Next-while-recording background delivery on ChatGPT 26.715.52143 build 5591: exact capture/insertion, one FooterActions Send action, unchanged VS Code foreground, and Ethan-confirmed submission. Lag sensitivity and second chance remain unproven; do not generalize to another build/surface |
 | ChatGPT Option-Space floating window | Exact `AXTextArea` in the compact non-activating window | Targeted Unicode without synthetic activation only while it still owns keyboard focus | Explicitly labelled nearby Send or ordinary HID Return while exact system focus remains; one retry only after readable unchanged text | Floating composer clears/resets without the app becoming frontmost | Exact insertion repeatedly worked; Return produced newline, no-op, or unreadable state, and v233 `AXPress` left the composer unchanged; background Send failed/unaccepted |
 | Claude Code/Codex CLI in Apple Terminal or iTerm | Exact terminal input plus captured window-ID + TTY/session-ID pair | Host-native text addressed to that exact pair; never PID-targeted Unicode | Text + Return in one exact-session native operation; Apple Terminal paste-only unsupported, iTerm supports `newline false`; no title routing, activation, or retry | Native contents prove the inserted segment at the expected prompt boundary plus prompt-tail transition; host never activated | Architecture/tests existed, but no accepted final exact live trace established the complete route; unverified |
 | Claude Code/Codex CLI in Ghostty, Warp, VS Code, or Cursor | Exact host input when uniquely resolvable | Targeted Unicode after exact host/window verification | None in the background; fail visibly without focusing the host | Exact readable insertion only; no claim of background submission | No accepted host-by-host final trace; unverified |
