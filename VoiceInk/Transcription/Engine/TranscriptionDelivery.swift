@@ -927,14 +927,14 @@ final class TranscriptionDelivery {
         let isChatComposer = Self.isChatComposer(
             bundleIdentifier: session.bundleIdentifier
         )
-        // A background app cannot receive a normal HID Return without stealing the
-        // user's keyboard focus. Ordinary process-targeted Return was ignored by
+        // A background app cannot receive a normal global HID Return without stealing
+        // the user's keyboard focus. Generic process-targeted Return was ignored by
         // Electron/Telegram, and authenticated Return changed ChatGPT without
-        // submitting it. The audited unlabelled OpenAI control may use one exact
-        // PID/window-addressed click; Telegram is intentionally ineligible for that
-        // exception and may cross only an explicitly labelled semantic AXPress gate.
-        // Neither route may fall through after an irreversible action; clear/reset
-        // remains the only authoritative chat success proof.
+        // submitting it. Telegram has one narrower, physically proven exception: the
+        // public HID-source/modifier-boundary sequence is addressed to its already-
+        // verified exact composer after a fresh chat-identity check. OpenAI may use
+        // one exact PID/window-addressed click. Neither app-specific route may fall
+        // through after its irreversible action; clear/reset remains authoritative.
         guard autoSendKey == .enter, isChatComposer else {
             showAutoSendFailure(
                 "Transcription inserted, but this saved background input has no safe Send action",
@@ -945,23 +945,58 @@ final class TranscriptionDelivery {
 
         let actionStarted = ProcessInfo.processInfo.systemUptime
         let submitRoute: String
-        switch await FocusLockService.shared.pressNearbySubmitButton(for: session) {
-        case .targetedClick:
-            submitRoute = "skyLightTargetedSendClick"
-        case .pressed:
-            submitRoute = "semanticAXPress"
-        case .unavailable, .focusLostBeforeAction, .refusedAfterCandidate:
-            showAutoSendFailure(
-                "Transcription inserted, but no verified Send control is available",
-                detail: "background semantic Send unavailable targetPid=\(session.processIdentifier)"
-            )
-            return
-        case .failed(let error):
-            // The action may already have reached the app before a post-action focus
-            // guard or AX result failed. It remains the sole irreversible attempt:
-            // verify only and never fall through to Return, AXPress, or a second click.
-            submitRoute = "semanticActionError"
-            vippLog.error("paste: background semantic action returned error=\(error, privacy: .public); verifying without fallback targetPid=\(session.processIdentifier, privacy: .public)")
+        if FocusLockService.isTelegram(
+            bundleIdentifier: session.bundleIdentifier
+        ) {
+            // Telegram publishes no AX Send control or chat title in the audited
+            // build. Re-sample its privacy-bounded exact-chat identity at the action
+            // boundary, then issue the sole proven Return sequence exactly once.
+            guard await FocusLockService.shared
+                .revalidateTelegramVisualIdentityIfRequired(for: session) else {
+                showAutoSendFailure(
+                    "Transcription inserted, but the saved Telegram chat could not be re-verified for Return",
+                    detail: "background Telegram chat identity changed before Return targetPid=\(session.processIdentifier)"
+                )
+                return
+            }
+            switch CursorPaster.performTargetedTelegramHIDReturn(
+                targetPID: session.processIdentifier,
+                canPost: {
+                    FocusLockService.shared.backgroundDeliveryBoundaryMatches(
+                        session
+                    )
+                }
+            ) {
+            case .commandPosted:
+                submitRoute = "telegramTargetedHIDReturn"
+            case .commandNotPosted, .actionGuardRefused:
+                showAutoSendFailure(
+                    "Transcription inserted, but Telegram Return could not be issued safely",
+                    detail: "background Telegram targeted Return unavailable targetPid=\(session.processIdentifier)"
+                )
+                return
+            }
+        } else {
+            switch await FocusLockService.shared.pressNearbySubmitButton(
+                for: session
+            ) {
+            case .targetedClick:
+                submitRoute = "skyLightTargetedSendClick"
+            case .pressed:
+                submitRoute = "semanticAXPress"
+            case .unavailable, .focusLostBeforeAction, .refusedAfterCandidate:
+                showAutoSendFailure(
+                    "Transcription inserted, but no verified Send control is available",
+                    detail: "background semantic Send unavailable targetPid=\(session.processIdentifier)"
+                )
+                return
+            case .failed(let error):
+                // The action may already have reached the app before a post-action
+                // guard or AX result failed. It remains the sole irreversible attempt:
+                // verify only and never fall through to Return or a second click.
+                submitRoute = "semanticActionError"
+                vippLog.error("paste: background semantic action returned error=\(error, privacy: .public); verifying without fallback targetPid=\(session.processIdentifier, privacy: .public)")
+            }
         }
 
         let observation = await waitForBackgroundValueChange(

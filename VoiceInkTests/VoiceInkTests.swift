@@ -791,6 +791,11 @@ struct VoiceInkTests {
         #expect(backgroundRoute.contains("case .targetedClick:"))
         #expect(backgroundRoute.contains("skyLightTargetedSendClick"))
         #expect(backgroundRoute.contains("semanticAXPress"))
+        #expect(backgroundRoute.contains("telegramTargetedHIDReturn"))
+        #expect(backgroundRoute.contains("performTargetedTelegramHIDReturn"))
+        #expect(backgroundRoute.contains(
+            "revalidateTelegramVisualIdentityIfRequired"
+        ))
         #expect(!backgroundRoute.contains("authenticatedSkyLightReturn"))
         #expect(!backgroundRoute.contains("performAuthenticatedTargetedReturn"))
         #expect(!backgroundRoute.contains("CursorPaster.performAutoSend"))
@@ -841,6 +846,46 @@ struct VoiceInkTests {
         #expect(!primitive.contains("AXUIElementPerformAction"))
         #expect(!primitive.contains("postToPid("))
         #expect(!primitive.contains("post(tap:"))
+    }
+
+    @Test func targetedTelegramHIDReturnMatchesProvenPublicSequence() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paster = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/CursorPaster.swift"
+            ),
+            encoding: .utf8
+        )
+        let primitiveStart = try #require(paster.range(
+            of: "    static func performTargetedTelegramHIDReturn("
+        ))
+        let primitiveEnd = try #require(paster.range(
+            of: "    // MARK: - Auto Send Keys",
+            range: primitiveStart.upperBound..<paster.endIndex
+        ))
+        let primitive = paster[
+            primitiveStart.lowerBound..<primitiveEnd.lowerBound
+        ]
+
+        #expect(primitive.contains(
+            "CGEventSource(stateID: .hidSystemState)"
+        ))
+        #expect(primitive.contains("modifiersBegan.type = .flagsChanged"))
+        #expect(primitive.contains("keyDown.postToPid(targetPID)"))
+        #expect(primitive.contains("keyUp.postToPid(targetPID)"))
+        #expect(primitive.contains("modifiersEnded.type = .flagsChanged"))
+        #expect(primitive.contains(
+            "CGEventSource.flagsState(.combinedSessionState)"
+        ))
+        #expect(primitive.contains("modifiersEnded.postToPid(targetPID)"))
+        #expect(primitive.contains("mach_absolute_time()"))
+        #expect(primitive.contains("guard canPost() else"))
+        #expect(!primitive.contains("post(tap:"))
+        #expect(!primitive.contains("await wait"))
+        #expect(!primitive.contains("SLEvent"))
+        #expect(!primitive.contains("beginTargetedInputSession"))
     }
 
     @MainActor

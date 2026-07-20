@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Carbon
+import Darwin
 import os
 
 class CursorPaster {
@@ -543,6 +544,76 @@ class CursorPaster {
             data1: 0,
             data2: 0
         )?.cgEvent
+    }
+
+    /// Submit one already-verified Telegram composer without activating Telegram.
+    /// Telegram ignores the ordinary two-event per-PID Return used by earlier
+    /// VoiceInk++ builds. A disposable Saved Messages probe established that its
+    /// native composer instead accepts the public CoreGraphics sequence used by
+    /// Computer Use: HID-system event source, modifier-state boundary, Return
+    /// down/up, then restoration of the live modifier state. This stays Telegram-
+    /// only and one-shot; the caller must revalidate exact chat identity immediately
+    /// before calling and must verify that the exact composer cleared afterward.
+    @MainActor
+    static func performTargetedTelegramHIDReturn(
+        targetPID: pid_t,
+        canPost: @MainActor () -> Bool
+    ) -> AutoSendResult {
+        guard AXIsProcessTrusted() else {
+            logger.error("Accessibility permission is required for targeted Telegram Return")
+            return .commandNotPosted
+        }
+        guard canPost() else {
+            logger.error("Refused targeted Telegram Return because the exact chat boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let modifiersBegan = CGEvent(source: source),
+              let keyDown = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: 0x24,
+                  keyDown: true
+              ),
+              let keyUp = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: 0x24,
+                  keyDown: false
+              ),
+              let modifiersEnded = CGEvent(source: source) else {
+            logger.error("Failed to create targeted Telegram Return sequence targetPid=\(targetPID, privacy: .public)")
+            return .commandNotPosted
+        }
+
+        modifiersBegan.type = .flagsChanged
+        modifiersBegan.flags = []
+        keyDown.flags = []
+        keyUp.flags = []
+        modifiersEnded.type = .flagsChanged
+        modifiersEnded.flags = CGEventSource.flagsState(.combinedSessionState)
+
+        modifiersBegan.timestamp = mach_absolute_time()
+        modifiersBegan.postToPid(targetPID)
+        guard canPost() else {
+            // The initial flags event has no Send semantics, but Telegram still needs
+            // its modifier state repaired if the exact-chat boundary changed before
+            // the sole irreversible Return-down.
+            modifiersEnded.timestamp = mach_absolute_time()
+            modifiersEnded.postToPid(targetPID)
+            logger.notice("Cancelled targeted Telegram Return after modifier setup because the exact chat boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+
+        keyDown.timestamp = mach_absolute_time()
+        keyDown.postToPid(targetPID)
+        // Once Return-down is posted, key-up and modifier restoration are mandatory
+        // cleanup. Never turn a later boundary change into a second Send attempt.
+        keyUp.timestamp = mach_absolute_time()
+        keyUp.postToPid(targetPID)
+        modifiersEnded.timestamp = mach_absolute_time()
+        modifiersEnded.postToPid(targetPID)
+
+        logger.info("Issued one targeted Telegram HID Return sequence targetPid=\(targetPID, privacy: .public) boundaryAfterAction=\(canPost(), privacy: .public)")
+        return .commandPosted
     }
 
     // MARK: - Auto Send Keys
