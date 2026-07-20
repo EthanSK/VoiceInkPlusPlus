@@ -854,8 +854,8 @@ final class FocusLockService: ObservableObject {
                 CursorPaster.endTargetedInputSession(pid: targetPID)
             }
             logger.info("Telegram retained activation-state session ended without AX focus restoration targetPid=\(targetPID, privacy: .public)")
-        case .frontmostUnavailable, .systemFocusUnavailable
-            where session.teardownRetryCount == 0:
+        case .frontmostUnavailable where session.teardownRetryCount == 0,
+             .systemFocusUnavailable where session.teardownRetryCount == 0:
             guard session.lifecycle.markTeardownRetryScheduled() else {
                 _ = session.lifecycle.waiveTeardown()
                 return
