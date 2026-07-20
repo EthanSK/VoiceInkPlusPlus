@@ -488,6 +488,13 @@ struct VoiceInkTests {
             build: "5551",
             chromium: "150.0.7871.124"
         ))
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.52143",
+            build: "5591",
+            chromium: "150.0.7871.124"
+        ))
         #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
             applicationBundleName: "ChatGPT.app",
             bundleIdentifier: "com.openai.codex",
@@ -515,6 +522,13 @@ struct VoiceInkTests {
             shortVersion: "26.715.31925",
             build: "5551",
             chromium: nil
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.52143",
+            build: "5592",
+            chromium: "150.0.7871.124"
         ))
         #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
             applicationBundleName: "ChatGPT.app",

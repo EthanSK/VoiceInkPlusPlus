@@ -394,12 +394,23 @@ final class FocusLockService: ObservableObject {
         build: "5307",
         chromium: "150.0.7871.115"
     )
-    private static let auditedChatGPTSubmitBuild = (
-        applicationBundleName: "ChatGPT.app",
-        shortVersion: "26.715.31925",
-        build: "5551",
-        chromium: "150.0.7871.124"
-    )
+    // Keep ChatGPT's independently audited release tuples local to the OpenAI
+    // composer policy. App-specific Telegram/Terminal/Claude work must never widen
+    // or replace this Codex/ChatGPT allowlist or alter its delivery mechanism.
+    private static let auditedChatGPTSubmitBuilds = [
+        (
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ),
+        // Build 5591 keeps the audited idle-Send/active-Stop component byte-for-byte
+        // identical to 5551. Pin the complete tuple so the next update fails closed.
+        (
+            shortVersion: "26.715.52143",
+            build: "5591",
+            chromium: "150.0.7871.124"
+        )
+    ]
 
     private init() {}
 
@@ -2144,10 +2155,12 @@ final class FocusLockService: ObservableObject {
             return shortVersion == auditedCodexSubmitBuild.shortVersion
                 && build == auditedCodexSubmitBuild.build
                 && chromium == auditedCodexSubmitBuild.chromium
-        case auditedChatGPTSubmitBuild.applicationBundleName:
-            return shortVersion == auditedChatGPTSubmitBuild.shortVersion
-                && build == auditedChatGPTSubmitBuild.build
-                && chromium == auditedChatGPTSubmitBuild.chromium
+        case "ChatGPT.app":
+            return auditedChatGPTSubmitBuilds.contains { candidate in
+                shortVersion == candidate.shortVersion
+                    && build == candidate.build
+                    && chromium == candidate.chromium
+            }
         default:
             return false
         }
