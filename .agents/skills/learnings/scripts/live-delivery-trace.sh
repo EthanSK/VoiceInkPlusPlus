@@ -205,6 +205,7 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'focuslock:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'deliver: enter'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured editable input'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured Telegram exact-input identity'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured recording-start'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Recording-start main-composer'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Promoted recording-start'*|\
@@ -213,6 +214,7 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Restored and verified focused input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background exact'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram retained'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram visual identity'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background internal focus'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact-input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Semantic Send'*|\

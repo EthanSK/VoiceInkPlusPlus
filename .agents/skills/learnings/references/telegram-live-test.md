@@ -12,15 +12,16 @@ Use this procedure to distinguish routing failures from Telegram exact-input res
    ```
 
 2. Ask Ethan to open **Saved Messages**, or use the `computer-use` skill when UI control is explicitly in scope. Before an agent takes focus, clicks, types, or presses a key, follow the `macos-heads-up-notification` skill and warn Ethan. Never improvise private Accessibility mutations when Computer Use refuses the target.
-3. Verify the selected search result and open chat are actually labelled **Saved Messages** before pressing Return or typing. Telegram search once selected an unrelated public channel; a matching-looking search result is not sufficient.
-4. Ethan must manually send this harmless seed message in Saved Messages:
+3. For the audited visual-identity fallback, verify VoiceInk++ is enabled in **System Settings → Privacy & Security → Screen & System Audio Recording**. Do not request or toggle permission during a recording. Missing permission must produce a fail-closed trace, never a weaker wrapper/geometry fallback.
+4. Verify the selected search result and open chat are actually labelled **Saved Messages** before pressing Return or typing. Telegram search once selected an unrelated public channel; a matching-looking search result is not sufficient.
+5. Ethan must manually send this harmless seed message in Saved Messages:
 
    ```text
    VoiceInk Telegram disposable context anchor
    ```
 
-   The seed supplies readable chat context. Do not claim a Telegram background test when the captured context is empty or unreadable.
-5. Focus the now-empty Saved Messages composer. Do not use a real conversation as a fallback test target.
+   The seed makes the disposable target unmistakable during manual verification. Current Telegram may still expose no readable AX chat anchors; in that case require `visualCaptureArmed=true` and later `visualIdentity=true`. Never accept an empty AX context without the audited visual proof.
+6. Focus the now-empty Saved Messages composer. Do not use a real conversation as a fallback test target.
 
 ## Foreground primary-stop scenario
 
@@ -41,6 +42,15 @@ Accept only a trace that proves all of the following:
 
 `Focused input restore BEGIN` identifies the foreground resolver. `paste: target restore failed; copied transcription to clipboard` means delivery failed before paste even if routing and Mode selection were correct.
 
+## True-background Next-while-recording scenario
+
+Reset to the empty Saved Messages composer, then:
+
+1. Press the primary button and dictate a harmless distinctive sentence.
+2. While still recording, press the **Next button once**. This stops into `recordingStart`.
+3. Immediately press Command-Tab away from Telegram and remain elsewhere until delivery resolves.
+4. Require `destination=recordingStart targetCaptured=true`, the same Telegram identity/insertion/Send proof listed below, a cleared composer, and unchanged foreground.
+
 ## True-background second-chance scenario
 
 Reset to the empty Saved Messages composer, then:
@@ -55,10 +65,13 @@ Require these acceptance lines (IDs and PIDs vary):
 ```text
 paste retarget: ... destination=focusedDuringTranscription targetCaptured=true
 pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTranscription
-Telegram retained exact input prepared with readable matching chat context
+Captured Telegram exact-input identity ... visualCaptureArmed=true
+Telegram retained exact input prepared with matching chat identity ... axAnchors=false visualIdentity=true
 paste: background text verified success=true
 paste: background auto-send finished success=true ... verification=verified
 ```
+
+If readable AX anchors are available, the preparation line may instead report `axAnchors=true visualIdentity=false`; one of those independent identity routes must be true. The visual route also requires no earlier missing-permission, unstable-capture, unaudited-tuple, or changed-digest rejection.
 
 Also require the final delivery line's `frontmostPid` to differ from Telegram's target PID, and verify Telegram received and sent the text without becoming frontmost. If Telegram stayed frontmost, `Focused input restore BEGIN` appeared, or target/frontmost PIDs match, only the foreground route was exercised.
 
@@ -68,9 +81,9 @@ Run this only when two disposable Telegram chats are available; never risk a rea
 
 1. Capture and second-chance-latch the Saved Messages composer as above.
 2. Before delivery, switch Telegram internally to the other disposable chat, then Command-Tab away.
-3. Require readable-context mismatch/rejection in the trace and **zero insertion or Send action in either unintended composer**.
+3. Require AX-anchor or visual-digest mismatch/rejection in the trace and **zero insertion or Send action in either unintended composer**.
 
-Expected failure evidence includes `Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat` or another explicit exact-chat resolution failure. A subsequent `paste: background text verified success=true` is a test failure. If a second disposable chat is unavailable, mark this scenario **not tested**.
+Expected failure evidence includes `Telegram retained-input preparation rejected a changed or unreadable visual chat identity`, `Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat`, `saved Telegram chat identity changed before insertion`, or another explicit exact-chat resolution failure. A subsequent `paste: background text verified success=true` or semantic Send line is a test failure. If a second disposable chat is unavailable, mark this scenario **not tested**.
 
 ## Read and close the trace
 

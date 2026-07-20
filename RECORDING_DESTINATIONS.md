@@ -195,6 +195,15 @@ For an exact saved input whose app is currently backgrounded, VoiceInk++:
    irreversible Send attempt, an unreadable/replaced wrapper is indeterminate telemetry: do not
    retry, claim success, or show a false failure.
 
+Telegram's parentless composer is a narrow identity exception, not an app-only fallback. Prefer
+readable matching AX chat anchors. For the exact audited Telegram 12.9 build 282526 layout only, when
+the selected chat is not exposed through AX, VoiceInk++ may retain a SHA-256 digest of a fixed
+selected-chat header crop and re-sample that same window immediately before insertion and Send. It
+still requires the exact editor/window structure, Telegram's own internal focus, and proof the app
+remained backgrounded. Screen Recording permission is required; no screenshot, OCR, title, message,
+or crop bytes are retained or logged. Missing permission, an app/layout update, blank/protected
+capture, or any digest mismatch fails closed.
+
 There is no accepted process-targeted Return exception. Ordinary PID posting was accepted by macOS
 while Electron ignored it. The later v2.0.233 audited-unlabelled `AXPress` returned success while the
 composer stayed unchanged, and the v2.0.234 SkyLight-authenticated Return produced

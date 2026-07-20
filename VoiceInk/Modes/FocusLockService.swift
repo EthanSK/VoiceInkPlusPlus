@@ -29,6 +29,11 @@ final class FocusLockService: ObservableObject {
         fileprivate let element: AXUIElement?
         fileprivate let window: AXUIElement?
         fileprivate let identity: ExactInputIdentity?
+        /// Telegram's App Store build publishes no readable chat header through
+        /// the parentless composer's AX window. Start one privacy-bounded visual
+        /// fingerprint at the input-decision boundary; delivery awaits it only if
+        /// AX context is empty and never treats wrapper/geometry as chat identity.
+        fileprivate let telegramVisualIdentityCapture: TelegramWindowVisualIdentityCapture?
         fileprivate let app: NSRunningApplication
         fileprivate let pid: pid_t
         let bundleIdentifier: String?
@@ -154,6 +159,10 @@ final class FocusLockService: ObservableObject {
         fileprivate enum Mode: Equatable {
             case preparedTargetedInput
             case directExactElement
+            /// Telegram hides its window subtree while backgrounded. This mode owns
+            /// one bounded targeted-input activation session solely to reveal the
+            /// retained editor; it never rewrites AX focus/main pointers or booleans.
+            case telegramRetainedExactInput
         }
 
         fileprivate let target: Target
@@ -166,6 +175,11 @@ final class FocusLockService: ObservableObject {
         fileprivate let previouslyFocusedElement: AXUIElement?
         fileprivate let previouslyFocusedElementWasAbsent: Bool
         fileprivate let focusBooleanSnapshot: BackgroundFocusBooleanSnapshot
+        fileprivate let telegramVisualIdentity: TelegramWindowVisualIdentity?
+        /// This flag is invalidated before each asynchronous visual sample and set
+        /// only after the exact captured window header re-matches. Synchronous AX
+        /// guards may rely on it only between that sample and one bounded action.
+        fileprivate var telegramVisualIdentityVerified = false
         fileprivate var lifecycle = BackgroundFocusSessionLifecycle()
         fileprivate var teardownRetryCount = 0
         let processIdentifier: pid_t
@@ -182,6 +196,7 @@ final class FocusLockService: ObservableObject {
             previouslyFocusedElement: AXUIElement?,
             previouslyFocusedElementWasAbsent: Bool,
             focusBooleanSnapshot: BackgroundFocusBooleanSnapshot,
+            telegramVisualIdentity: TelegramWindowVisualIdentity? = nil,
             processIdentifier: pid_t,
             bundleIdentifier: String?
         ) {
@@ -195,6 +210,7 @@ final class FocusLockService: ObservableObject {
             self.previouslyFocusedElement = previouslyFocusedElement
             self.previouslyFocusedElementWasAbsent = previouslyFocusedElementWasAbsent
             self.focusBooleanSnapshot = focusBooleanSnapshot
+            self.telegramVisualIdentity = telegramVisualIdentity
             self.processIdentifier = processIdentifier
             self.bundleIdentifier = bundleIdentifier
         }
@@ -205,10 +221,26 @@ final class FocusLockService: ObservableObject {
         var usesPreparedTargetedInput: Bool {
             mode == .preparedTargetedInput
         }
+        var prefersAccessibilityTextInsertion: Bool {
+            mode == .directExactElement || mode == .telegramRetainedExactInput
+        }
+        var allowsTargetedUnicodeFallback: Bool {
+            // A visually identified parentless Telegram composer receives exactly
+            // one AXSelectedText mutation. Multi-chunk targeted Unicode would need
+            // asynchronous screenshot revalidation at every chunk and is therefore
+            // deliberately unavailable for this stricter path.
+            mode == .telegramRetainedExactInput
+                && telegramVisualIdentity == nil
+        }
+        var requiresTelegramVisualRevalidation: Bool {
+            mode == .telegramRetainedExactInput
+                && telegramVisualIdentity != nil
+        }
         var diagnosticMode: String {
             switch mode {
             case .preparedTargetedInput: "preparedTargetedInput"
             case .directExactElement: "directExactElement"
+            case .telegramRetainedExactInput: "telegramRetainedExactInput"
             }
         }
         @MainActor
@@ -382,6 +414,9 @@ final class FocusLockService: ObservableObject {
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
     private static let semanticSendNodeBudget = 1_600
     private static let semanticSendSearchSeconds = 0.35
+    private static let telegramBundleIdentifiers: Set<String> = [
+        "ru.keepcoder.Telegram"
+    ]
     // The separately installed Codex and ChatGPT apps share `com.openai.codex` but
     // have different bundle paths and release trains. Offline inspection of each
     // exact app.asar proves its idle Send control is the sole enabled unlabelled
@@ -470,13 +505,33 @@ final class FocusLockService: ObservableObject {
         // indicator without changing any per-session locked destination semantics.
         ActiveWindowService.shared.updateCurrentApplicationForDisplay(app)
 
-        let owningWindow = isExactEditableInput ? owningWindow(for: element) : nil
+        // Telegram's App Store client can expose the real system-focused composer as
+        // a parentless AXTextArea: neither AXWindow nor AXParent reaches the visible
+        // standard window. That is still not permission to save only an app. While
+        // Telegram itself is frontmost, promote the editor to exactly one app-owned
+        // window whose frame contains it; ambiguity remains a visible capture failure.
+        let owningWindow = isExactEditableInput
+            ? captureWindow(
+                for: element,
+                pid: pid,
+                bundleIdentifier: app.bundleIdentifier
+            )
+            : nil
         let identity = owningWindow.flatMap { exactInputIdentity(for: element, in: $0) }
+        let telegramVisualIdentityCapture = identity?.contextAnchors.isEmpty == true
+            ? owningWindow.flatMap {
+                makeTelegramVisualIdentityCapture(app: app, window: $0)
+            }
+            : nil
+        if Self.isTelegram(bundleIdentifier: app.bundleIdentifier) {
+            logger.info("Captured Telegram exact-input identity readable=\(identity != nil, privacy: .public) contextAnchors=\(identity?.contextAnchors.count ?? 0, privacy: .public) windowReadable=\(owningWindow != nil, privacy: .public) visualCaptureArmed=\(telegramVisualIdentityCapture != nil, privacy: .public)")
+        }
 
         return Target(
             element: isExactEditableInput ? element : nil,
             window: owningWindow,
             identity: identity,
+            telegramVisualIdentityCapture: telegramVisualIdentityCapture,
             app: app,
             pid: pid,
             bundleIdentifier: app.bundleIdentifier,
@@ -531,12 +586,21 @@ final class FocusLockService: ObservableObject {
             logger.error("Background exact-input preparation could not read the frontmost application pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return nil
         }
-        guard let element = resolvedExactElement(for: target) else {
-            logger.error("Background exact-input preparation could not resolve the saved element pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-            return nil
-        }
-        guard let window = liveWindow(for: target, resolvedElement: element) else {
-            logger.error("Background exact-input preparation could not resolve the saved window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+        guard let element = resolvedExactElement(for: target),
+              let window = liveWindow(for: target, resolvedElement: element) else {
+            // Telegram removes the saved window's children from its background AX
+            // tree. Strict resolution therefore cannot run until one bounded internal
+            // activation session exists. Keep this exception Telegram-only and retain
+            // the capture-time editor/window only if readable chat context and the
+            // app's own internal focus prove that exact chat after settlement.
+            if let telegramSession = await prepareRetainedTelegramBackgroundDelivery(
+                to: target,
+                keyboardFocus: keyboardFocus,
+                frontmostPID: frontmostPID
+            ) {
+                return telegramSession
+            }
+            logger.error("Background exact-input preparation could not resolve the saved element/window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return nil
         }
 
@@ -556,7 +620,7 @@ final class FocusLockService: ObservableObject {
         let previouslyFocusedElement: AXUIElement?
         let previouslyFocusedElementWasAbsent: Bool
         switch mode {
-        case .directExactElement:
+        case .directExactElement, .telegramRetainedExactInput:
             previouslyFocusedWindow = nil
             previouslyFocusedElement = nil
             previouslyFocusedElementWasAbsent = false
@@ -641,7 +705,7 @@ final class FocusLockService: ObservableObject {
         )
 
         switch mode {
-        case .directExactElement:
+        case .directExactElement, .telegramRetainedExactInput:
             guard backgroundSessionRemainsPrepared(session) else { return nil }
         case .preparedTargetedInput:
             guard await Self.runBackgroundPreparationWithOwnedFailureCleanup(
@@ -651,6 +715,86 @@ final class FocusLockService: ObservableObject {
         }
 
         logger.info("Non-activating exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) mode=\(String(describing: mode), privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        return session
+    }
+
+    /// Telegram retains a valid editor wrapper but hides the window subtree as soon as
+    /// it becomes backgrounded. Open exactly one internal activation-state session
+    /// before resolving that hidden tree, without writing any AX focus/main attribute.
+    /// The retained wrapper is accepted only when Telegram itself reports the same
+    /// window/editor internally focused and readable capture-time chat anchors still
+    /// match. Internal focus or geometry alone can identify the wrong reused chat.
+    private func prepareRetainedTelegramBackgroundDelivery(
+        to target: Target,
+        keyboardFocus: (element: AXUIElement, pid: pid_t),
+        frontmostPID: pid_t
+    ) async -> BackgroundDeliverySession? {
+        guard Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
+              let element = target.element,
+              let window = target.window,
+              let identity = target.identity,
+              keyboardFocus.pid != target.pid,
+              frontmostPID != target.pid else {
+            return nil
+        }
+
+        let visualIdentity: TelegramWindowVisualIdentity?
+        if identity.contextAnchors.isEmpty {
+            guard let capture = target.telegramVisualIdentityCapture,
+                  let capturedIdentity = await capture.value(),
+                  capturedIdentity.processIdentifier == target.pid,
+                  SkyLightTargetedMouseEventPost.windowID(for: window)
+                    == capturedIdentity.windowID else {
+                logger.notice("Telegram retained-input preparation has neither readable AX chat anchors nor a stable audited visual identity pid=\(target.pid, privacy: .public)")
+                return nil
+            }
+            visualIdentity = capturedIdentity
+        } else {
+            visualIdentity = nil
+        }
+
+        let session = BackgroundDeliverySession(
+            target: target,
+            element: element,
+            window: window,
+            app: target.app,
+            mode: .telegramRetainedExactInput,
+            frontmostPIDAtPreparation: frontmostPID,
+            previouslyFocusedWindow: nil,
+            previouslyFocusedElement: nil,
+            previouslyFocusedElementWasAbsent: false,
+            focusBooleanSnapshot: BackgroundFocusBooleanSnapshot { _ in nil },
+            telegramVisualIdentity: visualIdentity,
+            processIdentifier: target.pid,
+            bundleIdentifier: target.bundleIdentifier
+        )
+        let targetPID = target.pid
+        guard session.lifecycle.begin(open: {
+            CursorPaster.beginTargetedInputSession(pid: targetPID)
+        }) else {
+            logger.error("Telegram retained-input preparation could not open its bounded activation-state session pid=\(target.pid, privacy: .public)")
+            return nil
+        }
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        if visualIdentity != nil,
+           !(await revalidateTelegramVisualIdentityIfRequired(for: session)) {
+            logger.notice("Telegram retained-input preparation rejected a changed or unreadable visual chat identity pid=\(target.pid, privacy: .public)")
+            finishRetainedTelegramBackgroundDelivery(session)
+            return nil
+        }
+        guard telegramDeliveryBoundaryMatches(session) else {
+            let currentAnchorCount = contextAnchors(
+                in: window,
+                region: identity.contextRegion,
+                excluding: element
+            ).count
+            logger.notice("Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat pid=\(target.pid, privacy: .public) capturedAnchors=\(identity.contextAnchors.count, privacy: .public) currentAnchors=\(currentAnchorCount, privacy: .public) visualIdentity=\(visualIdentity != nil, privacy: .public)")
+            finishRetainedTelegramBackgroundDelivery(session)
+            return nil
+        }
+
+        logger.notice("Telegram retained exact input prepared with matching chat identity pid=\(target.pid, privacy: .public) axAnchors=\(!identity.contextAnchors.isEmpty, privacy: .public) visualIdentity=\(visualIdentity != nil, privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) frontmostPid=\(frontmostPID, privacy: .public)")
         return session
     }
 
@@ -695,9 +839,48 @@ final class FocusLockService: ObservableObject {
         return observed
     }
 
-    func finishBackgroundDelivery(_ session: BackgroundDeliverySession) {
-        guard session.mode == .preparedTargetedInput,
+    private func finishRetainedTelegramBackgroundDelivery(
+        _ session: BackgroundDeliverySession
+    ) {
+        guard session.mode == .telegramRetainedExactInput,
               session.lifecycle.requiresTeardown else {
+            return
+        }
+        let boundary = preparedTargetFocusBoundaryStatus(session)
+        switch boundary {
+        case .safe:
+            let targetPID = session.processIdentifier
+            _ = session.lifecycle.finish {
+                CursorPaster.endTargetedInputSession(pid: targetPID)
+            }
+            logger.info("Telegram retained activation-state session ended without AX focus restoration targetPid=\(targetPID, privacy: .public)")
+        case .frontmostUnavailable, .systemFocusUnavailable
+            where session.teardownRetryCount == 0:
+            guard session.lifecycle.markTeardownRetryScheduled() else {
+                _ = session.lifecycle.waiveTeardown()
+                return
+            }
+            session.teardownRetryCount += 1
+            Thread.sleep(forTimeInterval: 0.05)
+            finishRetainedTelegramBackgroundDelivery(session)
+        case .targetOwnsSystemFocus, .targetTerminated,
+             .frontmostUnavailable, .systemFocusUnavailable:
+            // Ending a synthetic session after Telegram genuinely takes system focus
+            // can deactivate or fight the user's real workspace. This mode made no AX
+            // mutations to restore, so terminate ownership explicitly without another
+            // event when the no-focus-theft boundary is no longer provable.
+            _ = session.lifecycle.waiveTeardown()
+            logger.notice("Telegram retained activation-state teardown waived without AX mutation targetPid=\(session.processIdentifier, privacy: .public) boundary=\(String(describing: boundary), privacy: .public)")
+        }
+    }
+
+    func finishBackgroundDelivery(_ session: BackgroundDeliverySession) {
+        guard session.lifecycle.requiresTeardown else { return }
+        if session.mode == .telegramRetainedExactInput {
+            finishRetainedTelegramBackgroundDelivery(session)
+            return
+        }
+        guard session.mode == .preparedTargetedInput else {
             return
         }
         // The synthetic active state belongs only to the one bounded background
@@ -957,9 +1140,11 @@ final class FocusLockService: ObservableObject {
         }
         guard backgroundFocusBoundaryIsSafeAfterSubmission(session),
               let resolved = resolvedExactElement(for: session.target),
-              owningWindow(for: resolved).map({
-                CFEqual($0, session.window)
-              }) == true,
+              exactElement(
+                  resolved,
+                  belongsTo: session.window,
+                  bundleIdentifier: session.bundleIdentifier
+              ),
               let internallyFocused = elementAttribute(
                 kAXFocusedUIElementAttribute,
                 from: AXUIElementCreateApplication(
@@ -1064,14 +1249,16 @@ final class FocusLockService: ObservableObject {
         }
     }
 
-    /// Same-app/different-input delivery is element-addressed. Never replace a generic
-    /// AXValue: rich editors can lose formatting. If AXSelectedText is unavailable,
-    /// fail closed instead of internally focusing the saved input.
+    /// Same-app/different-input delivery and Telegram's retained exact editor are
+    /// element-addressed. Never replace a generic AXValue: rich editors can lose
+    /// formatting. Telegram may use one bounded Unicode fallback only when this
+    /// attribute is proven unavailable before mutation; a setter error is verified
+    /// without retry because the app may already have accepted the text.
     func insertTextUsingAccessibility(
         _ text: String,
         for session: BackgroundDeliverySession
     ) -> BackgroundTextInsertionResult {
-        guard session.mode == .directExactElement,
+        guard session.prefersAccessibilityTextInsertion,
               !text.isEmpty,
               backgroundSessionRemainsPrepared(session) else {
             return .unavailable
@@ -1107,6 +1294,127 @@ final class FocusLockService: ObservableObject {
         backgroundSessionRemainsPrepared(session)
     }
 
+    static func isTelegram(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return telegramBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// Telegram can reuse one editor wrapper after a chat switch. Wrapper identity,
+    /// geometry, and internal focus therefore never identify the selected chat by
+    /// themselves. Every Telegram mutation/action requires this full boundary:
+    /// retained editor/window, unchanged structure, Telegram's own internal focus,
+    /// either readable matching AX chat anchors or a freshly matched audited visual
+    /// header digest, and proof it stayed backgrounded.
+    private func telegramDeliveryBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard telegramRetainedAXBoundaryMatches(session),
+              let identity = session.target.identity else {
+            return false
+        }
+
+        if identity.contextAnchors.isEmpty {
+            return session.telegramVisualIdentity != nil
+                && session.telegramVisualIdentityVerified
+        }
+
+        let currentContext = contextAnchors(
+            in: session.window,
+            region: identity.contextRegion,
+            excluding: session.element
+        )
+        return Self.telegramContextFingerprintMatches(
+            captured: identity.contextAnchors,
+            current: currentContext
+        )
+    }
+
+    /// Synchronous, data-free half of Telegram's identity boundary. The visual
+    /// digest is sampled asynchronously only at preparation and immediately before
+    /// each irreversible mutation/action; between those points every cheap guard
+    /// still proves the exact retained wrapper, window, structure, internal focus,
+    /// and unchanged user foreground.
+    private func telegramRetainedAXBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard session.mode == .telegramRetainedExactInput,
+              Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
+              backgroundFocusBoundaryIsSafeAfterSubmission(session),
+              let identity = session.target.identity,
+              exactStructureMatches(
+                  session.element,
+                  identity: identity,
+                  in: session.window
+              ) else {
+            return false
+        }
+        let appElement = AXUIElementCreateApplication(session.processIdentifier)
+        let internalWindowMatches = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ).map { CFEqual($0, session.window) } == true
+        let internalElementMatches = elementAttribute(
+            kAXFocusedUIElementAttribute,
+            from: appElement
+        ).map { CFEqual($0, session.element) } == true
+        return internalWindowMatches && internalElementMatches
+    }
+
+    /// Re-capture the audited Telegram header immediately before one irreversible
+    /// operation. The old proof is invalidated before suspension so no synchronous
+    /// boundary can accidentally authorize a mutation using a stale digest match.
+    func revalidateTelegramVisualIdentityIfRequired(
+        for session: BackgroundDeliverySession
+    ) async -> Bool {
+        guard session.requiresTelegramVisualRevalidation else {
+            return backgroundSessionRemainsPrepared(session)
+        }
+        guard let visualIdentity = session.telegramVisualIdentity else {
+            return false
+        }
+        session.telegramVisualIdentityVerified = false
+        guard telegramRetainedAXBoundaryMatches(session) else { return false }
+        let visualMatches = await TelegramWindowVisualIdentityService
+            .matchesCurrentWindow(visualIdentity)
+        guard visualMatches,
+              telegramRetainedAXBoundaryMatches(session),
+              SkyLightTargetedMouseEventPost.windowID(for: session.window)
+                == visualIdentity.windowID else {
+            return false
+        }
+        session.telegramVisualIdentityVerified = true
+        return true
+    }
+
+    static func telegramRetainedInputAllowed(
+        capturedContextAnchors: [String],
+        currentContextAnchors: [String],
+        internalFocusMatches: Bool,
+        structureMatches: Bool
+    ) -> Bool {
+        internalFocusMatches
+            && structureMatches
+            && telegramContextFingerprintMatches(
+                captured: capturedContextAnchors,
+                current: currentContextAnchors
+            )
+    }
+
+    static func telegramContextFingerprintMatches(
+        captured: [String],
+        current: [String]
+    ) -> Bool {
+        guard !captured.isEmpty, !current.isEmpty else { return false }
+        let currentSet = Set(current)
+        let matchCount = captured.reduce(into: 0) { count, anchor in
+            if currentSet.contains(anchor) { count += 1 }
+        }
+        let requiredMatches = captured.count <= 3
+            ? captured.count
+            : max(3, Int(ceil(Double(captured.count) * 0.75)))
+        return matchCount >= requiredMatches
+    }
+
     /// Cheap per-chunk/readback guard. Full document/task re-resolution happens before,
     /// at bounded checkpoints, and after targeted typing; every individual 20-unit
     /// chunk still proves the retained wrapper, window, internal focus, and system-focus
@@ -1124,21 +1432,32 @@ final class FocusLockService: ObservableObject {
                       )
                   )
               }) == true,
-              owningWindow(for: session.element).map({
-                  CFEqual($0, session.window)
-              }) == true else {
+              exactElement(
+                  session.element,
+                  belongsTo: session.window,
+                  bundleIdentifier: session.bundleIdentifier
+              ) else {
             return false
         }
-        guard session.mode == .preparedTargetedInput else { return true }
-        let appElement = AXUIElementCreateApplication(session.processIdentifier)
-        return elementAttribute(kAXFocusedWindowAttribute, from: appElement).map({
-            CFEqual($0, session.window)
-        }) == true && elementAttribute(
-            kAXFocusedUIElementAttribute,
-            from: appElement
-        ).map({
-            CFEqual($0, session.element)
-        }) == true
+        switch session.mode {
+        case .directExactElement:
+            return true
+        case .preparedTargetedInput, .telegramRetainedExactInput:
+            let appElement = AXUIElementCreateApplication(
+                session.processIdentifier
+            )
+            return elementAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+            ).map({
+                CFEqual($0, session.window)
+            }) == true && elementAttribute(
+                kAXFocusedUIElementAttribute,
+                from: appElement
+            ).map({
+                CFEqual($0, session.element)
+            }) == true
+        }
     }
 
     func pressNearbySubmitButton(
@@ -1153,7 +1472,7 @@ final class FocusLockService: ObservableObject {
             window: session.window,
             app: session.app,
             pid: session.processIdentifier,
-            preserveSystemFocusAcrossAction: session.mode == .directExactElement,
+            preserveSystemFocusAcrossAction: session.mode != .preparedTargetedInput,
             allowsTargetedBackgroundClick: session.mode == .preparedTargetedInput,
             waitForUnavailableCandidate: true,
             traversalPreflight: { [weak self] in
@@ -1161,6 +1480,12 @@ final class FocusLockService: ObservableObject {
             },
             actionPreflight: { [weak self] in
                 self?.backgroundSessionRemainsPrepared(session) == true
+            },
+            irreversibleActionPreflight: { [weak self] in
+                guard let self else { return false }
+                return await self.revalidateTelegramVisualIdentityIfRequired(
+                    for: session
+                )
             },
             postActionFocusGuard: { [weak self] in
                 self?.backgroundFocusBoundaryIsSafeAfterSubmission(session) == true
@@ -1231,9 +1556,11 @@ final class FocusLockService: ObservableObject {
               let focusedInput = systemFocusedElement(),
               focusedInput.pid == target.pid,
               CFEqual(focusedInput.element, retainedElement),
-              owningWindow(for: retainedElement).map({
-                  CFEqual($0, retainedWindow)
-              }) == true else {
+              exactElement(
+                  retainedElement,
+                  belongsTo: retainedWindow,
+                  bundleIdentifier: target.bundleIdentifier
+              ) else {
             return false
         }
         return true
@@ -1252,7 +1579,11 @@ final class FocusLockService: ObservableObject {
         let role = stringAttribute(kAXRoleAttribute, from: focused.element)
         let subrole = stringAttribute(kAXSubroleAttribute, from: focused.element)
         guard isEditableInput(role: role, subrole: subrole),
-              let window = owningWindow(for: focused.element),
+              let window = captureWindow(
+                  for: focused.element,
+                  pid: target.pid,
+                  bundleIdentifier: target.bundleIdentifier
+              ),
               let identity = exactInputIdentity(for: focused.element, in: window) else {
             return nil
         }
@@ -1260,6 +1591,12 @@ final class FocusLockService: ObservableObject {
             element: focused.element,
             window: window,
             identity: identity,
+            telegramVisualIdentityCapture: identity.contextAnchors.isEmpty
+                ? makeTelegramVisualIdentityCapture(
+                    app: target.app,
+                    window: window
+                )
+                : nil,
             app: target.app,
             pid: target.pid,
             bundleIdentifier: target.bundleIdentifier,
@@ -1308,6 +1645,7 @@ final class FocusLockService: ObservableObject {
             actionPreflight: { [weak self] in
                 self?.targetOwnsSystemKeyboardFocus(target) == true
             },
+            irreversibleActionPreflight: nil,
             postActionFocusGuard: { true }
         )
     }
@@ -1322,6 +1660,7 @@ final class FocusLockService: ObservableObject {
         waitForUnavailableCandidate: Bool,
         traversalPreflight: () -> Bool,
         actionPreflight: () -> Bool,
+        irreversibleActionPreflight: (() async -> Bool)?,
         postActionFocusGuard: () -> Bool
     ) async -> NearbySubmitButtonResult {
         guard !app.isTerminated, traversalPreflight() else { return .unavailable }
@@ -1360,6 +1699,19 @@ final class FocusLockService: ObservableObject {
         guard let candidate else { return .unavailable }
         guard actionPreflight() else { return .focusLostBeforeAction }
         guard !Task.isCancelled else { return .refusedAfterCandidate }
+
+        // Telegram's AX tree has no chat header, so a candidate search alone cannot
+        // prove which reused chat the retained composer currently belongs to. Recheck
+        // its capture-time visual digest before the final topology lookup. OpenAI and
+        // ordinary AX-anchored surfaces take the no-op branch.
+        if let irreversibleActionPreflight,
+           !(await irreversibleActionPreflight()) {
+            logger.notice("Semantic Send visual identity changed before action; no action issued pid=\(pid, privacy: .public)")
+            return .focusLostBeforeAction
+        }
+        guard actionPreflight(), !Task.isCancelled else {
+            return .focusLostBeforeAction
+        }
 
         // The first traversal discovers a candidate; the second is the irreversible
         // action-time topology proof. Re-run the entire nearest-composer lookup and
@@ -2053,7 +2405,7 @@ final class FocusLockService: ObservableObject {
             return false
         }
         switch session.mode {
-        case .preparedTargetedInput:
+        case .preparedTargetedInput, .telegramRetainedExactInput:
             return NSWorkspace.shared.frontmostApplication?.processIdentifier
                     != session.processIdentifier
                 && systemFocus.pid != session.processIdentifier
@@ -2068,6 +2420,9 @@ final class FocusLockService: ObservableObject {
     private func backgroundSessionRemainsPrepared(
         _ session: BackgroundDeliverySession
     ) -> Bool {
+        if session.mode == .telegramRetainedExactInput {
+            return telegramDeliveryBoundaryMatches(session)
+        }
         guard backgroundDeliveryFastBoundaryMatches(session),
               resolvedExactElement(for: session.target).map({
                   CFEqual($0, session.element)
@@ -2298,6 +2653,39 @@ final class FocusLockService: ObservableObject {
         )
     }
 
+    /// Telegram's current parentless composer has no AX chat anchors. Start a
+    /// capture-time header fingerprint only for the exact audited app tuple and AX
+    /// window ID. The capture runs off the decision path, stores only a digest, and
+    /// later fails closed if Screen Recording is unavailable or the header changes.
+    private func makeTelegramVisualIdentityCapture(
+        app: NSRunningApplication,
+        window: AXUIElement
+    ) -> TelegramWindowVisualIdentityCapture? {
+        guard Self.isTelegram(bundleIdentifier: app.bundleIdentifier) else {
+            return nil
+        }
+        let snapshot = Self.applicationIdentitySnapshot(for: app)
+        let tuple = TelegramWindowVisualIdentity.ApplicationTuple(
+            applicationBundleName: snapshot.applicationBundleName,
+            bundleIdentifier: snapshot.bundleIdentifier,
+            shortVersion: snapshot.shortVersion,
+            build: snapshot.build
+        )
+        guard TelegramWindowVisualIdentityService.isAudited(tuple) else {
+            logger.notice("Telegram visual identity capture refused unaudited app tuple version=\(snapshot.shortVersion, privacy: .public) build=\(snapshot.build, privacy: .public)")
+            return nil
+        }
+        guard let windowID = SkyLightTargetedMouseEventPost.windowID(for: window) else {
+            logger.notice("Telegram visual identity capture could not resolve the exact AX window ID pid=\(app.processIdentifier, privacy: .public)")
+            return nil
+        }
+        return TelegramWindowVisualIdentityCapture(
+            applicationTuple: tuple,
+            processIdentifier: app.processIdentifier,
+            windowID: windowID
+        )
+    }
+
     private func systemFocusedElement() -> (element: AXUIElement, pid: pid_t)? {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedValue: CFTypeRef?
@@ -2352,15 +2740,28 @@ final class FocusLockService: ObservableObject {
     private func resolvedExactElement(for target: Target) -> AXUIElement? {
         let savedWindow = liveWindow(for: target, resolvedElement: nil)
         let directContextMatches = target.identity.map { identity in
+            if Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
+               identity.contextAnchors.isEmpty {
+                return false
+            }
             guard !identity.contextAnchors.isEmpty else { return true }
             guard let savedWindow else { return false }
+            let currentContext = contextAnchors(
+                in: savedWindow,
+                region: identity.contextRegion,
+                excluding: Self.isTelegram(
+                    bundleIdentifier: target.bundleIdentifier
+                ) ? target.element : nil
+            )
+            if Self.isTelegram(bundleIdentifier: target.bundleIdentifier) {
+                return Self.telegramContextFingerprintMatches(
+                    captured: identity.contextAnchors,
+                    current: currentContext
+                )
+            }
             return Self.contextFingerprintMatches(
                 captured: identity.contextAnchors,
-                current: contextAnchors(
-                    in: savedWindow,
-                    region: identity.contextRegion,
-                    excluding: nil
-                )
+                current: currentContext
             )
         } ?? true
 
@@ -2368,11 +2769,22 @@ final class FocusLockService: ObservableObject {
            directContextMatches {
             let role = stringAttribute(kAXRoleAttribute, from: element)
             let subrole = stringAttribute(kAXSubroleAttribute, from: element)
-            let elementWindow = owningWindow(for: element)
             let belongsToSavedWindow = savedWindow.map { savedWindow in
-                elementWindow.map { CFEqual($0, savedWindow) } == true
+                exactElement(
+                    element,
+                    belongsTo: savedWindow,
+                    bundleIdentifier: target.bundleIdentifier
+                )
             } ?? true
+            let telegramStructureMatches = !Self.isTelegram(
+                bundleIdentifier: target.bundleIdentifier
+            ) || target.identity.flatMap { identity in
+                savedWindow.map {
+                    exactStructureMatches(element, identity: identity, in: $0)
+                }
+            } == true
             if belongsToSavedWindow,
+               telegramStructureMatches,
                isEditableInput(role: role, subrole: subrole) {
                 return element
             }
@@ -2380,7 +2792,11 @@ final class FocusLockService: ObservableObject {
 
         guard let identity = target.identity,
               let window = savedWindow,
-              exactInputContextMatches(identity, in: window) else {
+              exactInputContextMatches(
+                  identity,
+                  in: window,
+                  bundleIdentifier: target.bundleIdentifier
+              ) else {
             return nil
         }
 
@@ -2440,6 +2856,40 @@ final class FocusLockService: ObservableObject {
         return labelMatches.count == 1 ? labelMatches[0] : nil
     }
 
+    private func exactStructureMatches(
+        _ element: AXUIElement,
+        identity: ExactInputIdentity,
+        in window: AXUIElement
+    ) -> Bool {
+        guard stringAttribute(kAXRoleAttribute, from: element) == identity.role,
+              stringAttribute(kAXSubroleAttribute, from: element)
+                == identity.subrole,
+              exactElement(
+                  element,
+                  belongsTo: window,
+                  bundleIdentifier: nil
+              ),
+              ancestorPath(from: element, through: window)
+                == identity.ancestorPath,
+              isEditableInput(
+                  role: identity.role,
+                  subrole: identity.subrole
+              ) else {
+            return false
+        }
+        if let identifier = identity.identifier,
+           nonEmptyStringAttribute(kAXIdentifierAttribute, from: element)
+                != identifier {
+            return false
+        }
+        if let domIdentifier = identity.domIdentifier,
+           nonEmptyStringAttribute("AXDOMIdentifier", from: element)
+                != domIdentifier {
+            return false
+        }
+        return true
+    }
+
     private func liveWindow(
         for target: Target,
         resolvedElement: AXUIElement?
@@ -2482,9 +2932,13 @@ final class FocusLockService: ObservableObject {
 
     private func exactInputContextMatches(
         _ identity: ExactInputIdentity,
-        in window: AXUIElement
+        in window: AXUIElement,
+        bundleIdentifier: String?
     ) -> Bool {
         if identity.contextAnchors.isEmpty {
+            if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
+                return false
+            }
             // Stable AX/DOM identifiers can safely re-resolve without document text.
             // With neither identifiers nor context, an existing exact AX wrapper is
             // still usable, but frame/path-only stale-wrapper recovery is unsafe: a
@@ -2492,13 +2946,20 @@ final class FocusLockService: ObservableObject {
             // place.
             return identity.identifier != nil || identity.domIdentifier != nil
         }
+        let currentContext = contextAnchors(
+            in: window,
+            region: identity.contextRegion,
+            excluding: nil
+        )
+        if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
+            return Self.telegramContextFingerprintMatches(
+                captured: identity.contextAnchors,
+                current: currentContext
+            )
+        }
         return Self.contextFingerprintMatches(
             captured: identity.contextAnchors,
-            current: contextAnchors(
-                in: window,
-                region: identity.contextRegion,
-                excluding: nil
-            )
+            current: currentContext
         )
     }
 
@@ -2589,6 +3050,100 @@ final class FocusLockService: ObservableObject {
             current = elementAttribute(kAXParentAttribute, from: candidate)
         }
         return nil
+    }
+
+    /// Resolve a capture-time window without weakening exact-input ownership. Most
+    /// apps expose AXWindow/AXParent directly. Telegram may expose a standalone
+    /// composer, so only its already-frontmost process may use one unique enclosing
+    /// AXWindow from that same PID. This fallback never runs during later delivery.
+    private func captureWindow(
+        for element: AXUIElement,
+        pid: pid_t,
+        bundleIdentifier: String?
+    ) -> AXUIElement? {
+        if let window = owningWindow(for: element) {
+            return window
+        }
+        guard Self.isTelegram(bundleIdentifier: bundleIdentifier),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let elementFrame = frame(of: element) else {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        let windows = elementArrayAttribute(kAXWindowsAttribute, from: appElement)
+            .filter {
+                stringAttribute(kAXRoleAttribute, from: $0) == kAXWindowRole
+            }
+        let windowFrames = windows.map { frame(of: $0) }
+        guard let selectedIndex = Self.uniqueContainingWindowIndex(
+            elementFrame: elementFrame,
+            windowFrames: windowFrames
+        ) else {
+            logger.notice("Telegram capture could not identify one enclosing app window pid=\(pid, privacy: .public) windows=\(windows.count, privacy: .public) enclosing=\(windowFrames.compactMap { $0 }.filter { $0.insetBy(dx: -2, dy: -2).contains(elementFrame) }.count, privacy: .public)")
+            return nil
+        }
+        let selected = windows[selectedIndex]
+        var selectedPID: pid_t = 0
+        guard AXUIElementGetPid(selected, &selectedPID) == .success,
+              selectedPID == pid else {
+            return nil
+        }
+        let navigationChildren = elementArrayAttribute(
+            "AXChildrenInNavigationOrder",
+            from: selected
+        ).count
+        let children = elementArrayAttribute(
+            kAXChildrenAttribute,
+            from: selected
+        ).count
+        logger.notice("Telegram capture selected unique enclosing app window pid=\(pid, privacy: .public) windowHash=\(CFHash(selected), privacy: .public) children=\(children, privacy: .public) navigationChildren=\(navigationChildren, privacy: .public)")
+        return selected
+    }
+
+    static func uniqueContainingWindowIndex(
+        elementFrame: CGRect,
+        windowFrames: [CGRect?]
+    ) -> Int? {
+        let matches = windowFrames.indices.filter { index in
+            windowFrames[index]?.insetBy(dx: -2, dy: -2)
+                .contains(elementFrame) == true
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// Telegram's parentless composer cannot prove its window through AXParent. Its
+    /// replay-safe substitute is stricter than geometry alone: the saved window must
+    /// remain the sole same-PID AXWindow enclosing the exact retained editor. Chat
+    /// context and Telegram-internal focus are checked separately before every action.
+    private func exactElement(
+        _ element: AXUIElement,
+        belongsTo window: AXUIElement,
+        bundleIdentifier: String?
+    ) -> Bool {
+        if owningWindow(for: element).map({ CFEqual($0, window) }) == true {
+            return true
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              Self.isTelegram(
+                  bundleIdentifier: bundleIdentifier
+                      ?? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+              ),
+              let elementFrame = frame(of: element) else {
+            return false
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        let windows = elementArrayAttribute(kAXWindowsAttribute, from: appElement)
+            .filter {
+                stringAttribute(kAXRoleAttribute, from: $0) == kAXWindowRole
+            }
+        guard let selectedIndex = Self.uniqueContainingWindowIndex(
+            elementFrame: elementFrame,
+            windowFrames: windows.map { frame(of: $0) }
+        ) else {
+            return false
+        }
+        return CFEqual(windows[selectedIndex], window)
     }
 
     private func descendants(of root: AXUIElement, maximumDepth: Int = 40) -> [AXUIElement] {

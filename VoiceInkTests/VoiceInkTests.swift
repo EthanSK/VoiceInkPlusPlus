@@ -8,6 +8,7 @@
 import Testing
 import CoreGraphics
 import Foundation
+import ApplicationServices
 @testable import VoiceInkPlusPlus
 
 struct VoiceInkTests {
@@ -249,6 +250,233 @@ struct VoiceInkTests {
             return slot != .targetWindowFocused
         })
         #expect(attempted.contains(.previousWindowFocused))
+    }
+
+    @MainActor
+    @Test func telegramRetainedInputRequiresReadableMatchingChatAndInternalFocus() {
+        let captured = [
+            "VoiceInk Telegram disposable context anchor",
+            "Saved Messages stable disposable context"
+        ]
+        #expect(FocusLockService.isTelegram(
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.isTelegram(
+            bundleIdentifier: "com.openai.codex"
+        ))
+        #expect(FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: captured,
+            internalFocusMatches: true,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: [],
+            internalFocusMatches: true,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: ["Different disposable chat"],
+            internalFocusMatches: true,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: captured,
+            internalFocusMatches: false,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: captured,
+            internalFocusMatches: true,
+            structureMatches: false
+        ))
+    }
+
+    @MainActor
+    @Test func telegramParentlessComposerRequiresOneEnclosingWindow() {
+        let composer = CGRect(x: 120, y: 740, width: 540, height: 52)
+        #expect(FocusLockService.uniqueContainingWindowIndex(
+            elementFrame: composer,
+            windowFrames: [
+                CGRect(x: 900, y: 50, width: 60, height: 20),
+                CGRect(x: 80, y: 100, width: 650, height: 760)
+            ]
+        ) == 1)
+        #expect(FocusLockService.uniqueContainingWindowIndex(
+            elementFrame: composer,
+            windowFrames: [
+                CGRect(x: 80, y: 100, width: 650, height: 760),
+                CGRect(x: 100, y: 700, width: 600, height: 100)
+            ]
+        ) == nil)
+        #expect(FocusLockService.uniqueContainingWindowIndex(
+            elementFrame: composer,
+            windowFrames: [nil, CGRect(x: 0, y: 0, width: 40, height: 40)]
+        ) == nil)
+    }
+
+    @Test func telegramVisualIdentityPinsTupleCropAndStableDigest() {
+        let tuple = TelegramWindowVisualIdentity.ApplicationTuple(
+            applicationBundleName: "Telegram.app",
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            shortVersion: "12.9",
+            build: "282526"
+        )
+        #expect(TelegramWindowVisualIdentityService.isAudited(tuple))
+        #expect(TelegramWindowVisualIdentityService.pixelCropRect(
+            imageWidth: 407,
+            imageHeight: 997
+        ) == CGRect(x: 48, y: 34, width: 262, height: 66))
+
+        let stable = TelegramWindowVisualIdentityService.HeaderDigestSample(
+            width: 407,
+            height: 997,
+            digest: Data([1, 2, 3, 4])
+        )
+        let identity = TelegramWindowVisualIdentityService.stableIdentity(
+            applicationTuple: tuple,
+            processIdentifier: 737,
+            windowID: 244,
+            first: stable,
+            second: stable
+        )
+        #expect(identity?.windowID == 244)
+        #expect(identity?.headerDigest == stable.digest)
+
+        #expect(TelegramWindowVisualIdentityService.stableIdentity(
+            applicationTuple: tuple,
+            processIdentifier: 737,
+            windowID: 244,
+            first: stable,
+            second: .init(
+                width: 407,
+                height: 997,
+                digest: Data([9, 9, 9, 9])
+            )
+        ) == nil)
+        #expect(!TelegramWindowVisualIdentityService.isAudited(.init(
+            applicationBundleName: "Telegram.app",
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            shortVersion: "12.10",
+            build: "282527"
+        )))
+    }
+
+    @MainActor
+    @Test func telegramAccessibilityInsertionFallbackIsOneShot() async {
+        var accessibilityAttempts = 0
+        var unicodeAttempts = 0
+        var accessibilityErrors: [Int32] = []
+
+        let fallbackSucceeded = await TranscriptionDelivery
+            .executeAccessibilityFirstBackgroundInsertion(
+                allowsTargetedUnicodeFallback: true,
+                attemptAccessibility: {
+                    accessibilityAttempts += 1
+                    return .unavailable
+                },
+                fullBoundaryMatches: { true },
+                targetedUnicode: { boundary in
+                    unicodeAttempts += 1
+                    return boundary()
+                }
+            )
+        #expect(fallbackSucceeded)
+        #expect(accessibilityAttempts == 1)
+        #expect(unicodeAttempts == 1)
+
+        let setterErrorWasNotRetried = await TranscriptionDelivery
+            .executeAccessibilityFirstBackgroundInsertion(
+                allowsTargetedUnicodeFallback: true,
+                attemptAccessibility: {
+                    accessibilityAttempts += 1
+                    return .failed(AXError.cannotComplete.rawValue)
+                },
+                fullBoundaryMatches: { true },
+                onAccessibilityError: { accessibilityErrors.append($0) },
+                targetedUnicode: { _ in
+                    unicodeAttempts += 1
+                    return true
+                }
+            )
+        #expect(setterErrorWasNotRetried)
+        #expect(accessibilityAttempts == 2)
+        #expect(unicodeAttempts == 1)
+        #expect(accessibilityErrors == [AXError.cannotComplete.rawValue])
+
+        let directExactInputFailedClosed = await TranscriptionDelivery
+            .executeAccessibilityFirstBackgroundInsertion(
+                allowsTargetedUnicodeFallback: false,
+                attemptAccessibility: { .unavailable },
+                fullBoundaryMatches: { true },
+                targetedUnicode: { _ in
+                    unicodeAttempts += 1
+                    return true
+                }
+            )
+        #expect(!directExactInputFailedClosed)
+        #expect(unicodeAttempts == 1)
+    }
+
+    @MainActor
+    @Test func telegramIsAChatComposerButNeverAnOpenAIReturnRetry() {
+        #expect(TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "com.openai.codex"
+        ))
+        #expect(!TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "com.apple.Terminal"
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+    }
+
+    @Test func telegramRetainedSessionNeverWritesAXFocusPointers() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Modes/FocusLockService.swift"
+            ),
+            encoding: .utf8
+        )
+        let prepareStart = try #require(source.range(
+            of: "    private func prepareRetainedTelegramBackgroundDelivery("
+        ))
+        let prepareEnd = try #require(source.range(
+            of: "    static func runBackgroundPreparationWithOwnedFailureCleanup(",
+            range: prepareStart.upperBound..<source.endIndex
+        ))
+        let prepareBody = source[
+            prepareStart.lowerBound..<prepareEnd.lowerBound
+        ]
+        #expect(prepareBody.contains("CursorPaster.beginTargetedInputSession"))
+        #expect(prepareBody.contains("telegramDeliveryBoundaryMatches"))
+        #expect(!prepareBody.contains("AXUIElementSetAttributeValue"))
+
+        let finishStart = try #require(source.range(
+            of: "    private func finishRetainedTelegramBackgroundDelivery("
+        ))
+        let finishEnd = try #require(source.range(
+            of: "    func finishBackgroundDelivery(",
+            range: finishStart.upperBound..<source.endIndex
+        ))
+        let finishBody = source[
+            finishStart.lowerBound..<finishEnd.lowerBound
+        ]
+        #expect(finishBody.contains("CursorPaster.endTargetedInputSession"))
+        #expect(!finishBody.contains("AXUIElementSetAttributeValue"))
     }
 
     @MainActor

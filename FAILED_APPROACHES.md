@@ -282,8 +282,9 @@ No row may be promoted merely because a later build reused part of it.
 - **Attempt:** Treat renderer editor/window identifiers or wrapper equality as enough to survive tab,
   task, or chat changes.
 - **Failure:** Chromium/Electron and Telegram can reuse wrappers across logical contexts.
-- **Do not retry:** Revalidate readable semantic context at capture and irreversible mutation/action
-  boundaries. Empty context is not identity; Telegram always requires matching readable chat anchors.
+- **Do not retry:** Revalidate independent semantic context at capture and irreversible mutation/action
+  boundaries. Empty AX context is not identity. Telegram requires matching readable AX chat anchors
+  or the narrowly audited visual-header digest described below; wrapper shape and focus never suffice.
 
 ### Conflating an absent prior focused element with an AX read failure in v2.0.226
 
@@ -352,8 +353,9 @@ No row may be promoted merely because a later build reused part of it.
   internal activation state.
 - **Observed result:** Telegram v2.0.209 exposed zero background window children, so resolution failed
   before the still-live exact editor could be assessed.
-- **Boundary:** Preparation cannot weaken chat identity. Telegram still requires readable matching
-  chat context immediately before every mutation/action.
+- **Boundary:** Preparation cannot weaken chat identity. Telegram still requires independent matching
+  chat identity immediately before every mutation/action: readable AX anchors, or the exact audited
+  visual-header digest below when the app publishes no readable AX context.
 - **Do not retry:** Do not solve hidden trees by trusting internal focus or geometry alone.
 
 ## Return and Send failures
@@ -563,8 +565,29 @@ No row may be promoted merely because a later build reused part of it.
 - v2.0.209 failed strict pre-preparation re-resolution. Relaxing to internal focus/geometry alone
   could paste into the wrong chat.
 - `AXSelectedText` may be settable, but that proves mutation capability, not chat identity or Send.
-- **Rule:** Require readable matching chat anchors immediately before every mutation/action. Hidden,
-  empty, or mismatched context fails closed. Use the dedicated Telegram live-test procedure.
+- **Rule:** Require independent matching chat identity immediately before every mutation/action.
+  Prefer readable AX anchors. Empty AX context may cross only the version-pinned visual-header gate
+  below; unavailable permission, blank/protected capture, tuple/layout drift, changed digest, or
+  mismatched anchors fails closed. Use the dedicated Telegram live-test procedure.
+
+#### v2.0.244 audited visual-header reconsideration
+
+- **State:** INCONCLUSIVE candidate until a signed build passes the disposable Saved Messages trace.
+- **Changed evidence:** Telegram 12.9 build 282526 exposes a parentless exact `AXTextArea` and one
+  enclosing same-PID window, but no readable selected-chat title in that window's AX descendants.
+  The selected chat header remains visible in a fixed audited crop of that exact window.
+- **Narrow mechanism:** Capture two stable samples at the input-decision boundary, retain only their
+  SHA-256 digest and dimensions, and re-sample the same window before insertion and before one
+  explicitly labelled semantic Send. Require the retained exact editor/window structure, Telegram's
+  own internal focus, unchanged background/no-focus-theft boundary, the audited app tuple/layout, and
+  Screen Recording permission. Never retain or log screenshots, OCR, chat titles, messages, or crop
+  bytes. `AXSelectedText` is one-shot; no error-triggered retry or generic background Return exists.
+- **Disposable/live gate:** Test both `recordingStart` and `focusedDuringTranscription` in Saved
+  Messages, require composer clear/reset and unchanged foreground, then switch to a second disposable
+  chat and prove the digest mismatch causes zero mutation/action. v2.0.243 remains the rollback.
+- **Abandon condition:** Any unaudited tuple/layout, missing capture permission, unstable/blank image,
+  digest mismatch, ambiguous window, focus theft, wrong-chat mutation, unverified Send, or Primary
+  regression rejects this candidate without broadening it into generic Telegram or visual delivery.
 
 ### Terminal, iTerm, and Claude Code
 

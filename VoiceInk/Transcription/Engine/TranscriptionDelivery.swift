@@ -201,6 +201,53 @@ final class TranscriptionDelivery {
         "com.openai.codex",
         "com.openai.chat"
     ]
+    private static let chatComposerBundleIdentifiers =
+        openAIComposerBundleIdentifiers.union(["ru.keepcoder.Telegram"])
+
+    static func isChatComposer(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return chatComposerBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    static func shouldUseTargetedUnicodeFallback(
+        after result: FocusLockService.BackgroundTextInsertionResult,
+        allowsFallback: Bool
+    ) -> Bool {
+        result == .unavailable && allowsFallback
+    }
+
+    /// Keep Telegram's one-shot insertion policy independently testable. AXSelectedText
+    /// is preferred because it addresses the exact retained editor. Targeted Unicode is
+    /// allowed only when the attribute was unavailable before any mutation. A setter
+    /// error may mean Telegram already inserted, so verify it without retrying.
+    static func executeAccessibilityFirstBackgroundInsertion(
+        allowsTargetedUnicodeFallback: Bool,
+        attemptAccessibility: () -> FocusLockService.BackgroundTextInsertionResult,
+        fullBoundaryMatches: @escaping () -> Bool,
+        onUnicodeFallback: () -> Void = {},
+        onAccessibilityError: (Int32) -> Void = { _ in },
+        targetedUnicode: (@escaping () -> Bool) async -> Bool
+    ) async -> Bool {
+        let accessibilityResult = attemptAccessibility()
+        switch accessibilityResult {
+        case .acceptedSelectedText:
+            return true
+        case .unavailable:
+            guard shouldUseTargetedUnicodeFallback(
+                after: accessibilityResult,
+                allowsFallback: allowsTargetedUnicodeFallback
+            ), fullBoundaryMatches() else {
+                return false
+            }
+            onUnicodeFallback()
+            return await targetedUnicode { fullBoundaryMatches() }
+        case .failed(let error):
+            onAccessibilityError(error)
+            return true
+        case .focusSafetyViolation:
+            return false
+        }
+    }
 
     struct Request {
         let transcription: Transcription
@@ -730,15 +777,50 @@ final class TranscriptionDelivery {
                 }
             )
         } else {
-            switch FocusLockService.shared.insertTextUsingAccessibility(
-                pastedText,
-                for: session
-            ) {
-            case .acceptedSelectedText:
-                textEventsPosted = true
-            case .unavailable, .failed(_), .focusSafetyViolation:
-                textEventsPosted = false
+            // Telegram's parentless composer exposes no AX chat title. Its audited
+            // visual header digest is therefore re-sampled at the irreversible text
+            // boundary, after all earlier readback and immediately before the one
+            // AXSelectedText attempt. A mismatch must fail without mutation.
+            guard await FocusLockService.shared
+                .revalidateTelegramVisualIdentityIfRequired(for: session) else {
+                handleBackgroundPasteFailure(
+                    pastedText,
+                    destination: target.destination,
+                    detail: "saved Telegram chat identity changed before insertion"
+                )
+                return
             }
+            let fullBoundaryMatches = {
+                FocusLockService.shared.backgroundDeliveryBoundaryMatches(
+                    session
+                )
+            }
+            textEventsPosted = await Self
+                .executeAccessibilityFirstBackgroundInsertion(
+                    allowsTargetedUnicodeFallback:
+                        session.allowsTargetedUnicodeFallback,
+                    attemptAccessibility: {
+                        FocusLockService.shared.insertTextUsingAccessibility(
+                            pastedText,
+                            for: session
+                        )
+                    },
+                    fullBoundaryMatches: fullBoundaryMatches,
+                    onUnicodeFallback: {
+                        vippLog.notice("paste: Telegram AXSelectedText unavailable before mutation; using one bounded Unicode insertion with full chat revalidation before every chunk targetPid=\(session.processIdentifier, privacy: .public)")
+                    },
+                    onAccessibilityError: { error in
+                        vippLog.error("paste: exact AXSelectedText returned an error after its one allowed attempt; verifying without retry AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+                    },
+                    targetedUnicode: { canPost in
+                        await CursorPaster.typeTextIntoPreparedTargetedProcess(
+                            pastedText,
+                            pid: session.processIdentifier,
+                            canPost: canPost,
+                            canRevalidateContext: fullBoundaryMatches
+                        )
+                    }
+                )
         }
         let insertionVerified: Bool
         if textEventsPosted {
@@ -842,18 +924,18 @@ final class TranscriptionDelivery {
             sampleCount: 0
         )
 
-        let isOpenAIComposer = session.bundleIdentifier.map {
-            Self.openAIComposerBundleIdentifiers.contains($0)
-        } ?? false
+        let isChatComposer = Self.isChatComposer(
+            bundleIdentifier: session.bundleIdentifier
+        )
         // A background app cannot receive a normal HID Return without stealing the
         // user's keyboard focus. Ordinary process-targeted Return was ignored by
-        // Electron, and the later authenticated Return changed this exact ChatGPT
-        // composer without submitting it. The audited unlabelled OpenAI control now
-        // uses one PID/window-addressed mouse gesture only after the complete
-        // Send-vs-Stop boundary is re-proven. Explicitly labelled controls retain
-        // semantic AXPress. Neither route may fall through after an irreversible
-        // action; clear/reset remains the only authoritative chat success proof.
-        guard autoSendKey == .enter, isOpenAIComposer else {
+        // Electron/Telegram, and authenticated Return changed ChatGPT without
+        // submitting it. The audited unlabelled OpenAI control may use one exact
+        // PID/window-addressed click; Telegram is intentionally ineligible for that
+        // exception and may cross only an explicitly labelled semantic AXPress gate.
+        // Neither route may fall through after an irreversible action; clear/reset
+        // remains the only authoritative chat success proof.
+        guard autoSendKey == .enter, isChatComposer else {
             showAutoSendFailure(
                 "Transcription inserted, but this saved background input has no safe Send action",
                 detail: "background process-targeted Return is disabled key=\(autoSendKey.rawValue) targetPid=\(session.processIdentifier)"
@@ -908,7 +990,7 @@ final class TranscriptionDelivery {
         let submittedTextVisible = FocusLockService.shared.backgroundWindowContains(
             pastedText.trimmingCharacters(in: .whitespacesAndNewlines),
             for: session,
-            excludingSavedInput: isOpenAIComposer && autoSendKey == .enter
+            excludingSavedInput: isChatComposer && autoSendKey == .enter
         )
         let outcome = Self.autoSendOutcome(verification: verification)
         vippLog.info("paste: background auto-send finished success=\(outcome == .verified, privacy: .public) outcome=\(String(describing: outcome), privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=\(submitRoute, privacy: .public) verification=\(String(describing: verification), privacy: .public) verificationElapsedMs=\(observation.elapsedMilliseconds, privacy: .public) verificationSamples=\(observation.sampleCount, privacy: .public) totalElapsedMs=\(totalElapsedMilliseconds, privacy: .public) submittedTextVisible=\(submittedTextVisible, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(finalFrontmostPID ?? -1, privacy: .public)")
