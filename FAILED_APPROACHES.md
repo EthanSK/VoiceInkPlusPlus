@@ -115,22 +115,25 @@ accepted background implementation. It must not be smuggled into policy merely b
 installed v236 binary contains it; the accepted v236 trace returned through the separate Primary
 compatibility branch before that experiment ran.
 
-### Post-audit accepted Codex island: v2.0.243
+### Post-audit v2.0.243 checkpoint: Primary accepted, latch rejected
 
 On 2026-07-20, session reconstruction identified v2.0.238 commit `bfef0e4` as the last user-accepted
 Codex background-delivery baseline. Commit `5475ef2` rebuilt that source in isolation as v2.0.243,
 adding only the audited `/Applications/ChatGPT.app` 26.715.52143 build-5591 tuple and tuple tests.
 Later Telegram, Terminal, and Claude delivery changes are absent.
 
-A physical Next-while-recording trace captured the exact Codex composer, inserted into it while VS
-Code remained frontmost, resolved the bounded FooterActions Send control, and issued one targeted
-Send action. The post-action composer became unreadable, so the app correctly recorded indeterminate
-telemetry, made no retry, and showed no false warning. Ethan then confirmed that the message had
-submitted. This is an accepted boundary for that exact host tuple and `recordingStart` route; it does
-not prove second chance, another OpenAI build, or another destination. Ethan separately reports that
-the behavior can become unreliable when the Mac lags. No failed v2.0.243 trace has yet proved whether
-that is capture, delivery overlap, app responsiveness, or another timing boundary, so do not modify
-the accepted mechanism or add a Send retry until one failed physical attempt is correlated end to end.
+The signed build is a checkpoint because Ethan confirmed its normal Primary `focusedAtStop` route
+works. It is **not** an accepted latch build. A physical Codex `focusedDuringTranscription` attempt
+captured the exact composer, inserted into it while VS Code remained frontmost, resolved the bounded
+FooterActions Send control, and issued one targeted Send action. The post-action composer became
+unreadable and the visible message did not submit. This is another proof that action issuance plus
+unreadable verification cannot be promoted to success. Both Codex Next routes remain unresolved.
+
+The same checkpoint captured Telegram's foreground `AXTextArea`, but a second-chance run and a
+Next-while-recording run both failed before insertion with `Background exact-input preparation could
+not resolve the saved window`. Telegram is therefore the next isolated compatibility target. Do not
+change the accepted Primary path, fold later cross-app code into this checkpoint, or add a blind Send
+retry. Reconsider latch support only after a route-specific trace and explicit visible result agree.
 
 ## Version-by-version evidence map (13–19 July 2026)
 
@@ -831,10 +834,9 @@ the failed attempts:
 - `b2aeaa2` / native `96e494e` is the documented v2.0.206 rollback floor for exact-location paste,
   not proof of universal background Return.
 - `fb3ead7` is the live-proven v2.0.236 uninterrupted Primary compatibility route.
-- `5475ef2` is the reproducible v2.0.243 Codex-only baseline for ChatGPT 26.715.52143 build 5591;
-  Ethan confirmed one exact background `recordingStart` insertion and Send while VS Code stayed
-  frontmost. Preserve its one-shot indeterminate-verification behavior and do not fold unrelated app
-  work into this baseline.
+- `5475ef2` is the reproducible v2.0.243 checkpoint: Ethan confirmed normal Primary current-input
+  delivery works. Its Codex and Telegram latch routes are not accepted. Preserve its Primary path and
+  one-shot indeterminate-verification behavior while app-specific latch work continues.
 - Privacy-bounded rolling traces and installed-build identity markers are accepted diagnostic
   infrastructure.
 
@@ -842,10 +844,10 @@ the failed attempts:
 
 Future agents must state these gaps rather than extrapolate:
 
-- Reliable non-activating exact background Send for every Codex/ChatGPT surface and build beyond the
-  accepted v2.0.243 ChatGPT 26.715.52143 build-5591 `recordingStart` boundary.
-- The user-reported lag/load sensitivity of that v2.0.243 Codex route; require a matching failed trace
-  before deciding whether capture, overlap, host responsiveness, or another timing boundary is at fault.
+- Reliable non-activating exact background Send for Codex/ChatGPT. v2.0.243 accepts only the normal
+  Primary route; its latest `focusedDuringTranscription` latch attempt inserted but did not submit.
+- The user-reported lag/load sensitivity of v2.0.243; require a matching failed trace before deciding
+  whether capture, overlap, host responsiveness, or another timing boundary is at fault.
 - Exact tab/task preservation when Chromium does not expose a readable semantic scope.
 - Telegram background capture, insertion, and Send while preserving the exact chat.
 - Claude Code across Terminal, iTerm, Ghostty, Warp, VS Code, and Cursor as distinct hosts.
