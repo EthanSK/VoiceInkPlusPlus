@@ -612,7 +612,8 @@ class CursorPaster {
         modifiersEnded.timestamp = mach_absolute_time()
         modifiersEnded.postToPid(targetPID)
 
-        logger.info("Issued one targeted Telegram HID Return sequence targetPid=\(targetPID, privacy: .public) boundaryAfterAction=\(canPost(), privacy: .public)")
+        let boundaryAfterAction = canPost()
+        logger.info("Issued one targeted Telegram HID Return sequence targetPid=\(targetPID, privacy: .public) boundaryAfterAction=\(boundaryAfterAction, privacy: .public)")
         return .commandPosted
     }
 
