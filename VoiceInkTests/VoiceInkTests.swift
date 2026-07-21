@@ -308,6 +308,24 @@ struct VoiceInkTests {
         #expect(!second.contains("second"))
     }
 
+    @Test func sharedTranscriptionResourcesCannotCrossLiveSessionBoundaries() {
+        #expect(SharedTranscriptionResourcePolicy.allowsSpeculativePreload(liveSessionCount: 1))
+        #expect(!SharedTranscriptionResourcePolicy.allowsSpeculativePreload(liveSessionCount: 2))
+
+        #expect(SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: 0,
+            retiringOwnerIsCurrent: true
+        ))
+        #expect(!SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: 1,
+            retiringOwnerIsCurrent: true
+        ))
+        #expect(!SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: 0,
+            retiringOwnerIsCurrent: false
+        ))
+    }
+
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",

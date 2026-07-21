@@ -132,6 +132,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private let transcriptionJobQueue = SerialTranscriptionJobQueue()
     private var transcriptionJobRegistry = TranscriptionJobRegistry()
 
+    // Whisper/FluidAudio managers are shared even though jobs are per-session. A
+    // cleanup task is therefore a resource barrier: a new recording waits for it,
+    // and one session may never clean or preload through another live session.
+    private var resourceCleanupTask: Task<Void, Never>?
+    private var isResettingRecordingSession = false
+
     // Reservation across requestRecordPermission → startNewSession scheduling. Without
     // this synchronous token, two rapid Primary start events can both observe no active
     // session before either scheduled MainActor task appends one, creating two mic owners.
@@ -396,7 +402,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 }
                 active.transcriptionSession?.cancel()
                 removeSession(active)
-                await cleanupResources()
+                await cleanupResourcesIfUnused(
+                    retiringOwnerIsCurrent: true,
+                    reason: "recording stopped without an audio file"
+                )
             }
         } else {
             // ── START branch ─────────────────────────────────────────────────────────
@@ -404,6 +413,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // MainActor task. A second rapid start press in this gap is ignored rather
             // than becoming a second session that points at the same shared Recorder.
             assert(activeRecordingSession == nil, "one-active-recording invariant violated")
+            guard !isResettingRecordingSession else {
+                vippLog.notice("toggleRecord: START ignored while a full recording reset is draining old jobs")
+                return
+            }
             guard let startRequestID = recordingStartReservation.reserve() else {
                 vippLog.notice("toggleRecord: duplicate START ignored while an earlier start request is pending")
                 return
@@ -454,6 +467,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
         recordingStartFocusedInput: FocusLockService.Target?,
         recordingStartForegroundContinuity: PrimaryForegroundContinuity?
     ) async {
+        // Cleanup yields while shared model managers release memory. Keep the start
+        // reservation owned across that wait so no second start can overtake it, then
+        // revalidate the token before creating a session or touching shared resources.
+        if let resourceCleanupTask {
+            await resourceCleanupTask.value
+        }
+
         // Consume the exact reservation before creating the session. MainActor isolation
         // makes this an atomic handoff: stale permission callbacks and duplicate start
         // events cannot append another mic owner.
@@ -554,7 +574,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 try? FileManager.default.removeItem(at: permanentURL)
                 session.audioURL = nil
                 self.removeSession(session)
-                await self.cleanupResources()
+                await self.cleanupResourcesIfUnused(
+                    retiringOwnerIsCurrent: true,
+                    reason: "recording had no selected model"
+                )
                 await self.recorderUIManager?.dismissRecorderPanel()
                 return
             }
@@ -614,10 +637,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             // Best-effort model preload so the eventual transcribe is fast. Use this
             // recording's frozen model; rereading the global Mode here lets a newer
-            // overlapping recording choose which model an older session preloads.
+            // overlapping recording choose which model an older session preloads. The
+            // model managers are shared, so never preload B through A's running/queued
+            // pipeline. B will load on demand once the serial queue reaches it.
             let modelForPreload = transcriptionConfiguration.model
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            Task { @MainActor [weak self, weak session] in
+                guard let self, let session,
+                      self.activeRecordingSession === session,
+                      SharedTranscriptionResourcePolicy.allowsSpeculativePreload(
+                          liveSessionCount: self.sessions.count
+                      ) else {
+                    self?.vippLog.info("pipeline preload SKIPPED because another recording/transcription session owns shared resources")
+                    return
+                }
 
                 if modelForPreload.provider == .whisper {
                     let model = modelForPreload
@@ -644,7 +676,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
             session.audioURL = nil
             self.removeSession(session)
-            await self.cleanupResources()
+            await self.cleanupResourcesIfUnused(
+                retiringOwnerIsCurrent: true,
+                reason: "recording failed to start"
+            )
             NotificationManager.shared.showNotification(title: String(localized: "Recording failed to start"), type: .error)
             await self.recorderUIManager?.dismissRecorderPanel()
         }
@@ -904,16 +939,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
         session.transcriptionSession = nil
 
         await finishRecorderSession()
-        // Release shared model resources only when NO other session still needs them, i.e.
-        // when this was the last in-flight job. cleanupResources() tears down the SHARED
-        // whisper/fluidaudio model; doing it while another queued job is about to run would
-        // force a reload, but the serial queue means the NEXT job hasn't started yet, so a
-        // cleanup here is safe (the next job reloads on demand). We still guard on "no other
-        // transcribing/delivering session" to avoid needless reload churn.
+        // Release shared model resources only when this lineage still owns retirement
+        // and no recording or queued pipeline remains. A newer session may already be
+        // recording while this older pipeline finishes; cleaning here used to unload or
+        // cancel the resources that newer session had just prepared.
+        let retiringOwnerIsCurrent = !Task.isCancelled
+            && transcriptionJobRegistry.contains(job.identity)
         removeSession(session)
-        if !sessions.contains(where: { $0.phase == .transcribing || $0.phase == .delivering }) {
-            await cleanupResources()
-        }
+        await cleanupResourcesIfUnused(
+            retiringOwnerIsCurrent: retiringOwnerIsCurrent,
+            reason: "pipeline finished"
+        )
 
         // If the panel is now empty (no sessions + no assistant response), let the UI manager
         // hide it. We trigger a generic dismiss; RecorderUIManager only actually hides when
@@ -982,7 +1018,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await recorder.stopRecording()
             await finishCanceledRecording(session)
             removeSession(session)
-            await cleanupResources()
+            await cleanupResourcesIfUnused(
+                retiringOwnerIsCurrent: true,
+                reason: "active recording was canceled"
+            )
 
         case .transcribing, .delivering:
             // In-flight job. Poison its pipeline id; the running pipeline will pick this up
@@ -1005,6 +1044,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // Full reset (launch / hard reset): cancel everything, clear the queue, drop all sessions.
     func resetRecordingSession() async {
+        guard !isResettingRecordingSession else {
+            vippLog.notice("resetRecordingSession: duplicate reset ignored while the first reset is draining")
+            return
+        }
+        isResettingRecordingSession = true
+        defer { isResettingRecordingSession = false }
+
         // A reset is a hard lineage boundary. Invalidate membership first, then cancel
         // every retained queue task (running and waiting). Waiting Task<Void, Never>
         // jobs still recheck generation after their previous tail returns, and a running
@@ -1024,6 +1070,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         assistantSession.reset()
         recordingState = .idle
         await recorder.stopRecording()
+        // Cancellation is cooperative. Do not tear down shared managers while an old
+        // provider/model call is still unwinding; the queue's reset barrier also keeps
+        // any future generation behind this same boundary.
+        await transcriptionJobQueue.waitUntilIdle()
         await cleanupResources()
         await finishRecorderSession()
     }
@@ -1092,11 +1142,37 @@ class VoiceInkEngine: NSObject, ObservableObject {
         enhancementService?.clearCapturedContexts()
     }
 
+    private func cleanupResourcesIfUnused(
+        retiringOwnerIsCurrent: Bool,
+        reason: String
+    ) async {
+        let liveSessionCount = sessions.count
+        guard SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: liveSessionCount,
+            retiringOwnerIsCurrent: retiringOwnerIsCurrent
+        ) else {
+            vippLog.info("cleanupResources: DEFERRED reason=\(reason, privacy: .public) liveSessions=\(liveSessionCount, privacy: .public) retiringOwnerIsCurrent=\(retiringOwnerIsCurrent, privacy: .public)")
+            return
+        }
+        await cleanupResources()
+    }
+
     func cleanupResources() async {
-        logger.notice("cleanupResources: releasing model resources")
-        await whisperModelManager.cleanupResources()
-        await serviceRegistry.cleanup()
-        logger.notice("cleanupResources: completed")
+        if let resourceCleanupTask {
+            await resourceCleanupTask.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.logger.notice("cleanupResources: releasing model resources")
+            await self.whisperModelManager.cleanupResources()
+            await self.serviceRegistry.cleanup()
+            self.logger.notice("cleanupResources: completed")
+        }
+        resourceCleanupTask = task
+        await task.value
+        resourceCleanupTask = nil
     }
 
     // MARK: - Notification Handling

@@ -208,3 +208,20 @@ enum TranscriptionLineageDigest {
             .joined()
     }
 }
+
+/// Shared Whisper/FluidAudio state is process-wide even though recording jobs are not.
+/// Keep the small ownership decision pure so overlap regressions are independently
+/// testable: speculative preload is safe only for the sole live session, and cleanup
+/// is safe only after the retiring owner is still current and no session remains.
+enum SharedTranscriptionResourcePolicy {
+    static func allowsSpeculativePreload(liveSessionCount: Int) -> Bool {
+        liveSessionCount == 1
+    }
+
+    static func allowsCleanup(
+        liveSessionCount: Int,
+        retiringOwnerIsCurrent: Bool
+    ) -> Bool {
+        retiringOwnerIsCurrent && liveSessionCount == 0
+    }
+}
