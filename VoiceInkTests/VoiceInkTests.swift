@@ -11,7 +11,287 @@ import Foundation
 import ApplicationServices
 @testable import VoiceInkPlusPlus
 
+private actor TranscriptionQueueTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let continuations = waiters
+        waiters.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+}
+
+@MainActor
+private final class TranscriptionQueueTestState {
+    var currentIdentities = Set<TranscriptionJobIdentity>()
+    var events: [String] = []
+}
+
 struct VoiceInkTests {
+
+    @Test func recordingStartReservationRejectsDuplicatePendingStarts() {
+        var reservation = RecordingStartReservation()
+        let first = UUID()
+        let second = UUID()
+
+        #expect(reservation.reserve(id: first) == first)
+        #expect(reservation.reserve(id: second) == nil)
+        #expect(!reservation.consume(second))
+        #expect(reservation.consume(first))
+        #expect(reservation.reserve(id: second) == second)
+
+        reservation.invalidate()
+        #expect(reservation.pendingID == nil)
+    }
+
+    @Test func transcriptionJobRegistryBindsUniqueSessionTranscriptionAndAudio() throws {
+        var registry = TranscriptionJobRegistry()
+        let sessionA = UUID()
+        let transcriptionA = UUID()
+        let audioA = URL(fileURLWithPath: "/tmp/session-a.wav")
+        let identityA = try #require(registry.register(
+            recordingSessionID: sessionA,
+            transcriptionID: transcriptionA,
+            audioURL: audioA
+        ))
+
+        #expect(identityA.enqueueSequence == 1)
+        #expect(registry.contains(identityA))
+        #expect(registry.register(
+            recordingSessionID: sessionA,
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/other.wav")
+        ) == nil)
+        #expect(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: transcriptionA,
+            audioURL: URL(fileURLWithPath: "/tmp/other.wav")
+        ) == nil)
+        #expect(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: audioA
+        ) == nil)
+
+        let identityB = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        ))
+        #expect(identityB.enqueueSequence == 2)
+        #expect(identityB.recordingSessionID != identityA.recordingSessionID)
+        #expect(identityB.transcriptionID != identityA.transcriptionID)
+        #expect(identityB.audioURL != identityA.audioURL)
+    }
+
+    @Test func transcriptionJobRegistryResetInvalidatesOnlyOldGeneration() throws {
+        var registry = TranscriptionJobRegistry()
+        let identityA = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        ))
+
+        registry.invalidateAll()
+        #expect(!registry.contains(identityA))
+
+        let identityB = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        ))
+        #expect(identityB.generation == identityA.generation + 1)
+        #expect(identityB.enqueueSequence == identityA.enqueueSequence + 1)
+        #expect(registry.contains(identityB))
+    }
+
+    @MainActor
+    @Test func serialQueueKeepsInjectedResultsBoundToFIFOJobIdentity() async throws {
+        var registry = TranscriptionJobRegistry()
+        let identityA = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        ))
+        let identityB = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        ))
+        let injectedResults = [
+            identityA.transcriptionID: "result-a",
+            identityB.transcriptionID: "result-b",
+        ]
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA, identityB]
+        let queue = SerialTranscriptionJobQueue()
+
+        for identity in [identityA, identityB] {
+            queue.enqueue(
+                identity,
+                isCurrent: { state.currentIdentities.contains($0) },
+                onDiscard: { discarded in
+                    state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+                },
+                operation: { running in
+                    let result = injectedResults[running.transcriptionID] ?? "missing"
+                    state.events.append("\(running.audioURL.lastPathComponent):\(result)")
+                }
+            )
+        }
+
+        await queue.waitUntilIdle()
+        #expect(state.events == [
+            "session-a.wav:result-a",
+            "session-b.wav:result-b",
+        ])
+    }
+
+    @MainActor
+    @Test func resetCannotResumeAWaitingJobOrAuthorizeRunningJobDelivery() async throws {
+        var registry = TranscriptionJobRegistry()
+        let identityA = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        ))
+        let identityB = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        ))
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA, identityB]
+        let gate = TranscriptionQueueTestGate()
+        let queue = SerialTranscriptionJobQueue()
+
+        queue.enqueue(
+            identityA,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("start:\(running.audioURL.lastPathComponent)")
+                await gate.wait()
+                if !Task.isCancelled, state.currentIdentities.contains(running) {
+                    state.events.append("deliver:\(running.audioURL.lastPathComponent)")
+                }
+            }
+        )
+        queue.enqueue(
+            identityB,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("deliver:\(running.audioURL.lastPathComponent)")
+            }
+        )
+
+        while state.events.isEmpty {
+            await Task.yield()
+        }
+        state.currentIdentities.removeAll()
+        let canceledTasks = queue.cancelAll()
+        await gate.open()
+        for task in canceledTasks {
+            await task.value
+        }
+
+        #expect(state.events.contains("start:session-a.wav"))
+        #expect(!state.events.contains("deliver:session-a.wav"))
+        #expect(!state.events.contains("deliver:session-b.wav"))
+    }
+
+    @MainActor
+    @Test func newGenerationWaitsForCanceledRunningJobToUnwind() async throws {
+        var registry = TranscriptionJobRegistry()
+        let identityA = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        ))
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA]
+        let gate = TranscriptionQueueTestGate()
+        let queue = SerialTranscriptionJobQueue()
+
+        queue.enqueue(
+            identityA,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("start:\(running.audioURL.lastPathComponent)")
+                await gate.wait()
+                state.events.append("unwind:\(running.audioURL.lastPathComponent)")
+            }
+        )
+
+        while state.events.isEmpty {
+            await Task.yield()
+        }
+
+        registry.invalidateAll()
+        state.currentIdentities.removeAll()
+        _ = queue.cancelAll()
+
+        let identityB = try #require(registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        ))
+        state.currentIdentities.insert(identityB)
+        queue.enqueue(
+            identityB,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("start:\(running.audioURL.lastPathComponent)")
+            }
+        )
+
+        // B must remain behind the reset barrier while canceled A is still unwinding.
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(state.events == ["start:session-a.wav"])
+
+        await gate.open()
+        await queue.waitUntilIdle()
+        #expect(state.events == [
+            "start:session-a.wav",
+            "unwind:session-a.wav",
+            "start:session-b.wav",
+        ])
+    }
+
+    @Test func transcriptionLineageDigestDistinguishesResultsWithoutContainingText() {
+        let first = TranscriptionLineageDigest.make("first private transcript")
+        let second = TranscriptionLineageDigest.make("second private transcript")
+
+        #expect(first.count == 16)
+        #expect(second.count == 16)
+        #expect(first != second)
+        #expect(!first.contains("first"))
+        #expect(!second.contains("second"))
+    }
 
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
