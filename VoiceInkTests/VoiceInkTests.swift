@@ -644,11 +644,16 @@ struct VoiceInkTests {
             imageWidth: 407,
             imageHeight: 997
         ) == CGRect(x: 48, y: 34, width: 262, height: 66))
+        #expect(TelegramWindowVisualIdentityService.pixelStableChatIdentityRect(
+            imageWidth: 262,
+            imageHeight: 66
+        ) == CGRect(x: 141, y: 22, width: 116, height: 35))
 
         let stable = TelegramWindowVisualIdentityService.HeaderDigestSample(
             width: 407,
             height: 997,
-            digest: Data([1, 2, 3, 4])
+            digest: Data([1, 2, 3, 4]),
+            stableChatIdentityDigest: Data([5, 6, 7, 8])
         )
         let identity = TelegramWindowVisualIdentityService.stableIdentity(
             applicationTuple: tuple,
@@ -659,6 +664,22 @@ struct VoiceInkTests {
         )
         #expect(identity?.windowID == 244)
         #expect(identity?.headerDigest == stable.digest)
+        #expect(identity?.stableChatIdentityDigest == stable.stableChatIdentityDigest)
+
+        // Dynamic status pixels may change while the exact avatar/title row remains
+        // identical. This is the Telegram v2.0.245 false-rejection regression.
+        #expect(TelegramWindowVisualIdentityService.stableIdentity(
+            applicationTuple: tuple,
+            processIdentifier: 737,
+            windowID: 244,
+            first: stable,
+            second: .init(
+                width: 407,
+                height: 997,
+                digest: Data([9, 9, 9, 9]),
+                stableChatIdentityDigest: stable.stableChatIdentityDigest
+            )
+        ) != nil)
 
         #expect(TelegramWindowVisualIdentityService.stableIdentity(
             applicationTuple: tuple,
@@ -668,7 +689,8 @@ struct VoiceInkTests {
             second: .init(
                 width: 407,
                 height: 997,
-                digest: Data([9, 9, 9, 9])
+                digest: Data([9, 9, 9, 9]),
+                stableChatIdentityDigest: Data([8, 7, 6, 5])
             )
         ) == nil)
         #expect(!TelegramWindowVisualIdentityService.isAudited(.init(

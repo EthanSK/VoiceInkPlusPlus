@@ -26,6 +26,7 @@ struct TelegramWindowVisualIdentity: Equatable, Sendable {
     let captureWidth: Int
     let captureHeight: Int
     let headerDigest: Data
+    let stableChatIdentityDigest: Data
 }
 
 /// Starts capture at the exact input-decision boundary without delaying recorder UI
@@ -58,12 +59,24 @@ enum TelegramWindowVisualIdentityService {
         let width: Int
         let height: Int
         let digest: Data
+        let stableChatIdentityDigest: Data
     }
 
     // The normalized crop was audited against Telegram 12.9/282526. It contains the
     // selected chat header while excluding the message history and bottom composer.
     // A Telegram update must fail closed until this layout contract is re-audited.
     static let headerCrop = CGRect(x: 0.12, y: 0.035, width: 0.64, height: 0.065)
+    // The complete header also contains Telegram's lower status/activity row. That
+    // row can animate or change while the selected chat is still identical, which
+    // made v2.0.245 reject the same saved composer. Keep replay safety exact rather
+    // than fuzzy: hash only the audited avatar + primary chat-title row and require
+    // that byte-for-byte digest at every mutation/action boundary.
+    static let stableChatIdentityRegion = CGRect(
+        x: 0.54,
+        y: 0.14,
+        width: 0.44,
+        height: 0.52
+    )
     private static let auditedTuple = TelegramWindowVisualIdentity.ApplicationTuple(
         applicationBundleName: "Telegram.app",
         bundleIdentifier: "ru.keepcoder.Telegram",
@@ -110,6 +123,36 @@ enum TelegramWindowVisualIdentityService {
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
+    static func pixelStableChatIdentityRect(
+        imageWidth: Int,
+        imageHeight: Int,
+        normalizedRegion: CGRect = stableChatIdentityRegion
+    ) -> CGRect? {
+        guard imageWidth > 0,
+              imageHeight > 0,
+              normalizedRegion.minX >= 0,
+              normalizedRegion.minY >= 0,
+              normalizedRegion.maxX <= 1,
+              normalizedRegion.maxY <= 1,
+              normalizedRegion.width > 0,
+              normalizedRegion.height > 0 else {
+            return nil
+        }
+        // Vision-style normalized coordinates are bottom-left based, while the
+        // CGImage crop rows are top-left based for this captured buffer.
+        let x = Int(floor(CGFloat(imageWidth) * normalizedRegion.minX))
+        let y = Int(floor(CGFloat(imageHeight) * (1 - normalizedRegion.maxY)))
+        let maxX = Int(ceil(CGFloat(imageWidth) * normalizedRegion.maxX))
+        let maxY = Int(ceil(CGFloat(imageHeight) * (1 - normalizedRegion.minY)))
+        guard maxX > x,
+              maxY > y,
+              maxX <= imageWidth,
+              maxY <= imageHeight else {
+            return nil
+        }
+        return CGRect(x: x, y: y, width: maxX - x, height: maxY - y)
+    }
+
     static func stableIdentity(
         applicationTuple: TelegramWindowVisualIdentity.ApplicationTuple,
         processIdentifier: pid_t,
@@ -124,8 +167,8 @@ enum TelegramWindowVisualIdentityService {
               let second,
               first.width == second.width,
               first.height == second.height,
-              first.digest == second.digest,
-              !first.digest.isEmpty else {
+              first.stableChatIdentityDigest == second.stableChatIdentityDigest,
+              !first.stableChatIdentityDigest.isEmpty else {
             return nil
         }
         return TelegramWindowVisualIdentity(
@@ -134,7 +177,8 @@ enum TelegramWindowVisualIdentityService {
             windowID: windowID,
             captureWidth: first.width,
             captureHeight: first.height,
-            headerDigest: first.digest
+            headerDigest: first.digest,
+            stableChatIdentityDigest: first.stableChatIdentityDigest
         )
     }
 
@@ -204,11 +248,15 @@ enum TelegramWindowVisualIdentityService {
             logger.notice("Telegram visual identity revalidation could not read a non-blank header sample")
             return false
         }
-        let matches = current.width == identity.captureWidth
+        let dimensionsMatch = current.width == identity.captureWidth
             && current.height == identity.captureHeight
-            && current.digest == identity.headerDigest
+        let stableIdentityMatches = current.stableChatIdentityDigest
+            == identity.stableChatIdentityDigest
+        let matches = dimensionsMatch && stableIdentityMatches
         if !matches {
-            logger.notice("Telegram visual identity revalidation rejected changed header digest or dimensions")
+            logger.notice("Telegram visual identity revalidation rejected changed stable chat identity or dimensions dimensionsMatch=\(dimensionsMatch, privacy: .public) stableIdentityMatch=\(stableIdentityMatches, privacy: .public)")
+        } else if current.digest != identity.headerDigest {
+            logger.info("Telegram visual identity accepted dynamic-only header drift with exact avatar/title identity")
         }
         return matches
     }
@@ -244,13 +292,24 @@ enum TelegramWindowVisualIdentityService {
                 imageHeight: image.height
             ),
             let cropped = image.cropping(to: cropRect),
-            let canonical = canonicalRGBABytes(from: cropped) else {
+            let canonical = canonicalRGBABytes(from: cropped),
+            let stableIdentityRect = pixelStableChatIdentityRect(
+                imageWidth: cropped.width,
+                imageHeight: cropped.height
+            ),
+            let stableIdentityImage = cropped.cropping(to: stableIdentityRect),
+            let stableIdentityBytes = canonicalRGBABytes(
+                from: stableIdentityImage
+            ) else {
                 return nil
             }
             return HeaderDigestSample(
                 width: image.width,
                 height: image.height,
-                digest: Data(SHA256.hash(data: canonical))
+                digest: Data(SHA256.hash(data: canonical)),
+                stableChatIdentityDigest: Data(
+                    SHA256.hash(data: stableIdentityBytes)
+                )
             )
         } catch {
             return nil
