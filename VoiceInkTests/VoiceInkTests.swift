@@ -1457,7 +1457,25 @@ struct VoiceInkTests {
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
-    @Test func foregroundAutoSendKeepsFirstHIDImmediateAndBoundsOpenAIRetry() throws {
+    @MainActor
+    @Test func foregroundAutoSendUsesImmediateOpenAISystemEventsAndBoundsHIDRetry() throws {
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter
+        ) == .systemEvents)
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "com.openai.chat",
+            autoSendKey: .enter
+        ) == .systemEvents)
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            autoSendKey: .enter
+        ) == .cgEvent)
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .shiftEnter
+        ) == .cgEvent)
+
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -1467,6 +1485,19 @@ struct VoiceInkTests {
             ),
             encoding: .utf8
         )
+        let primaryStart = try #require(source.range(
+            of: "    private func deliverToUninterruptedPrimaryCurrentInputIfEligible("
+        ))
+        let backgroundStart = try #require(source.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: primaryStart.upperBound..<source.endIndex
+        ))
+        let primaryBody = source[
+            primaryStart.lowerBound..<backgroundStart.lowerBound
+        ]
+        #expect(primaryBody.contains("foregroundAutoSendMethod"))
+        #expect(primaryBody.contains("method: sendMethod"))
+
         let autoSendStart = try #require(source.range(
             of: "    private func performAutoSend("
         ))
@@ -1476,7 +1507,8 @@ struct VoiceInkTests {
         ))
         let autoSendBody = source[autoSendStart.lowerBound..<feedbackStart.lowerBound]
 
-        #expect(autoSendBody.contains("method: .cgEvent"))
+        #expect(autoSendBody.contains("foregroundAutoSendMethod"))
+        #expect(autoSendBody.contains("method: sendMethod"))
         #expect(autoSendBody.contains("verification=pending"))
         #expect(autoSendBody.contains("verifyAndRetryForegroundOpenAIReturn"))
         #expect(autoSendBody.contains("case .actionGuardRefused:"))
@@ -1484,7 +1516,7 @@ struct VoiceInkTests {
         #expect(autoSendBody.contains("foregroundOpenAIVerificationContext"))
         #expect(!autoSendBody.contains("pressNearbySubmitButton"))
         #expect(!autoSendBody.contains("performAuthenticatedTargetedReturn"))
-        #expect(!autoSendBody.contains("method: .systemEvents"))
+        #expect(autoSendBody.contains("method: .cgEvent"))
     }
 
     @Test func autoSendFailureWarningStaysVisibleButSilent() throws {

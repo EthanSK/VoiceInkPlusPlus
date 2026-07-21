@@ -29,7 +29,7 @@ class CursorPaster {
         }
     }
 
-    enum AutoSendMethod {
+    enum AutoSendMethod: Equatable {
         case systemEvents
         case cgEvent
     }

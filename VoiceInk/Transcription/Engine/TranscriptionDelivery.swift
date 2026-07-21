@@ -209,6 +209,23 @@ final class TranscriptionDelivery {
         return chatComposerBundleIdentifiers.contains(bundleIdentifier)
     }
 
+    static func foregroundAutoSendMethod(
+        bundleIdentifier: String?,
+        autoSendKey: AutoSendKey
+    ) -> CursorPaster.AutoSendMethod {
+        // System Events key code 36 is the closest public scripted equivalent of a
+        // physical Return for the frontmost OpenAI Electron composer. The previously
+        // accepted immediate HID event can be accepted by macOS yet dropped while the
+        // just-pasted composer is busy. Keep every background route unchanged, and keep
+        // HID as the bounded retry only after a readable unchanged exact composer proves
+        // that this first foreground action did not submit.
+        guard autoSendKey == .enter,
+              bundleIdentifier.map(openAIComposerBundleIdentifiers.contains) == true else {
+            return .cgEvent
+        }
+        return .systemEvents
+    }
+
     static func shouldUseTargetedUnicodeFallback(
         after result: FocusLockService.BackgroundTextInsertionResult,
         allowsFallback: Bool
@@ -691,19 +708,23 @@ final class TranscriptionDelivery {
             target: target.focusedInput,
             pastedText: pastedText
         )
+        let sendMethod = Self.foregroundAutoSendMethod(
+            bundleIdentifier: continuity.bundleIdentifier,
+            autoSendKey: autoSendKey
+        )
         let sendResult = await CursorPaster.performAutoSend(
             autoSendKey,
             targetPID: continuity.processIdentifier,
-            method: .cgEvent,
+            method: sendMethod,
             canPost: continuityStillMatches
         )
         switch sendResult {
         case .commandPosted:
             guard let verificationContext else {
-                vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=unavailablePreState key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+                vippLog.info("paste: primary current-input immediate foreground auto-send issued=true method=\(String(describing: sendMethod), privacy: .public) verification=unavailablePreState key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
                 break
             }
-            vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=pending key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+            vippLog.info("paste: primary current-input immediate foreground auto-send issued=true method=\(String(describing: sendMethod), privacy: .public) verification=pending key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
             let outcome = await verifyAndRetryForegroundOpenAIReturn(
                 autoSendKey,
                 context: verificationContext,
@@ -1182,10 +1203,14 @@ final class TranscriptionDelivery {
             target: target,
             pastedText: pastedText
         )
+        let sendMethod = Self.foregroundAutoSendMethod(
+            bundleIdentifier: target.bundleIdentifier,
+            autoSendKey: key
+        )
         let result = await CursorPaster.performAutoSend(
             key,
             targetPID: targetPID,
-            method: .cgEvent,
+            method: sendMethod,
             canPost: canPost
         )
         switch result {
@@ -1196,10 +1221,10 @@ final class TranscriptionDelivery {
             return .failed
         case .commandPosted:
             guard let verificationContext else {
-                vippLog.info("paste: foreground immediate HID auto-send issued=true verification=unavailablePreState key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
+                vippLog.info("paste: foreground immediate auto-send issued=true method=\(String(describing: sendMethod), privacy: .public) verification=unavailablePreState key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
                 return .indeterminate
             }
-            vippLog.info("paste: foreground immediate HID auto-send issued=true verification=pending key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
+            vippLog.info("paste: foreground immediate auto-send issued=true method=\(String(describing: sendMethod), privacy: .public) verification=pending key=\(key.rawValue, privacy: .public) targetPid=\(targetPID, privacy: .public)")
             return await verifyAndRetryForegroundOpenAIReturn(
                 key,
                 context: verificationContext,
