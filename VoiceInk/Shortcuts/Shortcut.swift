@@ -114,6 +114,21 @@ struct Shortcut: Codable, Equatable {
         return keyCode == eventKeyCode
     }
 
+    /// Whether this event completes a modifier-only shortcut. The global event tap
+    /// may suppress that single completed chord so the app beneath VoiceInk++ does
+    /// not dismiss a context menu or replace its composer in response to a shortcut
+    /// VoiceInk++ already owns. Partial modifiers and every release still pass
+    /// downstream to preserve normal modifier behavior and prevent stuck state.
+    func modifierSequenceIsActive(
+        keyCode eventKeyCode: UInt16,
+        modifierFlags eventModifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        matchesModifierEvent(
+            keyCode: eventKeyCode,
+            modifierFlags: eventModifierFlags
+        )
+    }
+
     func isInterruptedByAdditionalKeyDown(keyCode eventKeyCode: UInt16) -> Bool {
         switch kind {
         case .modifierOnly:

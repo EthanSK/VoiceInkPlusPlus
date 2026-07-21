@@ -6,6 +6,8 @@
 //
 
 import Testing
+import AppKit
+import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 import ApplicationServices
@@ -39,6 +41,91 @@ private final class TranscriptionQueueTestState {
 }
 
 struct VoiceInkTests {
+
+    @Test func primaryModifierChordSuppressesOnlyTheCompletedPress() {
+        let shortcut = Shortcut.modifierOnly(
+            keyCode: nil,
+            modifierFlags: [.shift, .control, .option]
+        )
+
+        let partialShift = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Shift),
+            modifierFlags: [.shift]
+        )
+        #expect(partialShift == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+
+        let partialControl = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Control),
+            modifierFlags: [.shift, .control]
+        )
+        #expect(partialControl == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+
+        let completedPress = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control, .option]
+        )
+        #expect(completedPress == .init(
+            isDown: true,
+            suppressDownstream: true,
+            dispatchKeyDown: true,
+            dispatchKeyUp: false
+        ))
+
+        let completedRepeat = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: true,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control, .option]
+        )
+        #expect(completedRepeat == .init(
+            isDown: true,
+            suppressDownstream: true,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+
+        let firstRelease = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: true,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control]
+        )
+        #expect(firstRelease == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: true
+        ))
+
+        let remainingRelease = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Control),
+            modifierFlags: [.shift]
+        )
+        #expect(remainingRelease == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+    }
 
     @Test func recordingStartReservationRejectsDuplicatePendingStarts() {
         var reservation = RecordingStartReservation()
