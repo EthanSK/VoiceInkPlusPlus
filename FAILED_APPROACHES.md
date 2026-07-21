@@ -708,6 +708,37 @@ No row may be promoted merely because a later build reused part of it.
 - **Rule:** The recorder displays `v<marketing>` on row one and `.<build>` on row two immediately left
   of Stop. Every installed native binary receives a unique build number.
 
+## Recording and transcription concurrency failures
+
+### Treating the retained queue tail as every in-flight job
+
+- **State:** REJECTED.
+- **Failure:** A serial queue that retains or cancels only its newest task does not prove that earlier
+  work has stopped. Reset could clear that tail while an older provider or model task was still
+  unwinding, then let a new generation reuse shared Whisper, FluidAudio, recorder, or streaming state.
+  Cancellation is cooperative, so clearing the reference is not a drain barrier.
+- **Resolution:** Retain every scheduled job until it exits, invalidate reset work with a monotonic
+  generation, and keep new-generation jobs behind a barrier that awaits all cancelled old-generation
+  tasks. Authorize delivery only when the immutable generation, queue sequence, recording-session ID,
+  transcription ID, and normalized audio URL still match the registry.
+- **Do not retry:** Never infer isolation from FIFO scheduling, one `tail` task, `Task.cancel()`, or an
+  emptied sessions array. Require a test where cancelled A remains suspended, B is enqueued after
+  reset, B cannot begin until A unwinds, and A can no longer authorize delivery.
+
+### Reading mutable global recording configuration inside delayed work
+
+- **State:** REJECTED.
+- **Failure:** A fast stop or delayed transcription task could read the later global Mode, model,
+  prompt, language, audio URL, recorder callback, or streaming session after another recording had
+  already changed it. Queue ordering alone cannot repair a job whose inputs were rebound before it
+  entered the queue.
+- **Resolution:** Reserve each start synchronously, freeze all request and streaming inputs into that
+  recording's job, and bind every stage to immutable lineage before any async boundary. A late
+  streaming `prepare` may install its callback only while the same recording still owns the recorder.
+- **Do not retry:** Do not let queued work reread `UserDefaults`, current Mode/model state, the current
+  recorder callback, or a mutable "latest" session to reconstruct earlier job state. Prove two
+  distinct jobs retain distinct identities, audio URLs, configurations, and injected results.
+
 ## Verification failures and false confidence
 
 ### Unit tests passed, real app failed

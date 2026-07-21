@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-21T22:23:17Z
+**Trigger:** Ethan reported that starting a new transcription after or while the previous one transcribed could sometimes paste the old value and requested race hardening.
+**Symptom:** Starting a new recording while the previous result was still transcribing could appear to paste the older result, and prior traces could not prove whether audio, result, and delivery still belonged to one job.
+**Root cause:** The engine had no immutable cross-stage job identity; duplicate starts could be scheduled before session creation, reset cancelled only the retained tail while older tasks could remain alive, a new generation could begin before cancelled shared-resource work unwound, very fast stops could reread mutable Mode/model defaults, and late streaming preparation could attach an older callback to a newer recorder.
+**Fix:** Commit ad064a0 adds generation plus sequence plus recording-session plus transcription plus normalized-audio lineage, synchronous start reservation, per-job frozen audio/model/request/streaming state, reset invalidation and a drain barrier, stale-delivery refusal, and privacy-safe ID/length/digest logs. Commit 5e12598 corrects only the Swift Testing assertion wrappers.
+**Commit:** ad064a06280cd0ddf9d28df3a35e19e37646c1bd
+**Guard:** The exact v2.0.246 candidate at 5e12598 was freshly compiled on the Mac Mini. The canonical Xcode action compiled but stalled in its UI runner; direct xcrun xctest against that exact Debug bundle named and passed all 37 tests, including seven lineage/overlap/reset cases. Runtime acceptance still requires a live overlapping A/B trace proving distinct audio-result-delivery tuples.
+---
+
+
+---
 **Date:** 2026-07-21T01:00:07Z
 **Trigger:** Ethan physically exercised both Telegram Next-button routes in Saved Messages on installed v2.0.245 and confirmed that they submitted successfully while another app remained frontmost.
 **Symptom:** v2.0.244 could preserve and revalidate Telegram's exact background composer through a privacy-bounded visual identity, but Telegram exposed no AX Send control and ignored the ordinary two-event process-targeted Return used by earlier experiments.
