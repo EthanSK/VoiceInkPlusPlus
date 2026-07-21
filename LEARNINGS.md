@@ -53,7 +53,7 @@ Each entry looks like:
 **Root cause:** The running host updated to ChatGPT.app 26.715.70719 build 5650 with Chromium 150.0.7871.124; the sole idle unlabelled action remained present, but the fail-closed audited tuple list ended at builds 5551 and 5591, so candidate classification stayed auditedUnlabelled=0.
 **Fix:** Add only the exact ChatGPT build-5650 tuple after offline source plus runtime AX diagnostics proved the existing idle-Send versus labelled-Stop boundary.
 **Commit:** eb1cb8fd01e0f91f9f10242e004fe80d132a8322
-**Guard:** Positive build-5650 and future-build-5651 rejection tests passed in the 39-test Mini run. Signed v2.0.247 from 60d9d6d is installed with CDHash 781f46d54dc1cd1e41e951a2d834a27c9d66e081; physical background latch Send is still pending and must not be claimed from the test alone.
+**Guard:** Positive build-5650 and future-build-5651 rejection tests passed in the 39-test Mini run. Signed v2.0.247 from 60d9d6d is installed with CDHash 781f46d54dc1cd1e41e951a2d834a27c9d66e081. Ethan then physically confirmed the `recordingStart` Next route: while VS Code remained frontmost, the trace proved exact background insertion, resolved and invoked the audited FooterActions Send control, and this dictated message arrived in Codex. Post-action AX state was unreadable/indeterminate, so do not generalize that verifier result or mark the distinct `focusedDuringTranscription` second-chance route accepted yet.
 ---
 
 
