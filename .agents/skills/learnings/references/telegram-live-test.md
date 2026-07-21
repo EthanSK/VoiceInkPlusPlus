@@ -2,6 +2,12 @@
 
 Use this procedure to distinguish routing failures from Telegram exact-input resolution, insertion, and auto-send failures. Run only against disposable Telegram content.
 
+**Accepted pinned baseline (2026-07-21):** installed v2.0.245 physically passed both
+`recordingStart` and `focusedDuringTranscription` in Telegram 12.9 build 282526 Saved Messages while
+Terminal remained frontmost. Both traces used `visualIdentity=true`, verified exact insertion, then
+`route=telegramTargetedHIDReturn verification=verifiedCleared`. This does not replace rerunning the
+procedure after a change and does not prove foreground Primary or wrong-chat rejection.
+
 ## Prepare Saved Messages safely
 
 1. Start the repository trace:
@@ -68,7 +74,7 @@ pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTra
 Captured Telegram exact-input identity ... visualCaptureArmed=true
 Telegram retained exact input prepared with matching chat identity ... axAnchors=false visualIdentity=true
 paste: background text verified success=true
-paste: background auto-send finished success=true ... verification=verified
+paste: background auto-send finished success=true ... route=telegramTargetedHIDReturn verification=verifiedCleared
 ```
 
 If readable AX anchors are available, the preparation line may instead report `axAnchors=true visualIdentity=false`; one of those independent identity routes must be true. The visual route also requires no earlier missing-permission, unstable-capture, unaudited-tuple, or changed-digest rejection.

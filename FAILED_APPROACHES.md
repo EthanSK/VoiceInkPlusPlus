@@ -135,6 +135,27 @@ not resolve the saved window`. Telegram is therefore the next isolated compatibi
 change the accepted Primary path, fold later cross-app code into this checkpoint, or add a blind Send
 retry. Reconsider latch support only after a route-specific trace and explicit visible result agree.
 
+### Post-audit v2.0.245 Telegram boundary: both background Next routes accepted
+
+On 2026-07-21, signed v2.0.245 at `99a596b` preserved v2.0.244's pinned Telegram 12.9 build-282526
+visual-header identity and added only one Telegram-specific submission primitive. After a fresh
+exact-chat visual revalidation, it posts a HID-system modifier boundary, Return down/up, and live
+combined-session modifier restoration to Telegram's PID. This is not the rejected ordinary
+two-event process-targeted Return and is never a generic fallback.
+
+Two disposable Saved Messages traces now agree with Ethan's visible result:
+
+- Next while recording selected `recordingStart`, prepared `visualIdentity=true`, verified exact
+  background insertion, and finished with `route=telegramTargetedHIDReturn` and
+  `verification=verifiedCleared` while Terminal remained frontmost.
+- Primary stop followed by Next during transcription selected `focusedDuringTranscription` and
+  produced the same verified, non-activating result.
+
+This accepts those two routes only for the pinned Telegram tuple/layout with Screen Recording
+permission and a freshly matching visual identity. Foreground Primary and the wrong-chat digest-
+mismatch scenario remain physically untested. Any tuple/layout drift, missing permission, identity
+mismatch, focus theft, non-cleared composer, retry, or fallback rejects the route.
+
 ## Version-by-version evidence map (13–19 July 2026)
 
 This chronology exists because “the working version” was repeatedly misidentified by build-number
@@ -560,7 +581,8 @@ No row may be promoted merely because a later build reused part of it.
 
 ### Telegram
 
-- **State:** UNRESOLVED across later releases; several generic fixes rejected.
+- **State:** PARTIALLY ACCEPTED for both background Next routes on the pinned Telegram 12.9 build
+  282526 Saved Messages surface in v2.0.245; generic mechanisms remain rejected.
 - Telegram can hide its background AX children and reuse an editor wrapper across chats.
 - v2.0.209 failed strict pre-preparation re-resolution. Relaxing to internal focus/geometry alone
   could paste into the wrong chat.
@@ -572,19 +594,21 @@ No row may be promoted merely because a later build reused part of it.
 
 #### v2.0.244 audited visual-header reconsideration
 
-- **State:** INCONCLUSIVE candidate until a signed build passes the disposable Saved Messages trace.
+- **State:** SUPERSEDED identity foundation. v2.0.245 retained this visual gate and replaced only
+  the unavailable semantic-Send assumption with the separately proven Telegram HID sequence.
 - **Changed evidence:** Telegram 12.9 build 282526 exposes a parentless exact `AXTextArea` and one
   enclosing same-PID window, but no readable selected-chat title in that window's AX descendants.
   The selected chat header remains visible in a fixed audited crop of that exact window.
 - **Narrow mechanism:** Capture two stable samples at the input-decision boundary, retain only their
   SHA-256 digest and dimensions, and re-sample the same window before insertion and before one
-  explicitly labelled semantic Send. Require the retained exact editor/window structure, Telegram's
+  irreversible Send action. Require the retained exact editor/window structure, Telegram's
   own internal focus, unchanged background/no-focus-theft boundary, the audited app tuple/layout, and
   Screen Recording permission. Never retain or log screenshots, OCR, chat titles, messages, or crop
   bytes. `AXSelectedText` is one-shot; no error-triggered retry or generic background Return exists.
-- **Disposable/live gate:** Test both `recordingStart` and `focusedDuringTranscription` in Saved
-  Messages, require composer clear/reset and unchanged foreground, then switch to a second disposable
-  chat and prove the digest mismatch causes zero mutation/action. v2.0.243 remains the rollback.
+- **Disposable/live result:** v2.0.245 passed both `recordingStart` and
+  `focusedDuringTranscription` in Saved Messages with composer clear/reset and unchanged foreground.
+  The second disposable-chat digest-mismatch test and foreground Primary regression remain pending;
+  v2.0.243 remains the rollback checkpoint.
 - **Abandon condition:** Any unaudited tuple/layout, missing capture permission, unstable/blank image,
   digest mismatch, ambiguous window, focus theft, wrong-chat mutation, unverified Send, or Primary
   regression rejects this candidate without broadening it into generic Telegram or visual delivery.
@@ -860,6 +884,10 @@ the failed attempts:
 - `5475ef2` is the reproducible v2.0.243 checkpoint: Ethan confirmed normal Primary current-input
   delivery works. Its Codex and Telegram latch routes are not accepted. Preserve its Primary path and
   one-shot indeterminate-verification behavior while app-specific latch work continues.
+- `99a596b` is the signed v2.0.245 Telegram checkpoint: on the pinned 12.9/282526 Saved Messages
+  surface, both background Next routes verified exact insertion, one Telegram-only HID Return,
+  composer clear/reset, and no focus theft. Do not generalize it to another tuple, chat identity
+  mechanism, app, or ordinary process-targeted Return.
 - Privacy-bounded rolling traces and installed-build identity markers are accepted diagnostic
   infrastructure.
 
@@ -872,7 +900,8 @@ Future agents must state these gaps rather than extrapolate:
 - The user-reported lag/load sensitivity of v2.0.243; require a matching failed trace before deciding
   whether capture, overlap, host responsiveness, or another timing boundary is at fault.
 - Exact tab/task preservation when Chromium does not expose a readable semantic scope.
-- Telegram background capture, insertion, and Send while preserving the exact chat.
+- Telegram foreground Primary and wrong-chat fail-closed behavior on v2.0.245; both background Next
+  routes are accepted only for the pinned 12.9/282526 Saved Messages visual-identity boundary.
 - Claude Code across Terminal, iTerm, Ghostty, Warp, VS Code, and Cursor as distinct hosts.
 - Google Chrome exact tab/editor delivery beyond the specifically observed scenarios.
 - Notion selected card/property/block delivery without rich-content damage.

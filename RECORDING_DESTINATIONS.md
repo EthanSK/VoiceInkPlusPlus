@@ -202,13 +202,18 @@ selected-chat header crop and re-sample that same window immediately before inse
 still requires the exact editor/window structure, Telegram's own internal focus, and proof the app
 remained backgrounded. Screen Recording permission is required; no screenshot, OCR, title, message,
 or crop bytes are retained or logged. Missing permission, an app/layout update, blank/protected
-capture, or any digest mismatch fails closed.
+capture, or any digest mismatch fails closed. After v2.0.245 verifies insertion and revalidates that
+same identity at the action boundary, Telegram alone may receive one HID-system modifier boundary,
+Return down/up, and live modifier-state restoration addressed to its PID. The composer must clear;
+there is no retry or generic fallback.
 
-There is no accepted process-targeted Return exception. Ordinary PID posting was accepted by macOS
-while Electron ignored it. The later v2.0.233 audited-unlabelled `AXPress` returned success while the
-composer stayed unchanged, and the v2.0.234 SkyLight-authenticated Return produced
-`modifiedWithoutSubmit` instead of a cleared composer. Authentication changes event trust, not the
-application's Send semantics. `AXConfirm` is likewise not a generic editor Return. See
+There is no generic process-targeted Return exception. Ordinary two-event PID posting was accepted
+by macOS while Electron and Telegram ignored it. The later v2.0.233 audited-unlabelled `AXPress`
+returned success while the composer stayed unchanged, and the v2.0.234 SkyLight-authenticated Return
+produced `modifiedWithoutSubmit` instead of a cleared composer. The pinned Telegram sequence above
+is accepted only because both background Next routes physically proved exact identity, insertion,
+composer clear/reset, and no focus theft. Authentication or event acceptance alone still does not
+establish application Send semantics. `AXConfirm` is likewise not a generic editor Return. See
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before proposing another targeted-event variant.
 
 When the exact saved input already owns system keyboard focus, VoiceInk++ uses the foreground route:

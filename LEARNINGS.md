@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-21T01:00:07Z
+**Trigger:** Ethan physically exercised both Telegram Next-button routes in Saved Messages on installed v2.0.245 and confirmed that they submitted successfully while another app remained frontmost.
+**Symptom:** v2.0.244 could preserve and revalidate Telegram's exact background composer through a privacy-bounded visual identity, but Telegram exposed no AX Send control and ignored the ordinary two-event process-targeted Return used by earlier experiments.
+**Root cause:** Telegram 12.9 build 282526 accepts background Return only when the already-verified composer receives a HID-system event source sequence with an empty modifier-state boundary, Return down/up, and restoration of the live combined-session modifier state. The exact chat still cannot be inferred from Telegram's hidden background AX tree, so the pinned visual-header digest and retained editor/window boundary remain mandatory before insertion and Return.
+**Fix:** Commits e200052 and 99a596b add one Telegram-only, one-shot `telegramTargetedHIDReturn` route after fresh visual chat-identity revalidation. Signed v2.0.245 is installed with Screen Recording enabled. Live Saved Messages traces prove both `recordingStart` and `focusedDuringTranscription`: `visualIdentity=true`, exact background insertion verified, Terminal remained frontmost, the Telegram composer cleared, and auto-send finished `success=true verification=verifiedCleared` in 66 ms and 40 ms respectively.
+**Commit:** 99a596b9641ab0c27491704c6f3c1a77004e1a43
+**Guard:** The canonical Mini Xcode action built and then stalled in TestManager; a fresh direct `xcrun xctest` run named and passed all 30 tests. Installed v2.0.245 has CDHash `9857ba882d2ff2f9064edcf79f055dd9e7dccdd1`, passes deep/strict signing, retains Automation=true, and left `/Applications/VoiceInk.app` untouched. This accepts only both background Next routes for pinned Telegram 12.9/282526 Saved Messages. Foreground Primary and wrong-chat fail-closed remain physically untested, and the HID sequence must never become a generic process-targeted Return fallback.
+---
+
+
+---
 **Date:** 2026-07-20T21:54:29Z
 **Trigger:** Ethan designated v2.0.243 as the checkpoint and chose Telegram as the next compatibility target.
 **Symptom:** v2.0.243 kept Primary usable but both tested Telegram Next routes failed before insertion because the saved Telegram window could not be re-resolved after backgrounding.
