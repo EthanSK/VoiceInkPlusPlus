@@ -739,6 +739,20 @@ No row may be promoted merely because a later build reused part of it.
   recorder callback, or a mutable "latest" session to reconstruct earlier job state. Prove two
   distinct jobs retain distinct identities, audio URLs, configurations, and injected results.
 
+### Preloading or cleaning shared models through another live session
+
+- **State:** REJECTED.
+- **Failure:** Serializing only stopped-recording pipelines was insufficient. B could speculatively
+  preload the process-wide Whisper/FluidAudio manager while A still transcribed, and A's completion
+  or B's failure/cancel path could tear that same manager down while the other session still owned it.
+- **Resolution:** Speculative preload is allowed only for the sole live session. Task-specific cleanup
+  requires both zero remaining sessions and current retiring lineage; an in-progress cleanup is a
+  start barrier. Full reset blocks new starts, cancels all jobs, awaits the reset-drain barrier, and
+  only then releases shared model resources.
+- **Do not retry:** Do not infer resource isolation from a serial pipeline if preload, failure, cancel,
+  or cleanup lives outside that queue. Require the shared-resource policy regression and an overlap
+  trace with no cleanup/preload crossing between A and B.
+
 ## Verification failures and false confidence
 
 ### Unit tests passed, real app failed
