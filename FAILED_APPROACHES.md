@@ -613,6 +613,23 @@ No row may be promoted merely because a later build reused part of it.
   digest mismatch, ambiguous window, focus theft, wrong-chat mutation, unverified Send, or Primary
   regression rejects this candidate without broadening it into generic Telegram or visual delivery.
 
+#### Hashing Telegram's complete selected-chat header crop
+
+- **State:** REJECTED as the replay identity for the pinned visual route.
+- **Attempt:** Require one SHA-256 digest of the complete audited header crop, including Telegram's
+  avatar, primary chat title, and lower status/activity row.
+- **Observed result:** With the exact same window and dimensions, a privacy-safe probe observed eight
+  different full-header hashes in roughly one second because the lower status/activity row changes
+  independently of the selected chat. The same crop later became stable again, so a two-sample arm
+  could still accept a transiently quiet row and then falsely reject the unchanged chat at delivery.
+- **Resolution:** Keep the full crop digest only as drift telemetry. For the exact pinned Telegram
+  12.9/282526 layout, replay identity hashes only the audited avatar plus primary-title row and still
+  requires byte-for-byte equality, exact dimensions, the retained editor/window structure, Telegram
+  internal focus, and fresh revalidation before every mutation/action.
+- **Do not retry:** Do not widen the stable region back into status/activity pixels or replace the
+  exact digest with fuzzy image similarity. Reconsider only after a new Telegram tuple/layout audit
+  identifies a different stable semantic region and the wrong-chat fail-closed test passes.
+
 ### Terminal, iTerm, and Claude Code
 
 - **State:** Surface-specific; do not infer from GUI chat apps.

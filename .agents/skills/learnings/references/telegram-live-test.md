@@ -8,6 +8,12 @@ Terminal remained frontmost. Both traces used `visualIdentity=true`, verified ex
 `route=telegramTargetedHIDReturn verification=verifiedCleared`. This does not replace rerunning the
 procedure after a change and does not prove foreground Primary or wrong-chat rejection.
 
+**Current candidate (v2.0.247):** the full header digest was proven unstable because Telegram's
+lower status/activity row changes independently. Replay identity now remains exact but hashes only
+the audited avatar plus primary-title row. A trace may log that dynamic-only full-header drift was
+accepted; it must still report matching stable chat identity at every irreversible boundary. The
+candidate is not accepted until both background routes are physically rerun.
+
 ## Prepare Saved Messages safely
 
 1. Start the repository trace:
@@ -89,7 +95,7 @@ Run this only when two disposable Telegram chats are available; never risk a rea
 2. Before delivery, switch Telegram internally to the other disposable chat, then Command-Tab away.
 3. Require AX-anchor or visual-digest mismatch/rejection in the trace and **zero insertion or Send action in either unintended composer**.
 
-Expected failure evidence includes `Telegram retained-input preparation rejected a changed or unreadable visual chat identity`, `Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat`, `saved Telegram chat identity changed before insertion`, or another explicit exact-chat resolution failure. A subsequent `paste: background text verified success=true` or semantic Send line is a test failure. If a second disposable chat is unavailable, mark this scenario **not tested**.
+Expected failure evidence includes `Telegram visual identity revalidation rejected changed stable chat identity or dimensions`, `Telegram retained-input preparation rejected a changed or unreadable visual chat identity`, `Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat`, `saved Telegram chat identity changed before insertion`, or another explicit exact-chat resolution failure. A subsequent `paste: background text verified success=true` or semantic Send line is a test failure. A dynamic-only full-header change with the exact stable avatar/title digest may be accepted and is not by itself a wrong-chat rejection. If a second disposable chat is unavailable, mark this scenario **not tested**.
 
 ## Read and close the trace
 

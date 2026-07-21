@@ -25,6 +25,39 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-21T23:22:09Z
+**Trigger:** Ethan asked whether recording could start without dismissing an open right-click/context menu.
+**Symptom:** Opening a right-click context menu and pressing the modifier-only Primary shortcut dismissed the menu when recording began.
+**Root cause:** ShortcutMonitor detected the Shift-Control-Option chord but returned every flagsChanged event downstream, so the foreground app also received the completed chord that VoiceInk++ had already consumed logically.
+**Fix:** Use a pure modifier-sequence reducer that suppresses only the completed owned chord and full-chord repeats; forward partial modifiers and every release so other apps remain balanced and no modifier can stick.
+**Commit:** 75f63475b4533ceaa4b882b13fc36284f0284faf
+**Guard:** primaryModifierChordSuppressesOnlyTheCompletedPress passed in the 39-test Mini run. Signed v2.0.247 is installed; physical context-menu preservation remains pending.
+---
+
+
+---
+**Date:** 2026-07-21T23:22:09Z
+**Trigger:** Ethan reported Telegram latch regression after the earlier accepted v2.0.245 result.
+**Symptom:** The pinned Telegram exact-chat route could reject the same Saved Messages composer because the retained full header digest changed.
+**Root cause:** A privacy-safe live probe kept the Telegram window dimensions fixed but observed eight full-header pixel hashes in about one second; the crop included Telegram's dynamic status/activity row even though the avatar and primary title row were unchanged.
+**Fix:** Hash only the audited avatar plus primary title row, still byte-for-byte and tuple/layout pinned; retain full-header digest only as drift telemetry and keep every existing exact editor/window/internal-focus boundary.
+**Commit:** 009743fbf3774e84b09bcdf264fd0c310497ec24
+**Guard:** Dynamic-status and changed-title digest tests passed in the 39-test Mini run. Signed v2.0.247 is installed, but Telegram physical background routes and wrong-chat rejection remain pending.
+---
+
+
+---
+**Date:** 2026-07-21T23:22:09Z
+**Trigger:** Ethan reported that Codex latch Send regressed on v2.0.246.
+**Symptom:** v2.0.246 latched and inserted into the exact background ChatGPT-hosted Codex composer, but auto-send reported that no semantic Send control was available.
+**Root cause:** The running host updated to ChatGPT.app 26.715.70719 build 5650 with Chromium 150.0.7871.124; the sole idle unlabelled action remained present, but the fail-closed audited tuple list ended at builds 5551 and 5591, so candidate classification stayed auditedUnlabelled=0.
+**Fix:** Add only the exact ChatGPT build-5650 tuple after offline source plus runtime AX diagnostics proved the existing idle-Send versus labelled-Stop boundary.
+**Commit:** eb1cb8fd01e0f91f9f10242e004fe80d132a8322
+**Guard:** Positive build-5650 and future-build-5651 rejection tests passed in the 39-test Mini run. Signed v2.0.247 from 60d9d6d is installed with CDHash 781f46d54dc1cd1e41e951a2d834a27c9d66e081; physical background latch Send is still pending and must not be claimed from the test alone.
+---
+
+
+---
 **Date:** 2026-07-21T22:23:17Z
 **Trigger:** Ethan reported that starting a new transcription after or while the previous one transcribed could sometimes paste the old value and requested race hardening.
 **Symptom:** Starting a new recording while the previous result was still transcribing could appear to paste the older result, and prior traces could not prove whether audio, result, and delivery still belonged to one job.
