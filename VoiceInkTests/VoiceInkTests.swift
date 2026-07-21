@@ -47,8 +47,10 @@ struct VoiceInkTests {
 
         #expect(reservation.reserve(id: first) == first)
         #expect(reservation.reserve(id: second) == nil)
-        #expect(!reservation.consume(second))
-        #expect(reservation.consume(first))
+        let consumedWrongReservation = reservation.consume(second)
+        #expect(!consumedWrongReservation)
+        let consumedFirstReservation = reservation.consume(first)
+        #expect(consumedFirstReservation)
         #expect(reservation.reserve(id: second) == second)
 
         reservation.invalidate()
@@ -60,35 +62,40 @@ struct VoiceInkTests {
         let sessionA = UUID()
         let transcriptionA = UUID()
         let audioA = URL(fileURLWithPath: "/tmp/session-a.wav")
-        let identityA = try #require(registry.register(
+        let registeredA = registry.register(
             recordingSessionID: sessionA,
             transcriptionID: transcriptionA,
             audioURL: audioA
-        ))
+        )
+        let identityA = try #require(registeredA)
 
         #expect(identityA.enqueueSequence == 1)
         #expect(registry.contains(identityA))
-        #expect(registry.register(
+        let duplicateSession = registry.register(
             recordingSessionID: sessionA,
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/other.wav")
-        ) == nil)
-        #expect(registry.register(
+        )
+        #expect(duplicateSession == nil)
+        let duplicateTranscription = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: transcriptionA,
             audioURL: URL(fileURLWithPath: "/tmp/other.wav")
-        ) == nil)
-        #expect(registry.register(
+        )
+        #expect(duplicateTranscription == nil)
+        let duplicateAudio = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: audioA
-        ) == nil)
+        )
+        #expect(duplicateAudio == nil)
 
-        let identityB = try #require(registry.register(
+        let registeredB = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
-        ))
+        )
+        let identityB = try #require(registeredB)
         #expect(identityB.enqueueSequence == 2)
         #expect(identityB.recordingSessionID != identityA.recordingSessionID)
         #expect(identityB.transcriptionID != identityA.transcriptionID)
@@ -97,20 +104,22 @@ struct VoiceInkTests {
 
     @Test func transcriptionJobRegistryResetInvalidatesOnlyOldGeneration() throws {
         var registry = TranscriptionJobRegistry()
-        let identityA = try #require(registry.register(
+        let registeredA = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
-        ))
+        )
+        let identityA = try #require(registeredA)
 
         registry.invalidateAll()
         #expect(!registry.contains(identityA))
 
-        let identityB = try #require(registry.register(
+        let registeredB = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
-        ))
+        )
+        let identityB = try #require(registeredB)
         #expect(identityB.generation == identityA.generation + 1)
         #expect(identityB.enqueueSequence == identityA.enqueueSequence + 1)
         #expect(registry.contains(identityB))
@@ -119,16 +128,18 @@ struct VoiceInkTests {
     @MainActor
     @Test func serialQueueKeepsInjectedResultsBoundToFIFOJobIdentity() async throws {
         var registry = TranscriptionJobRegistry()
-        let identityA = try #require(registry.register(
+        let registeredA = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
-        ))
-        let identityB = try #require(registry.register(
+        )
+        let identityA = try #require(registeredA)
+        let registeredB = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
-        ))
+        )
+        let identityB = try #require(registeredB)
         let injectedResults = [
             identityA.transcriptionID: "result-a",
             identityB.transcriptionID: "result-b",
@@ -161,16 +172,18 @@ struct VoiceInkTests {
     @MainActor
     @Test func resetCannotResumeAWaitingJobOrAuthorizeRunningJobDelivery() async throws {
         var registry = TranscriptionJobRegistry()
-        let identityA = try #require(registry.register(
+        let registeredA = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
-        ))
-        let identityB = try #require(registry.register(
+        )
+        let identityA = try #require(registeredA)
+        let registeredB = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
-        ))
+        )
+        let identityB = try #require(registeredB)
         let state = TranscriptionQueueTestState()
         state.currentIdentities = [identityA, identityB]
         let gate = TranscriptionQueueTestGate()
@@ -219,11 +232,12 @@ struct VoiceInkTests {
     @MainActor
     @Test func newGenerationWaitsForCanceledRunningJobToUnwind() async throws {
         var registry = TranscriptionJobRegistry()
-        let identityA = try #require(registry.register(
+        let registeredA = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
-        ))
+        )
+        let identityA = try #require(registeredA)
         let state = TranscriptionQueueTestState()
         state.currentIdentities = [identityA]
         let gate = TranscriptionQueueTestGate()
@@ -250,11 +264,12 @@ struct VoiceInkTests {
         state.currentIdentities.removeAll()
         _ = queue.cancelAll()
 
-        let identityB = try #require(registry.register(
+        let registeredB = registry.register(
             recordingSessionID: UUID(),
             transcriptionID: UUID(),
             audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
-        ))
+        )
+        let identityB = try #require(registeredB)
         state.currentIdentities.insert(identityB)
         queue.enqueue(
             identityB,
