@@ -444,6 +444,15 @@ final class FocusLockService: ObservableObject {
             shortVersion: "26.715.52143",
             build: "5591",
             chromium: "150.0.7871.124"
+        ),
+        // ChatGPT 26.715.70719 build 5650 keeps the same safety boundary: the
+        // idle composer action is the sole enabled unlabelled button, while the
+        // in-flight action has an explicit Stop label. Runtime AX diagnostics
+        // independently observed exactly one unlabelled candidate in this build.
+        (
+            shortVersion: "26.715.70719",
+            build: "5650",
+            chromium: "150.0.7871.124"
         )
     ]
 
