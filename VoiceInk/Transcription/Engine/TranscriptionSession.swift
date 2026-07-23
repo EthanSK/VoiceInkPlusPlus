@@ -14,6 +14,22 @@ protocol TranscriptionSession: AnyObject {
     func cancel()
 }
 
+/// A streaming provider has not produced a deliverable final merely because its
+/// commit request returned. In particular, Soniox can acknowledge a very short
+/// or still-speaking stop with an empty committed event even though the complete
+/// recording file contains speech. Treat that as a request for the existing batch
+/// fallback, never as text to send through Primary or either Next-button route.
+enum StreamingFinalTextDisposition: Equatable {
+    case deliver(String)
+    case useBatchFallback
+
+    static func resolve(_ text: String) -> Self {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? .useBatchFallback
+            : .deliver(text)
+    }
+}
+
 // MARK: - File-Based Session
 
 /// File-based session: records to file, uploads after stop.
@@ -122,8 +138,16 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                 let start = Date()
                 logger.notice("Streaming stop/transcribe started model=\(model.displayName, privacy: .public)")
                 let text = try await streamingService.stopAndGetFinalText()
-                logger.notice("Streaming transcript received elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)")
-                return text
+                switch StreamingFinalTextDisposition.resolve(text) {
+                case .deliver(let finalText):
+                    logger.notice("Streaming transcript received elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s chars=\(finalText.count, privacy: .public)")
+                    return finalText
+                case .useBatchFallback:
+                    // Realtime partials are HUD preview only. An empty commit must
+                    // not become a blank paste or skip the user's configured Return;
+                    // finish the same audio through the normal provider first.
+                    logger.warning("Streaming finalized without usable text; falling back to completed-file transcription")
+                }
             } catch {
                 logger.error("❌ Streaming failed, falling back to batch: \(error, privacy: .public)")
                 streamingService.cancel()

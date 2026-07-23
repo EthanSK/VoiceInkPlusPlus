@@ -1536,6 +1536,12 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func emptyRealtimeFinalFallsBackInsteadOfDeliveringBlankText() {
+        #expect(StreamingFinalTextDisposition.resolve("") == .useBatchFallback)
+        #expect(StreamingFinalTextDisposition.resolve(" \n\t") == .useBatchFallback)
+        #expect(StreamingFinalTextDisposition.resolve("finished words") == .deliver("finished words"))
+    }
+
     @Test func primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
