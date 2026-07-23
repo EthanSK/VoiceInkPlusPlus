@@ -5,6 +5,19 @@ import SwiftData
 import AppKit
 import os
 
+/// Runtime payload for one registry-approved queue identity. Audio, transcription
+/// configuration, streaming session, and SwiftData record are captured once when the
+/// mic has stopped. The mutable RecordingSession remains only for the deliberately
+/// late-bound destination/Mode retarget and per-session UI/cancellation state.
+private struct QueuedTranscriptionJob {
+    let identity: TranscriptionJobIdentity
+    let recordingSession: RecordingSession
+    let transcription: Transcription
+    let audioURL: URL
+    let transcriptionConfiguration: TranscriptionRuntimeConfiguration
+    let transcriptionSession: TranscriptionSession?
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // VoiceInkEngine — MULTI-SESSION refactor (record-while-transcribing, 2026-06-28)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -106,14 +119,29 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // cancel is now per-session via RecordingSession.shouldCancel + this set.)
     private var canceledPipelineTranscriptionIDs = Set<UUID>()
 
-    // ── Serial transcription queue (chained Task on the MainActor) ──
-    // Each enqueue appends to a Task chain: the new tail awaits the previous tail's value
-    // before running its pipeline. This guarantees:
+    // ── Serial transcription queue + immutable lineage registry ──
+    // Each enqueue appends to a MainActor Task chain: the new job awaits the previous
+    // tail before running. The registry binds one session id, SwiftData transcription id,
+    // exact audio URL, and monotonic sequence before that wait begins. This guarantees:
     //   (a) FIFO order — jobs run in the order they were enqueued (= recording order), and
     //   (b) full serialization — each pipeline fully finishes (transcribe→enhance→deliver)
     //       before the next begins, so they never share the whisper/fluidaudio model.
-    // `prev?.value` never throws (Task<Void, Never>); we simply await it to chain.
-    private var transcriptionQueueTail: Task<Void, Never>?
+    // Waiting tasks revalidate membership after `previous.value`: cancellation of a
+    // Task<Void, Never> wait does not throw. A reset invalidates the generation and
+    // cancels every retained task, not only the newest tail.
+    private let transcriptionJobQueue = SerialTranscriptionJobQueue()
+    private var transcriptionJobRegistry = TranscriptionJobRegistry()
+
+    // Whisper/FluidAudio managers are shared even though jobs are per-session. A
+    // cleanup task is therefore a resource barrier: a new recording waits for it,
+    // and one session may never clean or preload through another live session.
+    private var resourceCleanupTask: Task<Void, Never>?
+    private var isResettingRecordingSession = false
+
+    // Reservation across requestRecordPermission → startNewSession scheduling. Without
+    // this synchronous token, two rapid Primary start events can both observe no active
+    // session before either scheduled MainActor task appends one, creating two mic owners.
+    private var recordingStartReservation = RecordingStartReservation()
 
     let recorder = Recorder()
     let recordingsDirectory: URL
@@ -219,13 +247,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
             return .noFocusedInput
         }
 
+        let targetMode = ModeRuntimeResolver.modeSnapshot(
+            forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
+        )
         let didRetarget = session.retargetPaste(
             to: RecordingPasteTarget(
                 destination: .focusedDuringTranscription,
                 focusedInput: focusedInput,
-                mode: ModeRuntimeResolver.modeSnapshot(
-                    forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
-                )
+                mode: targetMode
             )
         )
         guard didRetarget else {
@@ -236,6 +265,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // Success is communicated by the published per-session destination icon
         // switching in place. Keep text reserved for failures; a toast here made the
         // compact recorder noisy and duplicated the much clearer icon transition.
+        // A realtime session may already have a cumulative draft. Seed that complete
+        // draft into the newly focused second-chance input now; exact delivery later
+        // replaces the owned range with final processed text instead of appending it.
+        session.realtimeInputDraftSession?.seedSecondChanceTarget(
+            focusedInput,
+            mayWriteTargetMode: (targetMode?.outputMode ?? .paste) == .paste
+        )
         vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
         return .retargeted
     }
@@ -258,6 +294,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// Remove a finished/aborted session from the collection + recompute derived state.
     /// SwiftUI animates the card out (transition on the `sessions` array).
     private func removeSession(_ session: RecordingSession) {
+        session.realtimeInputDraftSession?.finish()
         session.phase = .done
         session.clearContext()
         sessions.removeAll { $0.id == session.id }
@@ -276,7 +313,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     func toggleRecord(
         modeId: UUID? = nil,
         isAssistantFollowUp: Bool = false,
-        stopPasteDestination: RecordingPasteDestination = .focusedAtStop
+        stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput
     ) async {
         // Mid-start re-press: the active session is still starting → cancel it.
         if let active = activeRecordingSession, active.liveRecordingState == .starting {
@@ -292,6 +329,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // that inline await is exactly what blocked the next start in the old engine.
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
+            // Stop is the ordering boundary for realtime input streaming. Flush the
+            // newest cumulative hypothesis into whichever input owns the system caret
+            // now, then freeze partial mutations. Final delivery reconciles that exact
+            // owned range and performs one Return; non-realtime sessions are no-ops.
+            active.realtimeInputDraftSession?.flushBeforeStop(
+                forceRawOutput: active.skipPostProcessing
+            )
+
             switch stopPasteDestination {
             case .recordingStart:
                 let focusedInput = active.recordingStartFocusedInput
@@ -302,14 +347,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
                     )
                 )
-            case .focusedAtStop:
-                let focusedInput = FocusLockService.shared.captureFocusedInput()
+            case .primaryCurrentInput:
+                // PRIMARY IS BASE VOICEINK. Do not capture a Telegram/OpenAI/Terminal
+                // wrapper here and do not snapshot an app-specific Mode. The eventual
+                // system Cmd-V and generic Return follow whichever keyboard input and
+                // Mode are current at delivery. Only a later physical Next press may
+                // replace this with an exact focusedDuringTranscription target.
                 active.pasteTarget = RecordingPasteTarget(
-                    destination: .focusedAtStop,
-                    focusedInput: focusedInput,
-                    mode: ModeRuntimeResolver.modeSnapshot(
-                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
-                    )
+                    destination: .primaryCurrentInput,
+                    focusedInput: nil
                 )
             case .focusedDuringTranscription:
                 preconditionFailure("A transcription-time target can only be selected after recording has stopped")
@@ -320,7 +366,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // same session and therefore pulse in sync without re-reading focus.
             active.signalDestinationAction(stopPasteDestination)
 
-            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
+            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) deliveryPolicy=\(stopPasteDestination.usesBaseCurrentInputDelivery ? "baseCurrentInput" : "exactNextLatch", privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
@@ -368,14 +414,25 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 }
                 active.transcriptionSession?.cancel()
                 removeSession(active)
-                await cleanupResources()
+                await cleanupResourcesIfUnused(
+                    retiringOwnerIsCurrent: true,
+                    reason: "recording stopped without an audio file"
+                )
             }
         } else {
             // ── START branch ─────────────────────────────────────────────────────────
-            // Defensive invariant assert: never create a second .recording session. The
-            // toggle path guarantees this (a press while recording hits the STOP branch),
-            // but assert it anyway.
+            // Reserve synchronously before the permission callback schedules another
+            // MainActor task. A second rapid start press in this gap is ignored rather
+            // than becoming a second session that points at the same shared Recorder.
             assert(activeRecordingSession == nil, "one-active-recording invariant violated")
+            guard !isResettingRecordingSession else {
+                vippLog.notice("toggleRecord: START ignored while a full recording reset is draining old jobs")
+                return
+            }
+            guard let startRequestID = recordingStartReservation.reserve() else {
+                vippLog.notice("toggleRecord: duplicate START ignored while an earlier start request is pending")
+                return
+            }
 
             let canContinueAssistantSession = isAssistantFollowUp && assistantSession.canSendFollowUp
             let useCase: RecordingSession.UseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
@@ -384,19 +441,25 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 assistantSession.reset()
             }
 
-            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Capture before asynchronous setup. Electron may expose only AXWebArea while the shortcut is down, so preserve the owning app for Next Track.
+            // This passive recording-start capture exists solely for a possible Next
+            // stop. A normal Primary stop discards it structurally and never enters an
+            // app-specific resolver, even though the user could choose Next later.
+            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true)
 
-            requestRecordPermission { [self] granted in
-                if granted {
-                    Task { @MainActor [self] in
+            requestRecordPermission { [weak self] granted in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if granted {
                         await self.startNewSession(
+                            startRequestID: startRequestID,
                             modeId: modeId,
                             useCase: useCase,
                             recordingStartFocusedInput: recordingStartFocusedInput
                         )
+                    } else {
+                        self.recordingStartReservation.cancel(startRequestID)
+                        self.logger.error("Recording permission denied")
                     }
-                } else {
-                    logger.error("Recording permission denied")
                 }
             }
         }
@@ -408,11 +471,28 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // used (permission already granted, recorder.startRecording, mode config apply, streaming
     // session prepare, model preload), and appends it to `sessions` with phase .recording.
     private func startNewSession(
+        startRequestID: UUID,
         modeId: UUID?,
         useCase: RecordingSession.UseCase,
         recordingStartFocusedInput: FocusLockService.Target?
     ) async {
-        let startID = UUID()
+        // Cleanup yields while shared model managers release memory. Keep the start
+        // reservation owned across that wait so no second start can overtake it, then
+        // revalidate the token before creating a session or touching shared resources.
+        if let resourceCleanupTask {
+            await resourceCleanupTask.value
+        }
+
+        // Consume the exact reservation before creating the session. MainActor isolation
+        // makes this an atomic handoff: stale permission callbacks and duplicate start
+        // events cannot append another mic owner.
+        guard recordingStartReservation.consume(startRequestID),
+              activeRecordingSession == nil else {
+            vippLog.notice("startNewSession: stale or duplicate START refused requestID=\(startRequestID.uuidString, privacy: .public)")
+            return
+        }
+
+        let startID = startRequestID
         let session = RecordingSession(
             phase: .recording,
             useCase: useCase,
@@ -432,6 +512,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
             return session.startID == startID && !session.shouldCancel && self.sessions.contains(where: { $0.id == session.id })
         }
 
+        // The app/default Mode is applied synchronously before beginApplyingConfiguration
+        // returns; capture that provisional transcription configuration immediately.
+        // If the user stops during an asynchronous browser-URL lookup, this session still
+        // owns its own model/language/prompt rather than falling back later to session B's
+        // globally current Mode.
+        session.transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
+            transcriptionModelManager: self.transcriptionModelManager
+        )
+
         do {
             let fileName = "\(UUID().uuidString).wav"
             let permanentURL = self.recordingsDirectory.appendingPathComponent(fileName)
@@ -450,7 +539,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             // Re-press / cancel / panel-gone guard: if this is no longer the live start, abort.
             guard session.startID == startID,
-                  self.sessions.contains(where: { $0.id == session.id }),
+                  self.activeRecordingSession === session,
                   self.recorderUIManager?.isRecorderPanelVisible ?? false,
                   !session.shouldCancel else {
                 activeModeTask.cancel()
@@ -476,6 +565,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await activeModeTask.value
 
             guard session.liveRecordingState == .recording,
+                  self.activeRecordingSession === session,
                   session.startID == startID,
                   !session.shouldCancel else {
                 return
@@ -492,12 +582,23 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 try? FileManager.default.removeItem(at: permanentURL)
                 session.audioURL = nil
                 self.removeSession(session)
-                await self.cleanupResources()
+                await self.cleanupResourcesIfUnused(
+                    retiringOwnerIsCurrent: true,
+                    reason: "recording had no selected model"
+                )
                 await self.recorderUIManager?.dismissRecorderPanel()
                 return
             }
 
             session.transcriptionConfiguration = transcriptionConfiguration
+
+            session.realtimeInputDraftSession = RealtimeInputDraftSession(
+                sessionID: session.id,
+                isEnabled: RealtimeInputDraftFeature.isEnabled(
+                    for: transcriptionConfiguration,
+                    useCase: session.useCase
+                )
+            )
 
             if self.serviceRegistry.shouldUseRealtimeTranscription(for: transcriptionConfiguration) {
                 let streamingSession = self.serviceRegistry.createSession(
@@ -510,6 +611,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 return
                             }
                             session.partialTranscript = partial
+                            session.realtimeInputDraftSession?.receive(
+                                partial,
+                                forceRawOutput: session.skipPostProcessing
+                            )
                             // Mirror to the engine's derived partial only while this is the
                             // active recording session (it always is here, but be explicit).
                             if self.activeRecordingSession?.id == session.id {
@@ -522,6 +627,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 let realCallback = try await streamingSession.prepare(
                     configuration: transcriptionConfiguration
                 )
+
+                // `prepare` is async. Session A may have stopped and session B may now
+                // own the shared Recorder while this await was suspended. Never install
+                // A's callback into B's recorder: that would route B's microphone chunks
+                // into A's streaming provider and is a direct old/new transcript race.
+                guard session.liveRecordingState == .recording,
+                      self.activeRecordingSession === session,
+                      session.startID == startID,
+                      !session.shouldCancel else {
+                    streamingSession.cancel()
+                    return
+                }
 
                 if let realCallback {
                     self.recorder.onAudioChunk = realCallback
@@ -538,16 +655,24 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 pendingChunks.withLock { $0.removeAll() }
             }
 
-            // Best-effort model preload so the eventual transcribe is fast.
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            // Best-effort model preload so the eventual transcribe is fast. Use this
+            // recording's frozen model; rereading the global Mode here lets a newer
+            // overlapping recording choose which model an older session preloads. The
+            // model managers are shared, so never preload B through A's running/queued
+            // pipeline. B will load on demand once the serial queue reaches it.
+            let modelForPreload = transcriptionConfiguration.model
+            Task { @MainActor [weak self, weak session] in
+                guard let self, let session,
+                      self.activeRecordingSession === session,
+                      SharedTranscriptionResourcePolicy.allowsSpeculativePreload(
+                          liveSessionCount: self.sessions.count
+                      ) else {
+                    self?.vippLog.info("pipeline preload SKIPPED because another recording/transcription session owns shared resources")
+                    return
+                }
 
-                let currentModel = ModeRuntimeResolver.transcriptionConfiguration(
-                    transcriptionModelManager: self.transcriptionModelManager
-                )?.model
-
-                if let model = currentModel,
-                   model.provider == .whisper {
+                if modelForPreload.provider == .whisper {
+                    let model = modelForPreload
                     if let localWhisperModel = self.whisperModelManager.availableModels.first(where: { $0.name == model.name }),
                        self.whisperModelManager.whisperContext == nil {
                         do {
@@ -556,7 +681,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             self.logger.error("❌ Model loading failed: \(error, privacy: .public)")
                         }
                     }
-                } else if let fluidAudioModel = currentModel as? FluidAudioModel {
+                } else if let fluidAudioModel = modelForPreload as? FluidAudioModel {
                     try? await self.serviceRegistry.fluidAudioTranscriptionService.loadModel(for: fluidAudioModel)
                 }
             }
@@ -571,7 +696,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
             session.audioURL = nil
             self.removeSession(session)
-            await self.cleanupResources()
+            await self.cleanupResourcesIfUnused(
+                retiringOwnerIsCurrent: true,
+                reason: "recording failed to start"
+            )
             NotificationManager.shared.showNotification(title: String(localized: "Recording failed to start"), type: .error)
             await self.recorderUIManager?.dismissRecorderPanel()
         }
@@ -593,59 +721,105 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Serial Transcription Queue
 
-    // Enqueue this session's pipeline onto the serial FIFO chain. See the
-    // `transcriptionQueueTail` declaration for the full serialization rationale. We capture
-    // the previous tail, then replace it with a new Task that first awaits the previous
-    // tail's completion, then runs THIS session's pipeline to completion. Result: pipelines
-    // run strictly one-after-another in enqueue (= recording) order ⇒ FIFO delivery for free.
+    // Enqueue this session's pipeline onto the serial FIFO queue. The registry rejects
+    // duplicate session/transcription/audio ownership before any Task is created. The
+    // actual job captures audio, model/request configuration, and streaming session now;
+    // runPipeline never reconstructs them from later global or recorder state.
     private func enqueueTranscription(for session: RecordingSession, transcription: Transcription) {
-        let previousTail = transcriptionQueueTail
-        transcriptionQueueTail = Task { @MainActor [weak self] in
-            // Wait for all earlier-enqueued pipelines to finish first (serial chain).
-            await previousTail?.value
-            guard let self else { return }
-            await self.runPipeline(for: session, transcription: transcription)
+        guard let audioURL = session.audioURL?.standardizedFileURL,
+              transcription.audioFileURL == audioURL.absoluteString,
+              let transcriptionConfiguration = session.transcriptionConfiguration,
+              let identity = transcriptionJobRegistry.register(
+                  recordingSessionID: session.id,
+                  transcriptionID: transcription.id,
+                  audioURL: audioURL
+              ) else {
+            let reason = "A stopped recording could not be bound to one unique audio/transcription job"
+            transcription.text = String(format: String(localized: "Transcription Failed: %@"), reason)
+            transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
+            try? modelContext.save()
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Transcription failed: recording session identity was inconsistent"),
+                type: .error
+            )
+            vippLog.fault("pipeline enqueue REFUSED session=\(session.id.uuidString, privacy: .public) transcriptionID=\(transcription.id.uuidString, privacy: .public) audioFile=\(session.audioURL?.lastPathComponent ?? "nil", privacy: .public) hasConfiguration=\(session.transcriptionConfiguration != nil, privacy: .public)")
+            removeSession(session)
+            return
         }
+
+        let job = QueuedTranscriptionJob(
+            identity: identity,
+            recordingSession: session,
+            transcription: transcription,
+            audioURL: audioURL,
+            transcriptionConfiguration: transcriptionConfiguration,
+            transcriptionSession: session.transcriptionSession
+        )
+        vippLog.info("pipeline enqueue \(identity.logDescription, privacy: .public) model=\(transcriptionConfiguration.model.displayName, privacy: .public)")
+
+        transcriptionJobQueue.enqueue(
+            identity,
+            isCurrent: { [weak self, weak session, weak transcription] queuedIdentity in
+                guard let self, let session, let transcription else { return false }
+                return self.transcriptionJobRegistry.contains(queuedIdentity)
+                    && session.id == queuedIdentity.recordingSessionID
+                    && session.pipelineTranscriptionID == queuedIdentity.transcriptionID
+                    && session.audioURL?.standardizedFileURL == queuedIdentity.audioURL
+                    && transcription.id == queuedIdentity.transcriptionID
+                    && transcription.audioFileURL == queuedIdentity.audioURL.absoluteString
+                    && self.sessions.contains(where: { $0 === session })
+            },
+            onDiscard: { [weak self] discardedIdentity in
+                guard let self else { return }
+                self.transcriptionJobRegistry.remove(discardedIdentity)
+                self.vippLog.notice("pipeline queue DISCARD before run \(discardedIdentity.logDescription, privacy: .public) taskCancelled=\(Task.isCancelled, privacy: .public)")
+            },
+            operation: { [weak self] _ in
+                guard let self else { return }
+                await self.runPipeline(for: job)
+                self.transcriptionJobRegistry.remove(identity)
+                self.vippLog.info("pipeline remove \(identity.logDescription, privacy: .public)")
+            }
+        )
     }
 
     // MARK: - Pipeline Dispatch
 
-    // Run the full transcribe→enhance→deliver pipeline for ONE session, using that session's
-    // stored config / transcription session / context store / pipeline id (NOT engine
-    // singletons). On completion the session is removed from the collection.
-    private func runPipeline(for session: RecordingSession, transcription: Transcription) async {
-        guard let transcriptionConfiguration = session.transcriptionConfiguration ??
-            ModeRuntimeResolver.transcriptionConfiguration(transcriptionModelManager: transcriptionModelManager) else {
-            transcription.text = String(localized: "Transcription Failed: No model selected")
-            transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
-            try? modelContext.save()
-            NotificationManager.shared.showNotification(title: String(localized: "Transcription failed: no model selected"), type: .error)
-            removeSession(session)
-            return
-        }
-
-        guard let audioURL = session.audioURL else {
-            NotificationManager.shared.showNotification(title: String(localized: "Transcription failed: recorded audio is unavailable"), type: .error)
-            removeSession(session)
-            return
-        }
-
-        let streamingSession = session.transcriptionSession
-        let transcriptionID = transcription.id
-        session.pipelineTranscriptionID = transcriptionID
+    // Run the full transcribe→enhance→deliver pipeline for ONE immutable job. Only
+    // destination/Mode retarget state remains intentionally late-bound on the owning
+    // RecordingSession. Audio/config/transcription identity can never be read from B.
+    private func runPipeline(for job: QueuedTranscriptionJob) async {
+        let session = job.recordingSession
+        let transcription = job.transcription
+        let transcriptionID = job.identity.transcriptionID
         session.phase = .delivering // pipeline is running; mark past pure-transcribing
         session.liveRecordingState = .transcribing
 
+        let jobIsCurrent: @MainActor () -> Bool = { [weak self, weak session, weak transcription] in
+            guard let self, let session, let transcription else { return false }
+            return !Task.isCancelled
+                && self.transcriptionJobRegistry.contains(job.identity)
+                && session.pipelineTranscriptionID == job.identity.transcriptionID
+                && session.audioURL?.standardizedFileURL == job.audioURL
+                && transcription.id == job.identity.transcriptionID
+                && transcription.audioFileURL == job.audioURL.absoluteString
+                && self.sessions.contains(where: { $0 === session })
+        }
+
+        vippLog.info("pipeline run START \(job.identity.logDescription, privacy: .public)")
+
         await pipeline.run(
             transcription: transcription,
-            audioURL: audioURL,
-            transcriptionConfiguration: transcriptionConfiguration,
+            audioURL: job.audioURL,
+            transcriptionConfiguration: job.transcriptionConfiguration,
+            jobIdentity: job.identity,
             formattingConfiguration: { [weak session] in
                 ModeRuntimeResolver.pasteTargetTranscriptionFormattingConfiguration(
                     mode: session?.postProcessingMode
                 )
             },
-            session: streamingSession,
+            session: job.transcriptionSession,
+            realtimeInputDraftSession: session.realtimeInputDraftSession,
             triggerWordModeSelection: { [weak self, weak session] text in
                 guard let selection = self?.selectTriggerWordModeIfNeeded(for: text) else {
                     return nil
@@ -734,7 +908,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 return self.canceledPipelineTranscriptionIDs.contains(transcriptionID)
                     || (session?.shouldCancel ?? false)
             },
-            onCancel: { [weak self, streamingSession] in
+            isDeliveryAuthorized: jobIsCurrent,
+            onCancel: { [weak self, streamingSession = job.transcriptionSession] in
                 guard let self else { return }
                 self.cancelPipelineSession(transcriptionID: transcriptionID, session: streamingSession)
             },
@@ -776,23 +951,27 @@ class VoiceInkEngine: NSObject, ObservableObject {
             )
         )
 
+        vippLog.info("pipeline run END \(job.identity.logDescription, privacy: .public) status=\(transcription.transcriptionStatus ?? "nil", privacy: .public) finalChars=\(transcription.text.count, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(transcription.enhancedText ?? transcription.text), privacy: .public)")
+
         // Pipeline finished (delivered, failed, or canceled). Capture the result, release
         // shared model resources, drop the poison key, and remove the session from the stack.
         session.transcript = transcription.text
+        session.realtimeInputDraftSession?.finish()
         canceledPipelineTranscriptionIDs.remove(transcriptionID)
         session.transcriptionSession = nil
 
         await finishRecorderSession()
-        // Release shared model resources only when NO other session still needs them, i.e.
-        // when this was the last in-flight job. cleanupResources() tears down the SHARED
-        // whisper/fluidaudio model; doing it while another queued job is about to run would
-        // force a reload, but the serial queue means the NEXT job hasn't started yet, so a
-        // cleanup here is safe (the next job reloads on demand). We still guard on "no other
-        // transcribing/delivering session" to avoid needless reload churn.
+        // Release shared model resources only when this lineage still owns retirement
+        // and no recording or queued pipeline remains. A newer session may already be
+        // recording while this older pipeline finishes; cleaning here used to unload or
+        // cancel the resources that newer session had just prepared.
+        let retiringOwnerIsCurrent = !Task.isCancelled
+            && transcriptionJobRegistry.contains(job.identity)
         removeSession(session)
-        if !sessions.contains(where: { $0.phase == .transcribing || $0.phase == .delivering }) {
-            await cleanupResources()
-        }
+        await cleanupResourcesIfUnused(
+            retiringOwnerIsCurrent: retiringOwnerIsCurrent,
+            reason: "pipeline finished"
+        )
 
         // If the panel is now empty (no sessions + no assistant response), let the UI manager
         // hide it. We trigger a generic dismiss; RecorderUIManager only actually hides when
@@ -851,6 +1030,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         vippLog.info("cancelSession: \(session.id.uuidString, privacy: .public) phase=\(String(describing: session.phase), privacy: .public) liveState=\(String(describing: session.liveRecordingState), privacy: .public)")
 
         session.shouldCancel = true
+        session.realtimeInputDraftSession?.discardCurrentDraftForExplicitCancel()
         session.transcriptionSession?.cancel()
 
         switch session.phase {
@@ -861,7 +1041,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await recorder.stopRecording()
             await finishCanceledRecording(session)
             removeSession(session)
-            await cleanupResources()
+            await cleanupResourcesIfUnused(
+                retiringOwnerIsCurrent: true,
+                reason: "active recording was canceled"
+            )
 
         case .transcribing, .delivering:
             // In-flight job. Poison its pipeline id; the running pipeline will pick this up
@@ -884,9 +1067,20 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // Full reset (launch / hard reset): cancel everything, clear the queue, drop all sessions.
     func resetRecordingSession() async {
-        // Cancel the serial queue chain so no queued pipeline starts after reset.
-        transcriptionQueueTail?.cancel()
-        transcriptionQueueTail = nil
+        guard !isResettingRecordingSession else {
+            vippLog.notice("resetRecordingSession: duplicate reset ignored while the first reset is draining")
+            return
+        }
+        isResettingRecordingSession = true
+        defer { isResettingRecordingSession = false }
+
+        // A reset is a hard lineage boundary. Invalidate membership first, then cancel
+        // every retained queue task (running and waiting). Waiting Task<Void, Never>
+        // jobs still recheck generation after their previous tail returns, and a running
+        // pipeline must pass isDeliveryAuthorized before it can paste completed text.
+        recordingStartReservation.invalidate()
+        transcriptionJobRegistry.invalidateAll()
+        transcriptionJobQueue.cancelAll()
 
         for session in sessions {
             session.shouldCancel = true
@@ -899,6 +1093,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         assistantSession.reset()
         recordingState = .idle
         await recorder.stopRecording()
+        // Cancellation is cooperative. Do not tear down shared managers while an old
+        // provider/model call is still unwinding; the queue's reset barrier also keeps
+        // any future generation behind this same boundary.
+        await transcriptionJobQueue.waitUntilIdle()
         await cleanupResources()
         await finishRecorderSession()
     }
@@ -967,11 +1165,37 @@ class VoiceInkEngine: NSObject, ObservableObject {
         enhancementService?.clearCapturedContexts()
     }
 
+    private func cleanupResourcesIfUnused(
+        retiringOwnerIsCurrent: Bool,
+        reason: String
+    ) async {
+        let liveSessionCount = sessions.count
+        guard SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: liveSessionCount,
+            retiringOwnerIsCurrent: retiringOwnerIsCurrent
+        ) else {
+            vippLog.info("cleanupResources: DEFERRED reason=\(reason, privacy: .public) liveSessions=\(liveSessionCount, privacy: .public) retiringOwnerIsCurrent=\(retiringOwnerIsCurrent, privacy: .public)")
+            return
+        }
+        await cleanupResources()
+    }
+
     func cleanupResources() async {
-        logger.notice("cleanupResources: releasing model resources")
-        await whisperModelManager.cleanupResources()
-        await serviceRegistry.cleanup()
-        logger.notice("cleanupResources: completed")
+        if let resourceCleanupTask {
+            await resourceCleanupTask.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.logger.notice("cleanupResources: releasing model resources")
+            await self.whisperModelManager.cleanupResources()
+            await self.serviceRegistry.cleanup()
+            self.logger.notice("cleanupResources: completed")
+        }
+        resourceCleanupTask = task
+        await task.value
+        resourceCleanupTask = nil
     }
 
     // MARK: - Notification Handling

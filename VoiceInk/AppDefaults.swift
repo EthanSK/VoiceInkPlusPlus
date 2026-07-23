@@ -26,6 +26,10 @@ enum AppDefaults {
             "SelectedLanguage": "en",
             "AppendTrailingSpace": true,
             "RecorderType": "mini",
+            // VoiceInk++: supported realtime providers (currently Soniox V5) mirror
+            // their cumulative hypothesis into one provably owned selected-text range.
+            // Batch transcription and unsupported surfaces remain on final-paste only.
+            RealtimeInputDraftFeature.userDefaultsKey: true,
 
             // Cleanup
             "IsTranscriptionCleanupEnabled": false,

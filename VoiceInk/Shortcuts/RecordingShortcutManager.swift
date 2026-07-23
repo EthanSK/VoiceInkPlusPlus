@@ -301,7 +301,7 @@ class RecordingShortcutManager: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     guard let mode = self.recordingMode(for: action) else { return }
-                    self.logger.info("Recording shortcut key-down action=\(String(describing: action), privacy: .public) mode=\(mode.rawValue, privacy: .public) recordingState=\(String(describing: self.engine.recordingState), privacy: .public) route=focusedAtStop")
+                    self.logger.info("Recording shortcut key-down action=\(String(describing: action), privacy: .public) mode=\(mode.rawValue, privacy: .public) recordingState=\(String(describing: self.engine.recordingState), privacy: .public) route=primaryCurrentInput")
                     await self.shortcutModeHandler.handleKeyDown(
                         action: action,
                         eventTime: eventTime,
@@ -352,12 +352,33 @@ class RecordingShortcutManager: ObservableObject {
                         self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
                         return true
                     case .noPendingTranscription:
+                        if Self.shouldConsumeNextTrackWithoutEligibleRoute(
+                            isRecorderPanelVisible:
+                                self.recorderUIManager.isRecorderPanelVisible
+                        ) {
+                            // The visible recorder bar is the user-facing ownership
+                            // boundary. A session may already have latched or crossed
+                            // its delivery cutoff, but leaking this physical press to
+                            // Music would turn an attempted VoiceInk++ action into an
+                            // unrelated Next Song action.
+                            self.logger.info("Next Track key-down consumed because the recorder panel is visible, but no session remains eligible for a destination change")
+                            return true
+                        }
                         self.logger.info("Next Track key-down passed through because no recording or retargetable transcription is active")
                         return false
                     }
                 }
             }
         )
+    }
+
+    static func shouldConsumeNextTrackWithoutEligibleRoute(
+        isRecorderPanelVisible: Bool
+    ) -> Bool {
+        // An ineligible press is intentionally a consumed no-op until the black
+        // recorder/transcription bar closes. Internal timing must never decide
+        // whether Ethan's latch attempt unexpectedly advances media.
+        isRecorderPanelVisible
     }
 
     private func recordingMode(for action: ShortcutAction) -> Mode? {
@@ -583,13 +604,13 @@ final class RecordingShortcutModeHandler {
             if isHandsFreeRecording {
                 isHandsFreeRecording = false
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
                 return
             }
 
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
             return
         }
@@ -745,19 +766,19 @@ final class RecordingShortcutModeHandler {
             if isHandsFreeRecording {
                 isHandsFreeRecording = false
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
                 return
             }
 
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
 
         case .pushToTalk:
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
         }
     }
@@ -848,14 +869,14 @@ final class RecordingShortcutModeHandler {
         case .pushToTalk:
             if isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
 
         case .hybrid:
             let pressDuration = shortcutPressStartTime.map { eventTime - $0 } ?? 0
             if pressDuration >= hybridPressThreshold && recordingState() == .recording {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             } else {
                 isHandsFreeRecording = true
             }

@@ -4,8 +4,26 @@ import os
 
 enum RecordingPasteDestination: Equatable {
     case recordingStart
-    case focusedAtStop
+    case primaryCurrentInput
     case focusedDuringTranscription
+
+    /// Primary is intentionally base VoiceInk: it follows the system keyboard focus
+    /// at delivery and never owns an exact input or app-specific delivery mechanism.
+    var usesBaseCurrentInputDelivery: Bool {
+        self == .primaryCurrentInput
+    }
+
+    /// Exact, app-specific resolution belongs only to a physical Next-button latch.
+    /// Keeping this policy on the enum makes it impossible for a Primary target to
+    /// enter Telegram/OpenAI/Terminal delivery merely because a caller supplied one.
+    var usesAppSpecificExactDelivery: Bool {
+        switch self {
+        case .recordingStart, .focusedDuringTranscription:
+            true
+        case .primaryCurrentInput:
+            false
+        }
+    }
 }
 
 /// One user-confirmation pulse in the recorder bar. The token belongs to the
@@ -23,7 +41,7 @@ struct RecorderIconActionPulse: Equatable {
     init(destination: RecordingPasteDestination, id: UUID = UUID()) {
         self.id = id
         switch destination {
-        case .focusedAtStop:
+        case .primaryCurrentInput:
             icon = .currentFocus
         case .recordingStart, .focusedDuringTranscription:
             icon = .lockedDestination
@@ -34,8 +52,10 @@ struct RecorderIconActionPulse: Equatable {
 struct RecordingPasteTarget {
     let destination: RecordingPasteDestination
     let focusedInput: FocusLockService.Target?
-    // The destination and its complete Mode are one atomic per-session choice.
-    // In particular, the transcription-time Next Track route is a second chance:
+    // An exact destination and its complete Mode are one atomic per-session choice,
+    // but only for the two Next-button routes. Primary deliberately owns neither:
+    // it follows the current system input and current Mode like base VoiceInk.
+    // In particular, the transcription-time Next route is a second chance:
     // Ethan can stop normally, focus a different input, press Next Track while the
     // transcript is still loading, then leave that app. The later app switch must
     // not replace any part of this target app's formatting/output/Return behavior.
@@ -48,8 +68,17 @@ struct RecordingPasteTarget {
         mode: ModeConfig? = nil
     ) {
         self.destination = destination
-        self.focusedInput = focusedInput
-        self.mode = mode
+        // Structural regression guard: even if a future caller accidentally passes a
+        // Telegram/OpenAI wrapper or Mode for Primary, discard both here. App-specific
+        // state is valid only after the physical Next button selected an exact route.
+        self.focusedInput = destination.usesAppSpecificExactDelivery
+            ? focusedInput
+            : nil
+        self.mode = destination.usesAppSpecificExactDelivery ? mode : nil
+    }
+
+    func resolvedAutoSendKey(currentInputKey: AutoSendKey) -> AutoSendKey {
+        destination.usesBaseCurrentInputDelivery ? currentInputKey : autoSendKey
     }
 }
 
@@ -187,11 +216,18 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     private(set) var acceptsPasteRetargeting = true
     private var triggerWordModeOverride: ModeConfig?
 
-    /// The saved destination normally owns post-processing. An explicit spoken
-    /// trigger-word Mode remains the intentional higher-priority override; keeping it
-    /// on the session avoids falling back to unrelated global focus state.
+    /// Next-button destinations own post-processing atomically. Primary is deliberately
+    /// different: like base VoiceInk, it follows whichever Mode is current while the
+    /// result is processed and delivered. An explicit trigger-word Mode remains the
+    /// intentional higher-priority override for either policy.
     var postProcessingMode: ModeConfig? {
-        triggerWordModeOverride ?? pasteTarget.mode
+        if let triggerWordModeOverride {
+            return triggerWordModeOverride
+        }
+        if pasteTarget.destination.usesBaseCurrentInputDelivery {
+            return ModeManager.shared.currentEffectiveConfiguration
+        }
+        return pasteTarget.mode
     }
 
     // ── Per-session bits migrated OFF the old engine singletons ──
@@ -200,6 +236,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
 
     // Streaming/file transcription session prepared at record-start, used by the pipeline.
     var transcriptionSession: TranscriptionSession?
+    // Realtime Soniox may mirror cumulative hypotheses into the real focused input.
+    // This is an ephemeral owned text-range ledger, not a Primary paste destination:
+    // `RecordingPasteTarget` remains nil/current-input for Primary, while either Next
+    // route can reconcile a matching owned draft through its existing exact target.
+    var realtimeInputDraftSession: RealtimeInputDraftSession?
     // Mode-resolved transcription engine settings captured at record-start (so the pipeline
     // uses the config that was active WHEN this recording started, not whatever is active now).
     var transcriptionConfiguration: TranscriptionRuntimeConfiguration?

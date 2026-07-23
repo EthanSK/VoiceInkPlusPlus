@@ -15,9 +15,21 @@
   [![GitHub stars](https://img.shields.io/github/stars/EthanSK/VoiceInkPlusPlus?style=social)](https://github.com/EthanSK/VoiceInkPlusPlus/stargazers)
 </div>
 
-VoiceInk++ is Ethan Sarif-Kattan's opinionated macOS voice-to-text workflow. Speak instead of reaching for the keyboard, decide exactly which input receives every transcript, and carry on in another app while transcription, paste, and auto-send finish behind you.
+VoiceInk++ is Ethan Sarif-Kattan's opinionated macOS voice-to-text workflow. With Soniox V5 realtime, your words appear directly in the actual input while you are still speaking—and remain visible in the recorder HUD too. Let current focus decide where a normal stop finishes, or use a second mouse button to lock an exact input and carry on elsewhere while final processing and auto-send finish behind you.
 
 It is built for people who use AI agents, terminals, chats, and editors all day—and do not want to spend even an awkward second staring at a transcription spinner.
+
+## Your words are already there
+
+Turn on **Write Realtime Transcript into Input** and VoiceInk++ continuously replaces one range it owns with Soniox's latest cumulative hypothesis. It does not append every partial or rewrite the rest of the field.
+
+- Keep speaking in one input and the draft grows in place.
+- Move the caret to another supported input and the complete transcript-so-far appears there; new speech continues from that full draft.
+- The recorder HUD still keeps the live transcript, so the UI and the real input both reflect what was heard.
+- If safely removing an older same-app draft cannot be proven, VoiceInk++ leaves it alone. A cross-app copy may remain rather than steal focus or risk deleting the wrong text.
+- Final delivery reconciles the owned range instead of pasting a duplicate, then follows the same Primary or Next-button send rule described below.
+
+This makes dictation feel immediate and makes an interrupted recording less costly: much of what you said is already ordinary text in an app, not trapped only inside a transient recorder session. Unsupported rich editors and Telegram keep the established final-paste-only path.
 
 ## The reason VoiceInk++ exists
 
@@ -25,15 +37,15 @@ Most dictation tools bind a recording to wherever you happen to be when the resu
 
 | What you do | Where the transcript goes |
 | --- | --- |
-| Press the primary button again to stop normally | The exact editable input focused when you stop; never the recording-start input |
+| Press the primary button again to stop normally | Whichever input owns keyboard focus at final delivery, using that input app's current Mode |
 | Press the **Next button** while recording | The input captured when recording started |
 | Stop normally, then press the **Next button** while transcription is loading | A second chance: replace the pending destination with the exact input focused now |
 
 The third route is the workflow-defining one:
 
-> Normal stop → transcription begins → focus a new input → press the Next button once → move on → VoiceInk++ returns to that input, pastes, uses that app's auto-send setting, and restores your later workspace.
+> Normal stop → transcription begins → focus a new input → press the Next button once → move on → VoiceInk++ delivers there with that app's auto-send setting without pulling your later workspace to the foreground.
 
-The target belongs to the individual recording. Starting another recording or focusing another app does not release it.
+An exact Next target belongs to the individual recording. Starting another recording or focusing another app does not release it. Primary intentionally owns no saved target: current keyboard focus remains in charge all the way to delivery.
 
 ## Ethan's recommended setup
 
@@ -48,25 +60,26 @@ In **Logitech G HUB**:
 - Map one side button to your normal VoiceInk++ toggle shortcut.
 - Map a second side button—your **Next button**—to the standard macOS **Next Track** media action.
 
-VoiceInk++ intercepts that Next Track event only while it can stop or retarget a recording. When idle, the media key continues to work normally.
+VoiceInk++ owns that Next Track event whenever the black recorder/transcription bar is visible. Eligible presses stop or retarget; an ineligible press is a safe no-op. When the bar is hidden, the media key works normally.
 
 ### 2. Copy the fast VoiceInk++ stack
 
 Ethan's current configuration is:
 
-- **Transcription:** Deepgram Nova-3 Tuned (Local Proxy)
+- **Transcription:** Soniox V5 with **Real-time** enabled
+- **Realtime input:** **Write Realtime Transcript into Input** enabled
 - **AI provider/model:** OpenAI · gpt-5.5
 - **Fast direct-paste Modes:** AI enhancement off
-- **Language:** Automatic
+- **Language:** English
 - **Paste method:** Default
 - **Audio input:** the best available microphone (Ethan currently uses Digital Mic)
 - **Auto-send:** Return in the Codex app, Claude desktop, ChatGPT, and the terminal/editor hosts used by Codex CLI or Claude Code; deliberately off in Chrome
 
-Ethan's local Deepgram proxy is personal infrastructure and is not included in this repository. Use your own compatible Deepgram setup or another supported transcription model, and provide your own provider credentials. Copy the pattern—especially the safe per-app auto-send choices—rather than blindly enabling Return everywhere.
+Add your own Soniox API key, select **Soniox V5**, enable **Real-time** in every Mode where you want live input writing, and keep the global realtime-input setting on. Other providers still use VoiceInk++'s ordinary final-paste path. Copy the per-app auto-send pattern rather than blindly enabling Return everywhere.
 
 ### 3. Learn the two-button rhythm
 
-- **Finish here:** stop normally to use the input focused now.
+- **Finish here:** stop normally and keep using the input that should own final delivery.
 - **Send it back:** press the Next button while recording to use the input where recording began.
 - **Second chance:** after a normal stop, focus another input and press the Next button while the result is still loading. Then keep working elsewhere.
 
@@ -74,16 +87,16 @@ That is the whole idea: stay in the flow. Something is always happening.
 
 ## Codex and Claude Code support
 
-All three Next-button routes work with agent inputs. The important distinction is who owns the editable macOS input:
+VoiceInk++ targets the editable macOS input owned by the desktop app or CLI host. The general route model is shared, but background insertion and submission are surface-specific and are only claimed as physically verified where an installed build has completed the real route:
 
-| Agent surface | What VoiceInk++ locks | Auto-send route |
+| Agent surface | What VoiceInk++ locks | Current evidence |
 | --- | --- | --- |
-| **Codex desktop** | The exact Codex composer | Verified background exact-input typing/submit, with bounded foreground fallbacks |
-| **Codex CLI** | The exact terminal or editor input hosting the CLI | Verified exact-input delivery when supported; safe foreground fallback otherwise |
-| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | Verified exact-input delivery when supported; safe foreground fallback otherwise |
-| **Claude desktop** | The exact Claude composer | Verified exact-input delivery with safe failure behavior |
+| **Codex desktop** | The exact Codex composer | Recording-start Next physically verified in the background; second-chance rerun remains pending |
+| **Codex CLI** | The exact terminal or editor input hosting the CLI | Host-specific exact-session code and tests exist; complete background live proof remains pending |
+| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | Uses the same host-specific route; complete host-by-host live proof remains pending |
+| **Claude desktop** | The exact Claude composer when resolvable | Not yet physically verified; failures must remain visible and safe |
 
-For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app, enable Return only where automatic submission is safe, and use the Next button exactly as you would in Codex desktop. No Codex or Claude plugin, shell hook, or process-name detection is required.
+For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app and enable Return only where automatic submission is safe. No Codex or Claude plugin, shell hook, or process-name detection is required. Unverified background routes fail closed rather than pulling an app to the foreground or guessing at an input.
 
 ## What the recorder shows
 
@@ -103,9 +116,11 @@ The compact recorder panel appears on every connected monitor and keeps its info
 ## More flow-first features
 
 - Record a new thought while earlier recordings are still transcribing.
+- Watch the cumulative Soniox draft appear directly in a supported input while speaking.
+- Switch inputs mid-speech and carry the complete draft forward without duplicating every partial.
 - Keep each recording's Mode, input, auto-send key, and delivery state isolated.
 - Type and auto-send into a verified exact background input without interrupting the workspace you moved to.
-- Fall back to verified foreground delivery only when the target is app-level or already frontmost.
+- Keep ordinary Primary dictation on the system-focused input; use exact app-specific machinery only for the two Next routes.
 - Cancel a recording instantly with Escape or the recorder's cancel control.
 - Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
 - Pause and resume supported media without blindly toggling playback state.
@@ -130,6 +145,7 @@ open ~/Downloads/VoiceInkPlusPlus.app
 - [Translate Ethan's mouse-button terminology](TERMINOLOGY.md)
 - [Understand the Next button and recording destinations](RECORDING_DESTINATIONS.md)
 - [Read the accepted implementation learnings](LEARNINGS.md)
+- [Review failed approaches before retrying delivery work](FAILED_APPROACHES.md)
 - [Use the self-improving Codex/Claude Code learnings skill](.agents/skills/learnings/SKILL.md)
 - [Review update guidance](UPDATING.md)
 - [Report a VoiceInk++ issue](https://github.com/EthanSK/VoiceInkPlusPlus/issues)

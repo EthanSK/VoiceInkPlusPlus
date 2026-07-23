@@ -28,34 +28,42 @@ The fork's important behavioral patches are:
   focused element DOES follow into the panel, so we read its owning pid → bundle id. Safe/additive:
   for ordinary windows the AX-focused app == frontmost app. Falls back when AX is untrusted, exposes
   no focused element, or the focus is VoiceInk's own (also non-activating) recorder panel.
-- **Per-recording destination control — choose the start or stop input at the end.** The normal
-  recording shortcut stops into the exact input focused at stop. The macOS Next Track media key is
-  intercepted only while actively recording and stops into the exact Accessibility input captured
-  at recording start. When Electron/Chromium exposes only `AXWebArea` during the shortcut, it falls
-  back to the recording-start application; outside recording Next Track continues to control media
-  normally. Each
-  `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
-  background transcriptions from mixing destinations. While the newest transcription is still
-  running and before destination-dependent post-processing begins, Next Track can replace its target
-  with the input focused at that moment; the pipeline freezes input + complete Mode before formatting
-  or enhancement. Delivery re-resolves and verifies the
-  exact element without activating a background target, and copies to the clipboard rather than pasting
-  into an unintended field if verification fails. The post-stop Next Track action is a distinct second-chance
-  route: while the newest result is loading it atomically replaces both the pending exact input and
-  that target app's auto-send key, so moving to another app before delivery cannot remove Return.
-  This is never a toggle and must not be confused with Next Track while recording, which stops into
-  the recording-start input. A normal primary-button stop must never reuse or fall back to that
-  recording-start input if stop-time capture or verification fails. See the canonical
+- **Per-recording destination control — base Primary plus two exact Next routes.** The normal
+  recording shortcut always uses base VoiceInk current-input delivery: whichever input and Mode own
+  system keyboard focus when the final result is delivered decide paste and optional Return. Primary
+  stores no exact destination and can never enter an app-specific resolver. The macOS Next Track
+  media key instead stops into the exact Accessibility input captured at recording start. When
+  Electron/Chromium exposes only `AXWebArea` during the shortcut, that recording-start route may use
+  its bounded application fallback. Each `RecordingSession` owns its immutable start candidate and
+  resolved paste target, preventing concurrent background transcriptions from mixing destinations.
+  While the newest normal-stop transcription is still running and before destination-dependent
+  post-processing begins, Next Track can replace its target with the input focused at that moment;
+  the pipeline freezes exact input plus complete Mode before formatting or enhancement. Delivery
+  re-resolves and verifies the exact element without activating a background target, and copies to
+  the clipboard rather than pasting into an unintended field if verification fails. This post-stop
+  action is the distinct **second chance** and is never a toggle. While any recorder/transcription bar
+  is visible, an ineligible Next press is consumed as a no-op; media pass-through resumes only after
+  the bar hides. The historical `VIPPExactInputDeliveryEnabled` preference is no longer read.
+  See the canonical
   [Mouse terminology](TERMINOLOGY.md) and [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.
+- **Soniox realtime owned-range input.** With `VIPPRealtimeInputStreamingEnabled` on, a Soniox V5
+  realtime recording mirrors cumulative hypotheses into only the exact UTF-16 selected-text range
+  inserted in the system-focused input. Moving focus seeds the complete draft into the new input;
+  same-app cleanup is allowed only through a revalidated direct Accessibility session, while
+  cross-app residue is deliberately retained. Final Primary delivery reconciles the current input
+  without becoming a saved route; either Next route reconciles its existing exact target and Mode.
+  Telegram and rich inputs without safe selected-text mutation skip live writing. Any indeterminate
+  mutation blocks further writes for that app/recording and forbids duplicate final paste.
 - **Exact non-activating delivery.** When a session owns an exact input in a background app,
   VoiceInk++ uniquely re-resolves its window/editor, opens one internal activation-state session when
   needed, and verifies immediate keyboard-focus safety plus exact insertion. The same route handles a
   different input in the already-frontmost target app through direct Accessibility only, so it cannot
-  steal intra-app focus. Telegram alone has an allowlisted retained-element and retained labelled-Send
-  fallback, but only while independently readable chat-context anchors still match; hidden or mismatched
-  context fails closed. v2.0.207 live proof is still required. Chat verification requires a composer
-  reset. Apple Terminal/iTerm capture stable window-ID + TTY/session-ID pairs and send transcript text
+  steal intra-app focus. Telegram alone has a version/layout-pinned retained-element path, but only
+  while readable chat anchors or the privacy-bounded avatar/title-region digest revalidate immediately
+  before insertion and its one accepted HID Return sequence; hidden, mismatched, or unaudited context
+  fails closed. Chat verification requires a composer reset. Apple Terminal/iTerm capture stable
+  window-ID + TTY/session-ID pairs and send transcript text
   plus Return to that exact pair in one native operation, verified through native contents and a prompt
   transition; Apple Terminal paste-only fails closed while iTerm may use `newline false`; mutable titles are never identities;
   Ghostty, Warp, VS Code, Cursor, Chrome, Notion, and generic editors have no safe generic background
@@ -175,6 +183,10 @@ The 2026-07-15 audit found the fork 68 commits ahead and upstream 80 commits ahe
 `eda0786`. A trial whole-branch merge produced 17 conflicts, including the destination, recorder,
 pipeline, delivery, cloud-transcription, project, and test files. A whole upstream merge is therefore
 not a supported update procedure.
+
+The 2026-07-23 refresh fetched upstream again and found `upstream/main` still exactly at
+`69ed170` (`Release VoiceInk 2.0`), the same tip already covered by that audit. No newer upstream
+change existed to merge or port during the realtime-input work.
 
 For each update:
 

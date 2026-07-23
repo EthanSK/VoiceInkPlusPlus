@@ -55,8 +55,13 @@ class TranscriptionPipeline {
         transcription: Transcription,
         audioURL: URL,
         transcriptionConfiguration: TranscriptionRuntimeConfiguration,
+        jobIdentity: TranscriptionJobIdentity,
         formattingConfiguration resolveFormattingConfiguration: @escaping () -> TranscriptionFormattingConfiguration,
         session: TranscriptionSession?,
+        // A realtime-only, per-recording owned-range ledger. It is kept separate from
+        // RecordingPasteTarget so Primary still owns no saved destination; delivery may
+        // reconcile a live draft in the current input or either existing Next target.
+        realtimeInputDraftSession: RealtimeInputDraftSession? = nil,
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
@@ -75,6 +80,11 @@ class TranscriptionPipeline {
         skipPostProcessing: @escaping () -> Bool = { false },
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
+        // Hard lifecycle authorization is separate from the historical soft cancel
+        // behavior below. A completed non-empty response may survive an accidental late
+        // cancel, but it may never cross a reset/generation boundary and paste as stale
+        // work after a newer recording lifecycle has begun.
+        isDeliveryAuthorized: () -> Bool,
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
         assistant: AssistantHooks = .inactive
@@ -96,7 +106,7 @@ class TranscriptionPipeline {
         // raw-paste branch at delivery.
         let skipPostProcessingNow = skipPostProcessing()
         if skipPostProcessingNow {
-            vippLog.info("pipeline: skipPostProcessing RESOLVED=true → will bypass enhancement + force raw .paste (no mode script/respond)")
+            vippLog.info("pipeline: skipPostProcessing RESOLVED=true → will bypass enhancement + force raw .paste (no mode script/respond) \(jobIdentity.logDescription, privacy: .public)")
         }
 
         func finishCanceledTranscription() async {
@@ -131,7 +141,7 @@ class TranscriptionPipeline {
         do {
             let transcriptionStart = Date()
             var text: String
-            vippLog.info("pipeline: transcribe START model=\(model.displayName, privacy: .public) session=\(session != nil ? "streaming" : "file", privacy: .public)")
+            vippLog.info("pipeline: transcribe START model=\(model.displayName, privacy: .public) session=\(session != nil ? "streaming" : "file", privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
             if let session {
                 text = try await session.transcribe(audioURL: audioURL)
             } else {
@@ -143,7 +153,7 @@ class TranscriptionPipeline {
             }
             text = TranscriptionOutputFilter.filter(text)
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
-            vippLog.info("pipeline: transcribe SUCCESS chars=\(text.count, privacy: .public) elapsed=\(transcriptionDuration, format: .fixed(precision: 3), privacy: .public)s")
+            vippLog.info("pipeline: transcribe SUCCESS chars=\(text.count, privacy: .public) digest=\(TranscriptionLineageDigest.make(text), privacy: .public) elapsed=\(transcriptionDuration, format: .fixed(precision: 3), privacy: .public)s \(jobIdentity.logDescription, privacy: .public)")
 
             // ───────────────────────────────────────────────────────────────────────
             // FIX (2026-06-20, defensive guard for the same fork regression as the
@@ -309,7 +319,7 @@ class TranscriptionPipeline {
             // error is a genuine network/decode failure. Either way the bar will hide
             // with no paste — this line attributes which.
             let isCancelled = (error as? URLError)?.code == .cancelled
-            vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public)")
+            vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
 
             let wasIntentionalCancellation = isCancelled && shouldCancel()
             if !wasIntentionalCancellation {
@@ -366,6 +376,16 @@ class TranscriptionPipeline {
             }
         }
 
+        // Unlike `shouldCancel`, this is not a user-intent heuristic. It proves that
+        // this exact session/transcription/audio tuple still belongs to the current
+        // queue generation. Reset invalidation or any identity mismatch preserves the
+        // completed history record but forbids paste/command/response side effects.
+        guard isDeliveryAuthorized() else {
+            vippLog.notice("pipeline: DELIVERY REFUSED stale lineage finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+            saveTranscriptionAndPostCompletion()
+            return
+        }
+
         let pasteTargetForDelivery = resolvePasteTarget()
         // Re-resolve after the target is frozen so a second-chance Next-button press
         // that arrived during transcription/enhancement supplies the latest target's
@@ -380,18 +400,22 @@ class TranscriptionPipeline {
             // it explicitly means paste only, with no Return or other action.
             outputForPasteTarget = pipelineOutput
         } else {
-            // The target selected at stop—or replaced by the second-chance Next Track
-            // press during transcription—owns auto-send. Do not read this from the app
-            // Ethan happens to be using when the network response finally arrives.
+            // Only a physical Next-button route owns destination Mode/auto-send.
+            // Primary is base VoiceInk: whichever input and Mode are current when the
+            // result is delivered decide both paste and Return. Keeping this choice on
+            // RecordingPasteTarget prevents Primary from inheriting exact-delivery
+            // behavior while preserving the two latch routes' atomic destination Mode.
             outputForPasteTarget = OutputRuntimeConfiguration(
                 mode: pipelineOutput.mode,
                 outputMode: pipelineOutput.outputMode,
-                autoSendKey: pasteTargetForDelivery.autoSendKey,
+                autoSendKey: pasteTargetForDelivery.resolvedAutoSendKey(
+                    currentInputKey: pipelineOutput.autoSendKey
+                ),
                 customCommand: pipelineOutput.customCommand
             )
         }
 
-        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public)")
+        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
         await delivery.deliver(
             TranscriptionDelivery.Request(
                 transcription: transcription,
@@ -401,6 +425,7 @@ class TranscriptionPipeline {
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
                 pasteTarget: pasteTargetForDelivery, // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
+                realtimeInputDraftSession: realtimeInputDraftSession,
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).
@@ -414,6 +439,8 @@ class TranscriptionPipeline {
                 failResponse: assistant.failResponse
             )
         )
+
+        vippLog.info("pipeline: delivery RETURNED finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
 
         saveTranscriptionAndPostCompletion()
     }

@@ -1,7 +1,7 @@
 {
   "name": "VoiceInk++",
   "short_name": "VoiceInk++",
-  "description": "Opinionated macOS voice-to-text for staying in the flow.",
+  "description": "Realtime macOS voice-to-text that writes into your input while you speak and keeps agent work moving.",
   "start_url": "/VoiceInkPlusPlus/",
   "display": "standalone",
   "background_color": "#0b0d12",

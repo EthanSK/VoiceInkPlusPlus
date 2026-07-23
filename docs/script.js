@@ -55,30 +55,30 @@
 
   var routes = {
     finish: {
-      kicker: "Normal stop · focused at stop",
+      kicker: "Normal stop · current at delivery",
       title: "End wherever the thought belongs.",
-      copy: "Start in one app, move while talking, then use your normal recording button. VoiceInk++ locks the exact editable input focused when you stop.",
+      copy: "Start in one app, move while talking, then stop normally. Primary owns no saved target: whichever editable input owns keyboard focus at final delivery receives the reconciled text and its current Mode decides Return.",
       steps: [
         "Start recording in Codex.",
         "Move to Terminal while speaking.",
         "Stop normally. The transcript lands in Terminal."
       ],
       start: { icon: "C", label: "START", app: "Codex input" },
-      target: { icon: "›_", label: "FOCUSED AT STOP", app: "Terminal input", result: "PASTE + RETURN" },
+      target: { icon: "›_", label: "CURRENT AT DELIVERY", app: "Terminal input", result: "RECONCILE + RETURN" },
       action: "NORMAL STOP",
       speech: "“ship the idea…”"
     },
     return: {
       kicker: "Next button during recording · recording start",
       title: "Send it back to where you began.",
-      copy: "Move anywhere while dictating, then stop with the Next button. VoiceInk++ restores the input captured at recording start, delivers there, and returns you to the workspace you were using.",
+      copy: "Move anywhere while dictating, then stop with the Next button. VoiceInk++ resolves the input captured at recording start and delivers there without pulling your current workspace forward or away.",
       steps: [
         "Start recording in the Codex composer.",
         "Keep working in VS Code while you speak.",
-        "Press the Next button. The result returns to Codex."
+        "Press the Next button. The result reaches Codex while VS Code stays frontmost."
       ],
       start: { icon: "C", label: "RECORDING START", app: "Codex input" },
-      target: { icon: "V", label: "CURRENTLY FOCUSED", app: "VS Code", result: "WORKSPACE RESTORED" },
+      target: { icon: "V", label: "CURRENTLY FOCUSED", app: "VS Code", result: "STAYS FRONTMOST" },
       action: "NEXT BUTTON",
       speech: "“send this back…”"
     },
@@ -89,7 +89,7 @@
       steps: [
         "Stop normally and let transcription begin.",
         "Focus a new ChatGPT or agent input; press the Next button.",
-        "Move on. VoiceInk++ pastes, sends, and restores you later."
+        "Move on. VoiceInk++ pastes and sends without pulling you back."
       ],
       start: { icon: "›_", label: "OLD STOP TARGET", app: "Terminal input" },
       target: { icon: "C", label: "NEW LOCKED INPUT", app: "ChatGPT input", result: "PASTE + APP AUTO-SEND" },
@@ -97,6 +97,41 @@
       speech: "“changed my mind…”"
     }
   };
+
+  var realtimeDemo = document.querySelector("[data-realtime-demo]");
+  if (realtimeDemo) {
+    var draftA = realtimeDemo.querySelector("[data-draft-a]");
+    var draftB = realtimeDemo.querySelector("[data-draft-b]");
+    var draftAStatus = realtimeDemo.querySelector("[data-draft-a-status]");
+    var draftBStatus = realtimeDemo.querySelector("[data-draft-b-status]");
+    var draftInputA = realtimeDemo.querySelector(".draft-input-a");
+    var draftInputB = realtimeDemo.querySelector(".draft-input-b");
+    var reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var draftFrames = [
+      { a: "Ship", b: "", aStatus: "current focus", bStatus: "waiting", current: "a" },
+      { a: "Ship the release", b: "", aStatus: "current focus", bStatus: "waiting", current: "a" },
+      { a: "Ship the release", b: "Ship the release", aStatus: "safe copy", bStatus: "focus moved", current: "b" },
+      { a: "Ship the release", b: "Ship the release after the checks", aStatus: "safe copy", bStatus: "current focus", current: "b" }
+    ];
+    var draftFrame = reducedMotion ? draftFrames.length - 1 : 0;
+
+    function renderDraftFrame(frame) {
+      draftA.textContent = frame.a;
+      draftB.textContent = frame.b;
+      draftAStatus.textContent = frame.aStatus;
+      draftBStatus.textContent = frame.bStatus;
+      draftInputA.classList.toggle("is-current", frame.current === "a");
+      draftInputB.classList.toggle("is-current", frame.current === "b");
+    }
+
+    renderDraftFrame(draftFrames[draftFrame]);
+    if (!reducedMotion) {
+      window.setInterval(function () {
+        draftFrame = (draftFrame + 1) % draftFrames.length;
+        renderDraftFrame(draftFrames[draftFrame]);
+      }, 1700);
+    }
+  }
 
   var routeLab = document.querySelector("[data-route-lab]");
   if (routeLab) {

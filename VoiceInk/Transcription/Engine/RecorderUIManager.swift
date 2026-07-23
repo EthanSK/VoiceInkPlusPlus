@@ -196,7 +196,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
     func toggleRecorderPanel(
         modeId: UUID? = nil,
-        stopPasteDestination: RecordingPasteDestination = .focusedAtStop
+        stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput
     ) async {
         guard let engine = engine else { return }
 

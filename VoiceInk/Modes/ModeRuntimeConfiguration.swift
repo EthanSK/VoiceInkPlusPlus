@@ -5,6 +5,10 @@ struct TranscriptionRuntimeConfiguration {
     let model: any TranscriptionModel
     let language: String
     let isRealtimeEnabled: Bool
+    // Freeze request inputs with the recording session. Reading UserDefaults again
+    // when a queued pipeline eventually runs can attach a newer recording's prompt
+    // or language state to older audio.
+    let requestContext: TranscriptionRequestContext
 
     var metadata: (name: String?, emoji: String?) {
         guard let mode, mode.isEnabled else {
@@ -13,12 +17,6 @@ struct TranscriptionRuntimeConfiguration {
         return (mode.name, mode.icon.value)
     }
 
-    var requestContext: TranscriptionRequestContext {
-        TranscriptionRequestContext(
-            language: language,
-            prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt")
-        )
-    }
 }
 
 struct TranscriptionFormattingConfiguration {
@@ -81,7 +79,11 @@ enum ModeRuntimeResolver {
             mode: mode,
             model: model,
             language: language,
-            isRealtimeEnabled: TranscriptionRealtimeSupport.isEnabled(for: model, modeValue: mode?.isRealtimeTranscriptionEnabled)
+            isRealtimeEnabled: TranscriptionRealtimeSupport.isEnabled(for: model, modeValue: mode?.isRealtimeTranscriptionEnabled),
+            requestContext: TranscriptionRequestContext(
+                language: language,
+                prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt")
+            )
         )
     }
 

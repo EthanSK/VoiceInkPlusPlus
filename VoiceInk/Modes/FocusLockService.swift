@@ -5,23 +5,6 @@ import os
 
 @MainActor
 final class FocusLockService: ObservableObject {
-    fileprivate enum BackgroundTargetResolution: String {
-        case strictFingerprint
-        case telegramRetainedFocusedElement
-    }
-
-    enum BackgroundFocusMode: String {
-        /// A fully backgrounded target needs one bounded internal activation-state
-        /// session. Preparation opens it once; delivery never re-posts that sequence.
-        case preparedTargetedInput
-        /// A non-activating surface such as ChatGPT Option-Space already owns the exact
-        /// system keyboard focus, so no synthetic activation or focus setter is allowed.
-        case alreadyKeyboardFocused
-        /// Ethan is using another input (possibly in the same app). Only direct exact
-        /// Accessibility mutation and a proven semantic action are permitted.
-        case directExactElement
-    }
-
     fileprivate struct ExactInputIdentity {
         let role: String
         let subrole: String?
@@ -33,21 +16,7 @@ final class FocusLockService: ObservableObject {
         let relativeFrame: CGRect?
         let ancestorPath: [String]
         let contextRegion: CGRect?
-        /// Telegram reuses one editor wrapper across chats. Header/title anchors are
-        /// kept separately from message-history context so the selected chat identity
-        /// cannot be evicted by long messages or satisfied by title text inside a chat.
-        let primaryContextAnchors: [String]
         let contextAnchors: [String]
-    }
-
-    struct ContextAnchorCandidate: Equatable {
-        let value: String
-        let isPrimary: Bool
-    }
-
-    struct ContextAnchorSelection: Equatable {
-        let primary: [String]
-        let secondary: [String]
     }
 
     struct Target {
@@ -60,8 +29,11 @@ final class FocusLockService: ObservableObject {
         fileprivate let element: AXUIElement?
         fileprivate let window: AXUIElement?
         fileprivate let identity: ExactInputIdentity?
-        fileprivate let retainedSubmitButton: AXUIElement?
-        fileprivate let retainedSubmitButtonFrame: CGRect?
+        /// Telegram's App Store build publishes no readable chat header through
+        /// the parentless composer's AX window. Start one privacy-bounded visual
+        /// fingerprint at the input-decision boundary; delivery awaits it only if
+        /// AX context is empty and never treats wrapper/geometry as chat identity.
+        fileprivate let telegramVisualIdentityCapture: TelegramWindowVisualIdentityCapture?
         fileprivate let app: NSRunningApplication
         fileprivate let pid: pid_t
         let bundleIdentifier: String?
@@ -70,29 +42,227 @@ final class FocusLockService: ObservableObject {
         var hasExactInput: Bool { element != nil }
     }
 
-    struct BackgroundDeliverySession {
+    struct FocusedInputTextSnapshot {
+        let text: String
+        let placeholder: String?
+    }
+
+    struct ApplicationIdentitySnapshot {
+        let applicationBundleName: String
+        let bundleIdentifier: String
+        let shortVersion: String
+        let build: String
+        let chromium: String
+    }
+
+    enum BackgroundFocusBooleanSlot: CaseIterable, Hashable {
+        case targetWindowMain
+        case targetWindowFocused
+        case targetElementFocused
+        case previousWindowMain
+        case previousWindowFocused
+        case previousElementFocused
+    }
+
+    /// Exact readable values from before VoiceInk++ synthesizes internal focus.
+    /// Missing values are deliberately omitted: writing a guessed `false` during
+    /// teardown is less faithful than leaving an unsupported attribute alone.
+    struct BackgroundFocusBooleanSnapshot {
+        fileprivate let values: [BackgroundFocusBooleanSlot: Bool]
+
+        init(read: (BackgroundFocusBooleanSlot) -> Bool?) {
+            var captured: [BackgroundFocusBooleanSlot: Bool] = [:]
+            for slot in BackgroundFocusBooleanSlot.allCases {
+                if let value = read(slot) {
+                    captured[slot] = value
+                }
+            }
+            values = captured
+        }
+
+        @discardableResult
+        func restore(
+            write: (BackgroundFocusBooleanSlot, Bool) -> Bool
+        ) -> Bool {
+            var allWritesSucceeded = true
+            for slot in BackgroundFocusBooleanSlot.allCases {
+                guard let value = values[slot] else { continue }
+                if !write(slot, value) {
+                    // A stale or unsupported attribute must not prevent later saved
+                    // values from being restored. Aggregate the result after making
+                    // every safe best-effort write.
+                    allWritesSucceeded = false
+                }
+            }
+            return allWritesSucceeded
+        }
+
+        func containsAll(_ slots: [BackgroundFocusBooleanSlot]) -> Bool {
+            slots.allSatisfy { values[$0] != nil }
+        }
+
+        func missing(from slots: [BackgroundFocusBooleanSlot]) -> [BackgroundFocusBooleanSlot] {
+            slots.filter { values[$0] == nil }
+        }
+
+        func matches(read: (BackgroundFocusBooleanSlot) -> Bool?) -> Bool {
+            values.allSatisfy { slot, expected in read(slot) == expected }
+        }
+    }
+
+    struct BackgroundFocusSessionLifecycle {
+        enum State: Equatable {
+            case ready
+            case activationSessionBegan
+            case teardownRetryScheduled
+            case teardownWaived
+            case finished
+        }
+
+        private(set) var state: State = .ready
+        var canBegin: Bool { state == .ready }
+        var requiresTeardown: Bool {
+            state == .activationSessionBegan || state == .teardownRetryScheduled
+        }
+
+        mutating func begin(open: () -> Bool) -> Bool {
+            guard state == .ready else { return false }
+            guard open() else { return false }
+            state = .activationSessionBegan
+            return true
+        }
+
+        /// Keep an unsafe/indeterminate teardown retryable rather than falsely marking
+        /// the synthetic activation session finished before its paired end was posted.
+        mutating func markTeardownRetryScheduled() -> Bool {
+            guard state == .activationSessionBegan else { return false }
+            state = .teardownRetryScheduled
+            return true
+        }
+
+        mutating func waiveTeardown() -> Bool {
+            guard requiresTeardown else { return false }
+            state = .teardownWaived
+            return true
+        }
+
+        /// Posts the paired end exactly once for any opened or deferred session.
+        mutating func finish(postTeardown: () -> Void) -> Bool {
+            guard requiresTeardown else { return false }
+            postTeardown()
+            state = .finished
+            return true
+        }
+    }
+
+    final class BackgroundDeliverySession {
+        fileprivate enum Mode: Equatable {
+            case preparedTargetedInput
+            case directExactElement
+            /// Telegram hides its window subtree while backgrounded. This mode owns
+            /// one bounded targeted-input activation session solely to reveal the
+            /// retained editor; it never rewrites AX focus/main pointers or booleans.
+            case telegramRetainedExactInput
+        }
+
         fileprivate let target: Target
         fileprivate let element: AXUIElement
         fileprivate let window: AXUIElement
         fileprivate let app: NSRunningApplication
-        fileprivate let frontmostPIDAtStart: pid_t
-        fileprivate let keyboardFocusedPIDAtStart: pid_t
-        fileprivate let keyboardFocusedElementAtStart: AXUIElement
+        fileprivate let mode: Mode
+        fileprivate let frontmostPIDAtPreparation: pid_t
         fileprivate let previouslyFocusedWindow: AXUIElement?
         fileprivate let previouslyFocusedElement: AXUIElement?
-        fileprivate let inputRole: String
-        fileprivate let inputSubrole: String?
-        fileprivate let inputFrame: CGRect?
-        fileprivate let resolution: BackgroundTargetResolution
-        fileprivate let focusMode: BackgroundFocusMode
-        fileprivate let ownsTargetedInputSession: Bool
+        fileprivate let previouslyFocusedElementWasAbsent: Bool
+        fileprivate let focusBooleanSnapshot: BackgroundFocusBooleanSnapshot
+        fileprivate let telegramVisualIdentity: TelegramWindowVisualIdentity?
+        /// This flag is invalidated before each asynchronous visual sample and set
+        /// only after the exact captured window header re-matches. Synchronous AX
+        /// guards may rely on it only between that sample and one bounded action.
+        fileprivate var telegramVisualIdentityVerified = false
+        fileprivate var lifecycle = BackgroundFocusSessionLifecycle()
+        fileprivate var teardownRetryCount = 0
         let processIdentifier: pid_t
         let bundleIdentifier: String?
-        var frontmostProcessIdentifierAtStart: pid_t { frontmostPIDAtStart }
-        var focusModeDescription: String { focusMode.rawValue }
-        var requiresDirectAccessibilityInsertion: Bool {
-            focusMode == .directExactElement
+
+        fileprivate init(
+            target: Target,
+            element: AXUIElement,
+            window: AXUIElement,
+            app: NSRunningApplication,
+            mode: Mode,
+            frontmostPIDAtPreparation: pid_t,
+            previouslyFocusedWindow: AXUIElement?,
+            previouslyFocusedElement: AXUIElement?,
+            previouslyFocusedElementWasAbsent: Bool,
+            focusBooleanSnapshot: BackgroundFocusBooleanSnapshot,
+            telegramVisualIdentity: TelegramWindowVisualIdentity? = nil,
+            processIdentifier: pid_t,
+            bundleIdentifier: String?
+        ) {
+            self.target = target
+            self.element = element
+            self.window = window
+            self.app = app
+            self.mode = mode
+            self.frontmostPIDAtPreparation = frontmostPIDAtPreparation
+            self.previouslyFocusedWindow = previouslyFocusedWindow
+            self.previouslyFocusedElement = previouslyFocusedElement
+            self.previouslyFocusedElementWasAbsent = previouslyFocusedElementWasAbsent
+            self.focusBooleanSnapshot = focusBooleanSnapshot
+            self.telegramVisualIdentity = telegramVisualIdentity
+            self.processIdentifier = processIdentifier
+            self.bundleIdentifier = bundleIdentifier
         }
+
+        var frontmostProcessIdentifierAtPreparation: pid_t {
+            frontmostPIDAtPreparation
+        }
+        var usesPreparedTargetedInput: Bool {
+            mode == .preparedTargetedInput
+        }
+        var prefersAccessibilityTextInsertion: Bool {
+            mode == .directExactElement || mode == .telegramRetainedExactInput
+        }
+        var allowsTargetedUnicodeFallback: Bool {
+            // A visually identified parentless Telegram composer receives exactly
+            // one AXSelectedText mutation. Multi-chunk targeted Unicode would need
+            // asynchronous screenshot revalidation at every chunk and is therefore
+            // deliberately unavailable for this stricter path.
+            mode == .telegramRetainedExactInput
+                && telegramVisualIdentity == nil
+        }
+        /// Live-draft migration may erase a prior range only in the same foreground
+        /// application while a different exact input owns the real system caret. This
+        /// direct mode performs no synthetic activation and no app-internal focus
+        /// rewrite; cross-app prepared sessions deliberately retain the old draft.
+        var allowsDirectRealtimeDraftMutation: Bool {
+            mode == .directExactElement
+        }
+        var requiresTelegramVisualRevalidation: Bool {
+            mode == .telegramRetainedExactInput
+                && telegramVisualIdentity != nil
+        }
+        var diagnosticMode: String {
+            switch mode {
+            case .preparedTargetedInput: "preparedTargetedInput"
+            case .directExactElement: "directExactElement"
+            case .telegramRetainedExactInput: "telegramRetainedExactInput"
+            }
+        }
+        @MainActor
+        var diagnosticApplicationIdentity: ApplicationIdentitySnapshot {
+            FocusLockService.applicationIdentitySnapshot(for: app)
+        }
+    }
+
+    enum NearbySubmitButtonResult: Equatable {
+        case pressed
+        case targetedClick
+        case unavailable
+        case focusLostBeforeAction
+        case refusedAfterCandidate
+        case failed(Int32)
     }
 
     enum BackgroundTextInsertionResult: Equatable {
@@ -102,17 +272,144 @@ final class FocusLockService: ObservableObject {
         case focusSafetyViolation
     }
 
-    enum NearbySubmitButtonResult: Equatable {
-        case pressed
-        case unavailable
-        case failed(Int32)
-    }
-
     private struct NearbySubmitButtonCandidate {
         let element: AXUIElement
-        let label: String
+        let usesAuditedUnlabelledContract: Bool
         let score: CGFloat
-        let discoveredDepth: Int
+    }
+
+    private enum NearbySubmitButtonLookup {
+        case ready(NearbySubmitButtonCandidate)
+        case unavailable
+        case ambiguous
+        case boundaryChanged
+    }
+
+    /// `nil` is not proof that an OpenAI button is genuinely unlabelled: AX can also
+    /// return no string when the renderer is busy or the wrapper has gone stale. Keep
+    /// those states distinct so a failed label read can never inherit the audited
+    /// unlabelled-Send exception and accidentally press Stop.
+    private enum SubmitLabelState {
+        case labelled(String)
+        case unlabelled
+        case unreadable
+    }
+
+    enum ElementReferenceAvailability: Equatable {
+        case value
+        case absent
+        case failed
+    }
+
+    /// Pointer-valued AX reads must distinguish a genuinely absent value from a
+    /// transport/read failure. Electron commonly exposes a focused window but no
+    /// focused UI element while inactive. That explicit absence is valid state: the
+    /// bounded session restores the target's prior `AXFocused=false` and accepts only
+    /// absence or that same inactive retained pointer. A failed read remains unsafe.
+    private enum ElementReferenceRead {
+        case value(AXUIElement)
+        case absent
+        case failed(Int32)
+
+        var availability: ElementReferenceAvailability {
+            switch self {
+            case .value: return .value
+            case .absent: return .absent
+            case .failed: return .failed
+            }
+        }
+
+        var diagnostic: String {
+            switch self {
+            case .value:
+                return "value"
+            case .absent:
+                return "absent"
+            case .failed(let error):
+                return "failed(\(error))"
+            }
+        }
+    }
+
+    enum BackgroundTeardownBoundaryStatus: Equatable {
+        case safe
+        case targetOwnsSystemFocus
+        case targetTerminated
+        case frontmostUnavailable
+        case systemFocusUnavailable
+    }
+
+    enum BackgroundTeardownDecision: Equatable {
+        case restoreNow
+        case retryFullRestoration
+        case finishPartialAndEnd
+        case waiveWithoutMutation
+    }
+
+    static func priorFocusedElementReadIsRestorable(
+        _ availability: ElementReferenceAvailability
+    ) -> Bool {
+        availability != .failed
+    }
+
+    /// Public AX cannot write a nil focused-element pointer back into Electron. When
+    /// the exact pre-session state was explicitly absent, restoration is nevertheless
+    /// safe if Electron either reports absence again or retains only the same target
+    /// pointer with its readable focused boolean restored to the exact prior `false`.
+    /// A different retained element, an unreadable state, or a focused target fails.
+    static func absentPriorFocusedElementRestorationMatches(
+        restoredAvailability: ElementReferenceAvailability,
+        restoredElementMatchesTarget: Bool,
+        restoredTargetFocused: Bool?,
+        expectedTargetFocused: Bool?
+    ) -> Bool {
+        if restoredAvailability == .absent { return true }
+        return restoredAvailability == .value
+            && restoredElementMatchesTarget
+            && expectedTargetFocused == false
+            && restoredTargetFocused == expectedTargetFocused
+    }
+
+    private final class BoundedTraversalState {
+        var remainingNodeBudget: Int
+        var visitedNodeHashes = Set<CFHashCode>()
+        var navigationChildEdges = 0
+        var visibleChildEdges = 0
+        var ordinaryChildEdges = 0
+        var mergedChildEdges = 0
+        var buttonNodes = 0
+        var labelledSendButtons = 0
+        var labelledOtherButtons = 0
+        var unlabelledButtons = 0
+        var unreadableLabelButtons = 0
+        var auditedUnlabelledButtons = 0
+        var enabledButtons = 0
+        var disabledButtons = 0
+        var unreadableEnabledButtons = 0
+        var pressableButtons = 0
+        var unpressableButtons = 0
+        var matchingWindowButtons = 0
+        var mismatchedWindowButtons = 0
+        var readableFrameButtons = 0
+        var unreadableFrameButtons = 0
+        var matchingGeometryButtons = 0
+        var mismatchedGeometryButtons = 0
+
+        init(nodeBudget: Int) {
+            remainingNodeBudget = nodeBudget
+        }
+    }
+
+    private enum BoundedTraversalCompletion {
+        case completed
+        case exhausted
+        case cancelled
+        case boundaryChanged
+        case stoppedByVisitor
+    }
+
+    private struct BoundedTraversalResult {
+        let completion: BoundedTraversalCompletion
     }
 
     static let shared = FocusLockService()
@@ -122,35 +419,48 @@ final class FocusLockService: ObservableObject {
     private(set) var stopHoldDecisionPending = false
 
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
-    private let activationTimeout: TimeInterval = 1
-    private let focusVerificationTimeout: TimeInterval = 0.25
-    private let focusPollInterval: UInt64 = 20_000_000
+    private static let semanticSendNodeBudget = 1_600
+    private static let semanticSendSearchSeconds = 0.35
     private static let telegramBundleIdentifiers: Set<String> = [
         "ru.keepcoder.Telegram"
     ]
-    private static let exactWrapperRequiresIdentityOrContextBundleIdentifiers: Set<String> = [
-        "com.openai.codex",
-        "com.openai.chat",
-        "com.anthropic.claudefordesktop",
-        "com.google.Chrome",
-        "com.google.Chrome.beta",
-        "com.google.Chrome.canary",
-        "org.chromium.Chromium",
-        "notion.id"
-    ]
-    private static let semanticSendBundleIdentifiers: Set<String> = [
-        "com.openai.codex",
-        "com.openai.chat",
-        "com.anthropic.claudefordesktop",
-        "ru.keepcoder.Telegram"
-    ]
-    private static let telegramGenericContextLabels: Set<String> = [
-        "attach", "cancel", "close", "edit", "emoji", "message", "more",
-        "mute", "online", "search", "send", "telegram", "unmute",
-        "write a message"
-    ]
-    private static let telegramVolatileContextPrefixes = [
-        "last seen", "typing", "write a message"
+    // The separately installed Codex and ChatGPT apps share `com.openai.codex` but
+    // have different bundle paths and release trains. Offline inspection of each
+    // exact app.asar proves its idle Send control is the sole enabled unlabelled
+    // composer button, while the same control gains an explicit Stop label once a
+    // turn runs. Pin both the real .app name and full build tuple: a product update
+    // must fail closed until its renderer is audited again.
+    private static let auditedCodexSubmitBuild = (
+        applicationBundleName: "Codex.app",
+        shortVersion: "26.707.72221",
+        build: "5307",
+        chromium: "150.0.7871.115"
+    )
+    // Keep ChatGPT's independently audited release tuples local to the OpenAI
+    // composer policy. App-specific Telegram/Terminal/Claude work must never widen
+    // or replace this Codex/ChatGPT allowlist or alter its delivery mechanism.
+    private static let auditedChatGPTSubmitBuilds = [
+        (
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ),
+        // Build 5591 keeps the audited idle-Send/active-Stop component byte-for-byte
+        // identical to 5551. Pin the complete tuple so the next update fails closed.
+        (
+            shortVersion: "26.715.52143",
+            build: "5591",
+            chromium: "150.0.7871.124"
+        ),
+        // ChatGPT 26.715.70719 build 5650 keeps the same safety boundary: the
+        // idle composer action is the sole enabled unlabelled button, while the
+        // in-flight action has an explicit Stop label. Runtime AX diagnostics
+        // independently observed exactly one unlabelled candidate in this build.
+        (
+            shortVersion: "26.715.70719",
+            build: "5650",
+            chromium: "150.0.7871.124"
+        )
     ]
 
     private init() {}
@@ -198,9 +508,10 @@ final class FocusLockService: ObservableObject {
             logger.info("Captured editable input pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) role=\(role ?? "nil", privacy: .public) subrole=\(subrole ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
         } else {
             // Electron/Chromium frequently reports AXWebArea while a global shortcut's
-            // modifiers are down. Preserve the owning app for the recording-start/Next
-            // Track route; delivery can reactivate that app and use its retained focus even
-            // when macOS did not expose the exact editor wrapper at capture time.
+            // modifiers are down. Preserve the owning app only for recording-start/Next.
+            // Delivery may promote this to the already-frontmost app's one exact focused
+            // editor; it must never activate a background fallback or guess from retained
+            // application focus.
             logger.notice("Captured recording-start application fallback pid=\(pid, privacy: .public) bundle=\(app.bundleIdentifier ?? "nil", privacy: .public) rejectedRole=\(role ?? "nil", privacy: .public) rejectedSubrole=\(subrole ?? "nil", privacy: .public)")
         }
 
@@ -210,34 +521,33 @@ final class FocusLockService: ObservableObject {
         // indicator without changing any per-session locked destination semantics.
         ActiveWindowService.shared.updateCurrentApplicationForDisplay(app)
 
-        let owningWindow = isExactEditableInput ? owningWindow(for: element) : nil
-        let identity = owningWindow.flatMap {
-            exactInputIdentity(
+        // Telegram's App Store client can expose the real system-focused composer as
+        // a parentless AXTextArea: neither AXWindow nor AXParent reaches the visible
+        // standard window. That is still not permission to save only an app. While
+        // Telegram itself is frontmost, promote the editor to exactly one app-owned
+        // window whose frame contains it; ambiguity remains a visible capture failure.
+        let owningWindow = isExactEditableInput
+            ? captureWindow(
                 for: element,
-                in: $0,
+                pid: pid,
                 bundleIdentifier: app.bundleIdentifier
             )
-        }
-        // Only Telegram can hide its AX tree after capture and need the exact button
-        // wrapper retained. OpenAI and Claude resolve Send at delivery time, keeping
-        // their recording start/stop capture path free of a descendant search.
-        let retainedSubmitCandidate = isExactEditableInput
-            && Self.isTelegram(bundleIdentifier: app.bundleIdentifier)
-            ? nearbySubmitButtonCandidate(
-                element: element,
-                pid: pid,
-                requireEnabled: false
-              )
             : nil
+        let identity = owningWindow.flatMap { exactInputIdentity(for: element, in: $0) }
+        let telegramVisualIdentityCapture = identity?.contextAnchors.isEmpty == true
+            ? owningWindow.flatMap {
+                makeTelegramVisualIdentityCapture(app: app, window: $0)
+            }
+            : nil
+        if Self.isTelegram(bundleIdentifier: app.bundleIdentifier) {
+            logger.info("Captured Telegram exact-input identity readable=\(identity != nil, privacy: .public) contextAnchors=\(identity?.contextAnchors.count ?? 0, privacy: .public) windowReadable=\(owningWindow != nil, privacy: .public) visualCaptureArmed=\(telegramVisualIdentityCapture != nil, privacy: .public)")
+        }
 
         return Target(
             element: isExactEditableInput ? element : nil,
             window: owningWindow,
             identity: identity,
-            retainedSubmitButton: retainedSubmitCandidate?.element,
-            retainedSubmitButtonFrame: retainedSubmitCandidate.flatMap {
-                frame(of: $0.element)
-            },
+            telegramVisualIdentityCapture: telegramVisualIdentityCapture,
             app: app,
             pid: pid,
             bundleIdentifier: app.bundleIdentifier,
@@ -266,771 +576,709 @@ final class FocusLockService: ObservableObject {
         )
     }
 
-    func restoreFocus(to target: Target, allowApplicationFallback: Bool = false) async -> Bool {
+    /// Prepare one exact saved editor for non-activating delivery. A background
+    /// Electron target gets exactly one bounded internal activation-state session.
+    /// When the saved app is frontmost but another input owns the keyboard, no internal
+    /// focus is rewritten; that route may use only direct AXSelectedText insertion.
+    func prepareBackgroundDelivery(to target: Target) async -> BackgroundDeliverySession? {
         guard AXIsProcessTrusted() else {
-            logger.error("Focused input restore failed because Accessibility is not trusted")
-            return false
+            logger.error("Background exact-input preparation requires Accessibility permission pid=\(target.pid, privacy: .public)")
+            return nil
+        }
+        guard target.hasExactInput else {
+            logger.error("Background exact-input preparation received no saved exact element pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
         }
         guard !target.app.isTerminated else {
-            logger.error("Focused input restore failed because the target application terminated")
-            return false
+            logger.error("Background exact-input preparation target app is terminated pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
         }
-
-        let restoreStarted = ProcessInfo.processInfo.systemUptime
-        let frontmostPIDBeforeRestore = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
-        let targetRole = target.element.flatMap { self.stringAttribute(kAXRoleAttribute, from: $0) } ?? "app-fallback"
-        let targetSubrole = target.element.flatMap { self.stringAttribute(kAXSubroleAttribute, from: $0) } ?? "nil"
-        let targetElementHash = target.element.map { String(CFHash($0)) } ?? "nil"
-        logger.info("Focused input restore BEGIN targetPid=\(target.pid, privacy: .public) targetBundle=\(target.bundleIdentifier ?? "nil", privacy: .public) targetRole=\(targetRole, privacy: .public) targetSubrole=\(targetSubrole, privacy: .public) targetElementHash=\(targetElementHash, privacy: .public) frontmostPid=\(frontmostPIDBeforeRestore, privacy: .public)")
-
-        if frontmostPIDBeforeRestore != target.pid {
-            guard await activateApplication(target.app) else {
-                logger.error("Focused input restore failed waiting for target app to become frontmost targetPid=\(target.pid, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public) waitedMillis=\(Int((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1_000), privacy: .public)")
-                return false
+        guard let keyboardFocus = await systemFocusedElementWithBoundedRetry() else {
+            logger.error("Background exact-input preparation could not read current system keyboard focus after bounded retry pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let frontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier else {
+            logger.error("Background exact-input preparation could not read the frontmost application pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
+        }
+        guard let element = resolvedExactElement(for: target),
+              let window = liveWindow(for: target, resolvedElement: element) else {
+            // Telegram removes the saved window's children from its background AX
+            // tree. Strict resolution therefore cannot run until one bounded internal
+            // activation session exists. Keep this exception Telegram-only and retain
+            // the capture-time editor/window only if readable chat context and the
+            // app's own internal focus prove that exact chat after settlement.
+            if let telegramSession = await prepareRetainedTelegramBackgroundDelivery(
+                to: target,
+                keyboardFocus: keyboardFocus,
+                frontmostPID: frontmostPID
+            ) {
+                return telegramSession
             }
-            logger.info("Focused input restore target app became frontmost targetPid=\(target.pid, privacy: .public) waitedMillis=\(Int((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1_000), privacy: .public)")
-        } else {
-            logger.info("Focused input restore skipped app activation because target is already frontmost targetPid=\(target.pid, privacy: .public)")
+            logger.error("Background exact-input preparation could not resolve the saved element/window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            return nil
         }
 
-        guard let element = resolvedExactElement(for: target) else {
-            guard allowApplicationFallback else {
-                let diagnostics = exactInputResolutionDiagnostics(for: target)
-                logger.error("Focused input restore could not uniquely resolve the saved exact input \(diagnostics, privacy: .public)")
-                return false
-            }
-            logger.notice("Foreground recording-start exact input became unavailable; using the saved app's current focus targetPid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-            return true
+        let exactInputOwnsKeyboardFocus = keyboardFocus.pid == target.pid
+            && CFEqual(keyboardFocus.element, element)
+        guard !exactInputOwnsKeyboardFocus else {
+            logger.error("Non-activating delivery preparation refused because the exact target already owns system keyboard focus pid=\(target.pid, privacy: .public)")
+            return nil
         }
-
-        // A primary-button stop commonly arrives while the captured input still owns
-        // real system keyboard focus. Re-selecting that same window/editor is needless
-        // and can make native apps churn their Accessibility wrappers. Resolution above
-        // still proves the saved document/chat identity (Telegram included); only then
-        // may this be a no-op. The paste and normal HID Return remain foreground actions.
-        if frontmostPIDBeforeRestore == target.pid,
-           let focused = systemFocusedElement(),
-           focused.pid == target.pid,
-           CFEqual(focused.element, element) {
-            logger.info("Focused input restore verified the already-focused exact input without rewriting focus targetPid=\(target.pid, privacy: .public) elementHash=\(CFHash(element), privacy: .public)")
-            return true
-        }
+        let mode: BackgroundDeliverySession.Mode =
+            frontmostPID == target.pid || keyboardFocus.pid == target.pid
+                ? .directExactElement
+                : .preparedTargetedInput
 
         let appElement = AXUIElementCreateApplication(target.pid)
-        if let window = liveWindow(for: target, resolvedElement: element) {
-            _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
-            let windowResult = AXUIElementSetAttributeValue(
-                appElement,
-                kAXFocusedWindowAttribute as CFString,
-                window
+        let previouslyFocusedWindow: AXUIElement?
+        let previouslyFocusedElement: AXUIElement?
+        let previouslyFocusedElementWasAbsent: Bool
+        switch mode {
+        case .directExactElement, .telegramRetainedExactInput:
+            previouslyFocusedWindow = nil
+            previouslyFocusedElement = nil
+            previouslyFocusedElementWasAbsent = false
+        case .preparedTargetedInput:
+            let windowRead = elementReferenceAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
             )
-            _ = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            guard windowResult == .success else {
-                if allowApplicationFallback {
-                    logger.notice("Foreground recording-start window became stale; using the saved app's current focus pid=\(target.pid, privacy: .public) AXError=\(windowResult.rawValue, privacy: .public)")
-                    return true
-                }
-                logger.error("Focused input restore failed to select the saved window pid=\(target.pid, privacy: .public) AXError=\(windowResult.rawValue, privacy: .public)")
-                return false
-            }
-        }
-        let restoreResult = AXUIElementSetAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            element
-        )
-        guard restoreResult == .success else {
-            if allowApplicationFallback {
-                logger.notice("Foreground recording-start input became stale; using the saved app's current focus pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) AXError=\(restoreResult.rawValue, privacy: .public)")
-                return true
-            }
-            logger.error("Focused input restore failed with AX error \(restoreResult.rawValue) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-            return false
-        }
-
-        guard await waitForFocusedElement(
-            pid: target.pid,
-            element: element,
-            timeout: focusVerificationTimeout
-        ) else {
-            let actualFocus = systemFocusedElement()
-            if allowApplicationFallback, actualFocus?.pid == target.pid {
-                logger.notice("Foreground recording-start input wrapper changed; using the saved app's current focus targetPid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(element), privacy: .public) actualElementHash=\(actualFocus.map { String(CFHash($0.element)) } ?? "nil", privacy: .public)")
-                return true
-            }
-            logger.error("Focused input restore was accepted by AX but verification failed targetPid=\(target.pid, privacy: .public) targetElementHash=\(CFHash(element), privacy: .public) actualPid=\(actualFocus?.pid ?? -1, privacy: .public) actualElementHash=\(actualFocus.map { String(CFHash($0.element)) } ?? "nil", privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return false
-        }
-
-        logger.info("Restored and verified focused input pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) elementHash=\(CFHash(element), privacy: .public) totalMillis=\(Int((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1_000), privacy: .public)")
-        return true
-    }
-
-    /// Prepare one exact saved editor without making its application macOS-frontmost.
-    ///
-    /// Telegram hides every AX window child while backgrounded, so strict fingerprint
-    /// resolution cannot run until its bounded internal activation-state session exists.
-    /// For that allowlisted app only, open the session first and retain the original
-    /// wrapper only when Telegram still reports that exact editor/window as internally
-    /// focused and the captured chat context becomes readable and matches. Hidden or
-    /// changed chat context fails closed; this fallback never rewrites Telegram's focus.
-    func prepareBackgroundDelivery(to target: Target) async -> BackgroundDeliverySession? {
-        guard AXIsProcessTrusted(),
-              target.hasExactInput,
-              !target.app.isTerminated else {
-            logger.error("Background exact-input preparation unavailable pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-            return nil
-        }
-
-        if let element = resolvedExactElement(for: target),
-           let window = liveWindow(for: target, resolvedElement: element) {
-            guard let session = makeBackgroundDeliverySession(
-                target: target,
-                element: element,
-                window: window,
-                resolution: .strictFingerprint
-            ) else {
+            let elementRead = elementReferenceAttribute(
+                kAXFocusedUIElementAttribute,
+                from: appElement
+            )
+            guard case .value(let previousWindow) = windowRead,
+                  Self.priorFocusedElementReadIsRestorable(
+                    elementRead.availability
+                  ) else {
+                // The previous window must remain exact. For the editor pointer,
+                // `.absent` is a real inactive Electron state; only a transport/read
+                // failure is rejected before mutation.
+                logger.error("Background exact focus refused without restorable prior pointer state targetPid=\(target.pid, privacy: .public) windowRead=\(windowRead.diagnostic, privacy: .public) elementRead=\(elementRead.diagnostic, privacy: .public)")
                 return nil
             }
-            guard await prepareBackgroundFocus(session) else {
+            previouslyFocusedWindow = previousWindow
+            switch elementRead {
+            case .value(let previousElement):
+                previouslyFocusedElement = previousElement
+                previouslyFocusedElementWasAbsent = false
+            case .absent:
+                previouslyFocusedElement = nil
+                previouslyFocusedElementWasAbsent = true
+            case .failed:
+                // Guarded above; retain a defensive fail-closed branch if the enum
+                // gains another restorable availability without a concrete mapping.
                 return nil
             }
-
-            logger.info("Background exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) resolution=\(session.resolution.rawValue, privacy: .public) focusMode=\(session.focusMode.rawValue, privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) frontmostPid=\(session.frontmostPIDAtStart, privacy: .public)")
-            return session
         }
-
-        if let telegramSession = await prepareRetainedTelegramBackgroundDelivery(to: target) {
-            return telegramSession
+        // Adapt the useful part of Cua/Trope's MIT-licensed synthetic-focus
+        // pattern to VoiceInk++'s stricter exact-input contract: snapshot every
+        // readable boolean we may overwrite, including literal `false` values.
+        // The saved app/window/editor references remain VoiceInk++-specific because
+        // delayed delivery must restore the exact prior internal destination.
+        let focusBooleanSnapshot = BackgroundFocusBooleanSnapshot { slot in
+            guard mode == .preparedTargetedInput else { return nil }
+            return self.backgroundFocusBoolean(
+                slot,
+                targetWindow: window,
+                targetElement: element,
+                previousWindow: previouslyFocusedWindow,
+                previousElement: previouslyFocusedElement
+            )
         }
-
-        logger.error("Background exact-input preparation could not resolve a live saved element/window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
-        return nil
-    }
-
-    private func makeBackgroundDeliverySession(
-        target: Target,
-        element: AXUIElement,
-        window: AXUIElement,
-        resolution: BackgroundTargetResolution,
-        frontmostPIDAtStart: pid_t? = nil,
-        keyboardFocusAtStart: (element: AXUIElement, pid: pid_t)? = nil,
-        previouslyFocusedWindow: AXUIElement? = nil,
-        previouslyFocusedElement: AXUIElement? = nil
-    ) -> BackgroundDeliverySession? {
-        let appElement = AXUIElementCreateApplication(target.pid)
-        guard let keyboardFocus = keyboardFocusAtStart ?? systemFocusedElement() else {
-            logger.error("Background exact-input preparation refused because system keyboard focus was unreadable targetPid=\(target.pid, privacy: .public)")
+        let requiredBooleanSlots = requiredBackgroundFocusBooleanSlots(
+            targetWindow: window,
+            targetElement: element,
+            previousWindow: previouslyFocusedWindow,
+            previousElement: previouslyFocusedElement,
+            mode: mode
+        )
+        let missingBooleanSlots = focusBooleanSnapshot.missing(
+            from: requiredBooleanSlots
+        )
+        guard missingBooleanSlots.isEmpty else {
+            // Never overwrite a focus boolean whose exact previous value could not be
+            // read. Omitting it from verification would otherwise permit teardown to
+            // claim success while leaving stale synthetic focus behind.
+            logger.error("Background exact focus refused without complete restorable boolean state targetPid=\(target.pid, privacy: .public) missing=\(String(describing: missingBooleanSlots), privacy: .public)")
             return nil
         }
-        let frontmostPID = frontmostPIDAtStart
-            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
-            ?? -1
-        let focusMode = Self.backgroundFocusMode(
-            keyboardFocusMatchesTarget: keyboardFocus.pid == target.pid
-                && CFEqual(keyboardFocus.element, element),
-            keyboardFocusOwnedByTarget: keyboardFocus.pid == target.pid,
-            targetIsFrontmost: frontmostPID == target.pid
-        )
-        return BackgroundDeliverySession(
+        let session = BackgroundDeliverySession(
             target: target,
             element: element,
             window: window,
             app: target.app,
-            frontmostPIDAtStart: frontmostPID,
-            keyboardFocusedPIDAtStart: keyboardFocus.pid,
-            keyboardFocusedElementAtStart: keyboardFocus.element,
-            previouslyFocusedWindow: previouslyFocusedWindow
-                ?? elementAttribute(kAXFocusedWindowAttribute, from: appElement),
-            previouslyFocusedElement: previouslyFocusedElement
-                ?? elementAttribute(kAXFocusedUIElementAttribute, from: appElement),
-            inputRole: stringAttribute(kAXRoleAttribute, from: element) ?? "",
-            inputSubrole: stringAttribute(kAXSubroleAttribute, from: element),
-            inputFrame: frame(of: element),
-            resolution: resolution,
-            focusMode: focusMode,
-            ownsTargetedInputSession: focusMode == .preparedTargetedInput,
+            mode: mode,
+            frontmostPIDAtPreparation: frontmostPID,
+            previouslyFocusedWindow: previouslyFocusedWindow,
+            previouslyFocusedElement: previouslyFocusedElement,
+            previouslyFocusedElementWasAbsent: previouslyFocusedElementWasAbsent,
+            focusBooleanSnapshot: focusBooleanSnapshot,
             processIdentifier: target.pid,
             bundleIdentifier: target.bundleIdentifier
         )
+
+        switch mode {
+        case .directExactElement, .telegramRetainedExactInput:
+            guard backgroundSessionRemainsPrepared(session) else { return nil }
+        case .preparedTargetedInput:
+            guard await Self.runBackgroundPreparationWithOwnedFailureCleanup(
+                prepare: { await self.applyBackgroundFocus(session) },
+                cleanup: { self.finishBackgroundDelivery(session) }
+            ) else { return nil }
+        }
+
+        logger.info("Non-activating exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) mode=\(String(describing: mode), privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        return session
     }
 
-    /// Decide the delivery mode before any target mutation. Keep this decision pure
-    /// and unit-tested because the three routes have intentionally different safety
-    /// permissions: one bounded internal session, no synthetic activation for an
-    /// already-focused floating surface, or direct Accessibility-only insertion when
-    /// Ethan is using another input.
-    static func backgroundFocusMode(
-        keyboardFocusMatchesTarget: Bool,
-        keyboardFocusOwnedByTarget: Bool,
-        targetIsFrontmost: Bool
-    ) -> BackgroundFocusMode {
-        if keyboardFocusMatchesTarget {
-            return .alreadyKeyboardFocused
-        }
-        if keyboardFocusOwnedByTarget || targetIsFrontmost {
-            return .directExactElement
-        }
-        return .preparedTargetedInput
-    }
-
+    /// Telegram retains a valid editor wrapper but hides the window subtree as soon as
+    /// it becomes backgrounded. Open exactly one internal activation-state session
+    /// before resolving that hidden tree, without writing any AX focus/main attribute.
+    /// The retained wrapper is accepted only when Telegram itself reports the same
+    /// window/editor internally focused and readable capture-time chat anchors still
+    /// match. Internal focus or geometry alone can identify the wrong reused chat.
     private func prepareRetainedTelegramBackgroundDelivery(
-        to target: Target
+        to target: Target,
+        keyboardFocus: (element: AXUIElement, pid: pid_t),
+        frontmostPID: pid_t
     ) async -> BackgroundDeliverySession? {
         guard Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
               let element = target.element,
               let window = target.window,
               let identity = target.identity,
-              !identity.primaryContextAnchors.isEmpty,
-              let keyboardFocus = systemFocusedElement(),
               keyboardFocus.pid != target.pid,
-              Self.backgroundTargetRemainsNonFrontmost(
-                currentFrontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                targetPID: target.pid
-              ) else {
+              frontmostPID != target.pid else {
             return nil
         }
 
-        let appElement = AXUIElementCreateApplication(target.pid)
-        let previousWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
-        let previousElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
-        let frontmostPIDAtStart = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
-        guard let session = makeBackgroundDeliverySession(
+        let visualIdentity: TelegramWindowVisualIdentity?
+        if identity.contextAnchors.isEmpty {
+            guard let capture = target.telegramVisualIdentityCapture,
+                  let capturedIdentity = await capture.value(),
+                  capturedIdentity.processIdentifier == target.pid,
+                  SkyLightTargetedMouseEventPost.windowID(for: window)
+                    == capturedIdentity.windowID else {
+                logger.notice("Telegram retained-input preparation has neither readable AX chat anchors nor a stable audited visual identity pid=\(target.pid, privacy: .public)")
+                return nil
+            }
+            visualIdentity = capturedIdentity
+        } else {
+            visualIdentity = nil
+        }
+
+        let session = BackgroundDeliverySession(
             target: target,
             element: element,
             window: window,
-            resolution: .telegramRetainedFocusedElement,
-            frontmostPIDAtStart: frontmostPIDAtStart,
-            keyboardFocusAtStart: keyboardFocus,
-            previouslyFocusedWindow: previousWindow,
-            previouslyFocusedElement: previousElement
-        ), session.focusMode == .preparedTargetedInput,
-              CursorPaster.beginTargetedInputSession(pid: target.pid) else {
+            app: target.app,
+            mode: .telegramRetainedExactInput,
+            frontmostPIDAtPreparation: frontmostPID,
+            previouslyFocusedWindow: nil,
+            previouslyFocusedElement: nil,
+            previouslyFocusedElementWasAbsent: false,
+            focusBooleanSnapshot: BackgroundFocusBooleanSnapshot { _ in nil },
+            telegramVisualIdentity: visualIdentity,
+            processIdentifier: target.pid,
+            bundleIdentifier: target.bundleIdentifier
+        )
+        let targetPID = target.pid
+        guard session.lifecycle.begin(open: {
+            CursorPaster.beginTargetedInputSession(pid: targetPID)
+        }) else {
             logger.error("Telegram retained-input preparation could not open its bounded activation-state session pid=\(target.pid, privacy: .public)")
             return nil
         }
 
         try? await Task.sleep(nanoseconds: 50_000_000)
+        if visualIdentity != nil,
+           !(await revalidateTelegramVisualIdentityIfRequired(for: session)) {
+            logger.notice("Telegram retained-input preparation rejected a changed or unreadable visual chat identity pid=\(target.pid, privacy: .public)")
+            finishRetainedTelegramBackgroundDelivery(session)
+            return nil
+        }
         guard telegramDeliveryBoundaryMatches(session) else {
-            let currentContext = contextFingerprint(
+            let currentAnchorCount = contextAnchors(
                 in: window,
                 region: identity.contextRegion,
-                excluding: element,
-                bundleIdentifier: target.bundleIdentifier
-            )
-            logger.notice("Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat pid=\(target.pid, privacy: .public) capturedPrimary=\(identity.primaryContextAnchors.count, privacy: .public) capturedSecondary=\(identity.contextAnchors.count, privacy: .public) currentPrimary=\(currentContext.primary.count, privacy: .public) currentSecondary=\(currentContext.secondary.count, privacy: .public)")
-            if preparedTargetFocusBoundaryIsSafe(session) {
-                CursorPaster.endTargetedInputSession(pid: target.pid)
-            }
+                excluding: element
+            ).count
+            logger.notice("Telegram retained-input preparation rejected hidden, changed, or internally unfocused chat pid=\(target.pid, privacy: .public) capturedAnchors=\(identity.contextAnchors.count, privacy: .public) currentAnchors=\(currentAnchorCount, privacy: .public) visualIdentity=\(visualIdentity != nil, privacy: .public)")
+            finishRetainedTelegramBackgroundDelivery(session)
             return nil
         }
 
-        logger.notice("Telegram retained exact input prepared with readable matching chat context pid=\(target.pid, privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) frontmostPid=\(frontmostPIDAtStart, privacy: .public)")
+        logger.notice("Telegram retained exact input prepared with matching chat identity pid=\(target.pid, privacy: .public) axAnchors=\(!identity.contextAnchors.isEmpty, privacy: .public) visualIdentity=\(visualIdentity != nil, privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) frontmostPid=\(frontmostPID, privacy: .public)")
         return session
     }
 
-    func refreshBackgroundFocus(_ session: BackgroundDeliverySession) async -> Bool {
-        backgroundDeliveryBoundaryMatches(session)
+    static func runBackgroundPreparationWithOwnedFailureCleanup(
+        prepare: () async -> Bool,
+        cleanup: () -> Void
+    ) async -> Bool {
+        guard await prepare() else {
+            // Preparation can fail after only some AX setters succeeded. The
+            // session owner—not a caller that never receives it—must pair the
+            // activation-state begin and restore every captured mutation.
+            cleanup()
+            return false
+        }
+        return true
+    }
+
+    static func backgroundTeardownDecision(
+        boundary: BackgroundTeardownBoundaryStatus,
+        restorationIncomplete: Bool,
+        retryCount: Int
+    ) -> BackgroundTeardownDecision {
+        switch boundary {
+        case .safe:
+            guard restorationIncomplete else { return .restoreNow }
+            return retryCount == 0 ? .retryFullRestoration : .finishPartialAndEnd
+        case .targetOwnsSystemFocus, .targetTerminated:
+            return .waiveWithoutMutation
+        case .frontmostUnavailable, .systemFocusUnavailable:
+            // One bounded retry may recover a transient AX/Workspace read. After that,
+            // the least disruptive terminal choice is to waive teardown rather than
+            // post a deactivation that might fight a real but unreadable user focus.
+            return retryCount == 0 ? .retryFullRestoration : .waiveWithoutMutation
+        }
+    }
+
+    static func preservedBackgroundTeardownBoundary(
+        current: BackgroundTeardownBoundaryStatus,
+        observed: BackgroundTeardownBoundaryStatus
+    ) -> BackgroundTeardownBoundaryStatus {
+        guard current == .safe, observed != .safe else { return current }
+        return observed
+    }
+
+    private func finishRetainedTelegramBackgroundDelivery(
+        _ session: BackgroundDeliverySession
+    ) {
+        guard session.mode == .telegramRetainedExactInput,
+              session.lifecycle.requiresTeardown else {
+            return
+        }
+        let boundary = preparedTargetFocusBoundaryStatus(session)
+        switch boundary {
+        case .safe:
+            let targetPID = session.processIdentifier
+            _ = session.lifecycle.finish {
+                CursorPaster.endTargetedInputSession(pid: targetPID)
+            }
+            logger.info("Telegram retained activation-state session ended without AX focus restoration targetPid=\(targetPID, privacy: .public)")
+        case .frontmostUnavailable where session.teardownRetryCount == 0,
+             .systemFocusUnavailable where session.teardownRetryCount == 0:
+            guard session.lifecycle.markTeardownRetryScheduled() else {
+                _ = session.lifecycle.waiveTeardown()
+                return
+            }
+            session.teardownRetryCount += 1
+            Thread.sleep(forTimeInterval: 0.05)
+            finishRetainedTelegramBackgroundDelivery(session)
+        case .targetOwnsSystemFocus, .targetTerminated,
+             .frontmostUnavailable, .systemFocusUnavailable:
+            // Ending a synthetic session after Telegram genuinely takes system focus
+            // can deactivate or fight the user's real workspace. This mode made no AX
+            // mutations to restore, so terminate ownership explicitly without another
+            // event when the no-focus-theft boundary is no longer provable.
+            _ = session.lifecycle.waiveTeardown()
+            logger.notice("Telegram retained activation-state teardown waived without AX mutation targetPid=\(session.processIdentifier, privacy: .public) boundary=\(String(describing: boundary), privacy: .public)")
+        }
     }
 
     func finishBackgroundDelivery(_ session: BackgroundDeliverySession) {
-        guard session.ownsTargetedInputSession else {
+        guard session.lifecycle.requiresTeardown else { return }
+        if session.mode == .telegramRetainedExactInput {
+            finishRetainedTelegramBackgroundDelivery(session)
             return
         }
-
-        // Never post another activation-state sequence during cleanup. The one session
-        // opened in preparation remains active until this method. If Ethan has brought
-        // the target forward or it has acquired real keyboard focus, do not inject a
-        // synthetic deactivation or rewrite the input he is now using.
-        guard preparedTargetFocusBoundaryIsSafe(session) else {
-            logger.notice("Background internal-focus restoration/deactivation skipped because the target became active targetPid=\(session.processIdentifier, privacy: .public) actualFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public) actualKeyboardPid=\(self.systemFocusedElement()?.pid ?? -1, privacy: .public)")
+        guard session.mode == .preparedTargetedInput else {
             return
         }
-
+        // The synthetic active state belongs only to the one bounded background
+        // session. If Ethan has really brought Codex forward, explicitly waive the
+        // synthetic deactivation; if focus state is merely unreadable, retain a
+        // retryable lifecycle state instead of falsely declaring teardown complete.
+        let entryBoundary = preparedTargetFocusBoundaryStatus(session)
+        guard entryBoundary == .safe else {
+            resolveBackgroundTeardown(
+                session,
+                boundary: entryBoundary,
+                restorationIncomplete: false
+            )
+            return
+        }
+        var teardownCompleted = false
+        var restorationBoundary: BackgroundTeardownBoundaryStatus = .safe
+        func restorationBoundaryIsSafe() -> Bool {
+            let observed = preparedTargetFocusBoundaryStatus(session)
+            if observed != .safe {
+                // Preserve the first unsafe observation for the terminal decision. A
+                // second AX/Workspace read must never erase a real user focus takeover
+                // and then permit VoiceInk++ to resume internal-focus mutation.
+                restorationBoundary = Self.preservedBackgroundTeardownBoundary(
+                    current: restorationBoundary,
+                    observed: observed
+                )
+                return false
+            }
+            return restorationBoundary == .safe
+        }
         defer {
-            if self.preparedTargetFocusBoundaryIsSafe(session) {
-                CursorPaster.endTargetedInputSession(pid: session.processIdentifier)
-            } else {
-                self.logger.notice("Skipped synthetic background deactivation because the target became active during cleanup targetPid=\(session.processIdentifier, privacy: .public)")
+            if !teardownCompleted {
+                resolveBackgroundTeardown(
+                    session,
+                    boundary: restorationBoundary,
+                    restorationIncomplete: true
+                )
             }
-        }
-        if session.resolution == .telegramRetainedFocusedElement {
-            // Telegram retained its own exact internal focus; nothing was rewritten.
-            return
         }
 
+        // Electron settles its private activation state asynchronously. Keep the
+        // session open and re-check the target-not-system-focused boundary before every
+        // internal mutation; never begin a nested/repeated activation session.
+        Thread.sleep(forTimeInterval: 0.05)
+        guard restorationBoundaryIsSafe() else { return }
         let appElement = AXUIElementCreateApplication(session.processIdentifier)
-        if let previousWindow = session.previouslyFocusedWindow,
-           !CFEqual(previousWindow, session.window) {
-            guard performPreparedCleanupMutation(session, mutation: {
-                _ = AXUIElementSetAttributeValue(
-                    previousWindow,
-                    kAXMainAttribute as CFString,
-                    kCFBooleanTrue
-                )
-            }), performPreparedCleanupMutation(session, mutation: {
-                _ = AXUIElementSetAttributeValue(
-                    appElement,
-                    kAXFocusedWindowAttribute as CFString,
-                    previousWindow
-                )
-            }), performPreparedCleanupMutation(session, mutation: {
-                _ = AXUIElementSetAttributeValue(
-                    previousWindow,
-                    kAXFocusedAttribute as CFString,
-                    kCFBooleanTrue
-                )
-            }) else {
-                return
-            }
+
+        // First return every concrete pointer to its exact former value. Electron may
+        // legitimately have had no focused UI element while inactive. Public AX cannot
+        // write nil into the app pointer, so that case restores the target's exact
+        // focused boolean below and accepts only absence or the same inactive pointer.
+        guard let previousWindow = session.previouslyFocusedWindow else {
+            logger.error("Background internal-focus restoration lost its required prior window pointer targetPid=\(session.processIdentifier, privacy: .public)")
+            return
+        }
+        if !CFEqual(previousWindow, session.window) {
+            guard restorationBoundaryIsSafe() else { return }
+            _ = AXUIElementSetAttributeValue(
+                previousWindow,
+                kAXMainAttribute as CFString,
+                kCFBooleanTrue
+            )
+            guard restorationBoundaryIsSafe() else { return }
+            _ = AXUIElementSetAttributeValue(
+                appElement,
+                kAXFocusedWindowAttribute as CFString,
+                previousWindow
+            )
+            guard restorationBoundaryIsSafe() else { return }
+            _ = AXUIElementSetAttributeValue(
+                previousWindow,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            )
         }
         if let previousElement = session.previouslyFocusedElement,
            !CFEqual(previousElement, session.element) {
-            guard performPreparedCleanupMutation(session, mutation: {
-                _ = AXUIElementSetAttributeValue(
-                    appElement,
-                    kAXFocusedUIElementAttribute as CFString,
-                    previousElement
-                )
-            }), performPreparedCleanupMutation(session, mutation: {
-                _ = AXUIElementSetAttributeValue(
-                    previousElement,
-                    kAXFocusedAttribute as CFString,
-                    kCFBooleanTrue
-                )
-            }) else {
-                return
-            }
-        }
-
-        let restoredWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
-        let restoredElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
-        let windowRestored = session.previouslyFocusedWindow.map { previousWindow in
-            restoredWindow.map { CFEqual($0, previousWindow) } == true
-        } ?? true
-        let elementRestored = session.previouslyFocusedElement.map { previousElement in
-            restoredElement.map { CFEqual($0, previousElement) } == true
-        } ?? true
-        logger.info("Background internal focus restored window=\(windowRestored, privacy: .public) element=\(elementRestored, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-    }
-
-    /// Accessibility setters may synchronously run target-app code. Recheck both
-    /// immediately before and immediately after every cleanup mutation so a target
-    /// Ethan foregrounds mid-cleanup cannot receive the remaining internal-focus
-    /// writes. The operation is best-effort restoration; user focus always wins.
-    private func performPreparedCleanupMutation(
-        _ session: BackgroundDeliverySession,
-        mutation: () -> Void
-    ) -> Bool {
-        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
-        mutation()
-        return preparedTargetFocusBoundaryIsSafe(session)
-    }
-
-    func backgroundInputText(
-        for session: BackgroundDeliverySession,
-        allowReplacementAfterSubmission: Bool = false
-    ) -> String? {
-        guard let element = liveBackgroundInput(
-            for: session,
-            allowReplacementAfterSubmission: allowReplacementAfterSubmission
-        ), let text = stringAttribute(kAXValueAttribute, from: element),
-              liveBackgroundInput(
-                for: session,
-                allowReplacementAfterSubmission: allowReplacementAfterSubmission
-              ).map({ CFEqual($0, element) }) == true else {
-            return nil
-        }
-        // Accessibility reads are not atomic with a renderer replacing its composer.
-        // Resolve the exact same retained/replacement wrapper again after reading so a
-        // value fetched from an element that changed mid-call is never accepted.
-        return text
-    }
-
-    /// Cheap polling read used only while waiting for a mutation that was already
-    /// surrounded by full exact-context checks. A matching candidate is never accepted
-    /// until `backgroundInputText` repeats the full document/chat boundary. This keeps
-    /// the main actor responsive without weakening the pre/post safety invariant.
-    func backgroundInputTextFast(
-        for session: BackgroundDeliverySession,
-        allowReplacementAfterSubmission: Bool = false
-    ) -> String? {
-        guard let element = liveBackgroundInputFast(
-            for: session,
-            allowReplacementAfterSubmission: allowReplacementAfterSubmission
-        ), let text = stringAttribute(kAXValueAttribute, from: element),
-              liveBackgroundInputFast(
-                for: session,
-                allowReplacementAfterSubmission: allowReplacementAfterSubmission
-              ).map({ CFEqual($0, element) }) == true else {
-            return nil
-        }
-        return text
-    }
-
-    /// An unreadable post-submit composer is benign indeterminate telemetry only
-    /// while Accessibility is still granted and the exact target app is alive.
-    /// Permission loss or app termination is a real delivery infrastructure failure.
-    func backgroundDeliveryEnvironmentIsAvailable(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        AXIsProcessTrusted() && !session.app.isTerminated
-    }
-
-    /// Ethan may safely switch from unrelated app A to unrelated app B while a
-    /// background delivery runs. The invariant is that the saved target must never
-    /// become macOS-frontmost; freezing A would turn normal computer use into a false
-    /// delivery failure. A nil foreground is indeterminate and therefore fails closed.
-    static func backgroundTargetRemainsNonFrontmost(
-        currentFrontmostPID: pid_t?,
-        targetPID: pid_t
-    ) -> Bool {
-        guard let currentFrontmostPID else { return false }
-        return currentFrontmostPID != targetPID
-    }
-
-    func backgroundTargetRemainsNonFrontmost(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        Self.backgroundTargetRemainsNonFrontmost(
-            currentFrontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-            targetPID: session.processIdentifier
-        )
-    }
-
-    func targetOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
-        guard let element = target.element,
-              let focused = systemFocusedElement() else {
-            return false
-        }
-        return focused.pid == target.pid && CFEqual(focused.element, element)
-    }
-
-    /// Cheap foreground paste-settlement read. This never authorizes delivery: callers
-    /// must still run the full saved document/chat resolver immediately before Send.
-    /// It only avoids repeatedly walking an Electron/Telegram AX tree while waiting for
-    /// a just-issued foreground paste to appear in the exact still-focused wrapper.
-    func focusedExactInputTextFast(_ target: Target) -> String? {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
-              let element = target.element,
-              let focused = systemFocusedElement(),
-              focused.pid == target.pid,
-              CFEqual(focused.element, element) else {
-            return nil
-        }
-        return stringAttribute(kAXValueAttribute, from: element)
-    }
-
-    private func preparedTargetFocusBoundaryIsSafe(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        guard !session.app.isTerminated,
-              backgroundTargetRemainsNonFrontmost(session),
-              let focused = systemFocusedElement() else {
-            return false
-        }
-        // Internal app focus is expected to point at the saved editor, but system-wide
-        // keyboard focus must remain with whatever unrelated surface Ethan is using.
-        return focused.pid != session.processIdentifier
-    }
-
-    private func backgroundFocusBoundaryIsSafe(
-        _ session: BackgroundDeliverySession,
-        allowReplacementAfterSubmission: Bool = false
-    ) -> Bool {
-        guard !session.app.isTerminated,
-              let focused = systemFocusedElement() else {
-            return false
-        }
-        switch session.focusMode {
-        case .preparedTargetedInput:
-            return preparedTargetFocusBoundaryIsSafe(session)
-        case .alreadyKeyboardFocused:
-            if focused.pid == session.processIdentifier,
-               CFEqual(focused.element, session.element) {
-                return true
-            }
-            return allowReplacementAfterSubmission
-                && focused.pid == session.processIdentifier
-                && postSubmissionReplacementMatches(
-                    focused.element,
-                    session: session
-                )
-        case .directExactElement:
-            // Ethan may move between unrelated apps/inputs while the direct exact
-            // wrapper remains valid. If the saved input itself becomes system focus,
-            // fail this pre-decided direct route rather than racing his live typing.
-            return focused.pid != session.processIdentifier
-                || !CFEqual(focused.element, session.element)
-        }
-    }
-
-    func backgroundDeliveryFocusIsSafe(
-        _ session: BackgroundDeliverySession,
-        allowReplacementAfterSubmission: Bool = false
-    ) -> Bool {
-        backgroundFocusBoundaryIsSafe(
-            session,
-            allowReplacementAfterSubmission: allowReplacementAfterSubmission
-        )
-    }
-
-    private func backgroundDeliveryBoundaryMatches(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        guard backgroundFocusBoundaryIsSafe(session) else { return false }
-        if Self.isTelegram(bundleIdentifier: session.bundleIdentifier) {
-            return telegramDeliveryBoundaryMatches(session)
-        }
-        return resolvedExactElement(for: session.target).map {
-            CFEqual($0, session.element)
-        } == true && fastExactElementBoundaryMatches(session)
-    }
-
-    static func isTelegram(bundleIdentifier: String?) -> Bool {
-        guard let bundleIdentifier else { return false }
-        return telegramBundleIdentifiers.contains(bundleIdentifier)
-    }
-
-    static func supportsSemanticSend(bundleIdentifier: String?) -> Bool {
-        guard let bundleIdentifier else { return false }
-        return semanticSendBundleIdentifiers.contains(bundleIdentifier)
-    }
-
-    static func prefersAccessibilityTextInsertion(bundleIdentifier: String?) -> Bool {
-        isTelegram(bundleIdentifier: bundleIdentifier)
-    }
-
-    func prefersAccessibilityTextInsertion(
-        for session: BackgroundDeliverySession
-    ) -> Bool {
-        session.requiresDirectAccessibilityInsertion
-            || Self.prefersAccessibilityTextInsertion(
-                bundleIdentifier: session.bundleIdentifier
+            guard restorationBoundaryIsSafe() else { return }
+            _ = AXUIElementSetAttributeValue(
+                appElement,
+                kAXFocusedUIElementAttribute as CFString,
+                previousElement
             )
-    }
-
-    /// Cheap per-chunk boundary for targeted Unicode text. The full document/chat
-    /// fingerprint is resolved before and after insertion; each 20-unit chunk only
-    /// rechecks the exact live process, saved window/editor, and non-frontmost state so
-    /// long dictations remain safe without repeating an expensive tree walk per key.
-    func backgroundTextEventBoundaryMatches(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        if Self.isTelegram(bundleIdentifier: session.bundleIdentifier) {
-            return telegramFastBoundaryMatches(session)
-        }
-        return backgroundFocusBoundaryIsSafe(session)
-            && fastExactElementBoundaryMatches(session)
-    }
-
-    func backgroundTextMutationBoundaryMatches(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        backgroundDeliveryBoundaryMatches(session)
-    }
-
-    /// Telegram can reuse one editor wrapper after a chat switch. Wrapper identity,
-    /// geometry, and internal focus therefore never identify the chat by themselves.
-    /// Every Telegram mutation/action must cross this boundary immediately beforehand
-    /// and afterward: exact retained editor/window, readable matching chat anchors,
-    /// unchanged structure, and proof that Telegram stayed non-frontmost.
-    private func telegramDeliveryBoundaryMatches(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        guard Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
-              !session.app.isTerminated,
-              backgroundFocusBoundaryIsSafe(session),
-              let identity = session.target.identity,
-              exactStructureMatches(
-                session.element,
-                identity: identity,
-                in: session.window
-              ) else {
-            return false
+            guard restorationBoundaryIsSafe() else { return }
+            _ = AXUIElementSetAttributeValue(
+                previousElement,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            )
         }
 
-        let appElement = AXUIElementCreateApplication(session.processIdentifier)
-        let internalElement = elementAttribute(
+        let booleansRestored = session.focusBooleanSnapshot.restore { slot, value in
+            guard restorationBoundaryIsSafe(),
+                  let (element, attribute) = self.backgroundFocusBooleanTarget(
+                    for: slot,
+                    session: session
+                  ) else {
+                return false
+            }
+            return AXUIElementSetAttributeValue(
+                element,
+                attribute as CFString,
+                value ? kCFBooleanTrue : kCFBooleanFalse
+            ) == .success
+        }
+
+        Thread.sleep(forTimeInterval: 0.05)
+        guard restorationBoundaryIsSafe() else { return }
+        let restoredWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
+        let restoredElementRead = elementReferenceAttribute(
             kAXFocusedUIElementAttribute,
             from: appElement
         )
-        let internalWindow = elementAttribute(
-            kAXFocusedWindowAttribute,
-            from: appElement
-        )
-        let internalFocusMatches = internalElement.map {
-            CFEqual($0, session.element)
-        } == true && internalWindow.map {
-            CFEqual($0, session.window)
-        } == true
-        let currentContext = contextFingerprint(
-            in: session.window,
-            region: identity.contextRegion,
-            excluding: session.element,
-            bundleIdentifier: session.bundleIdentifier
-        )
-        return Self.telegramRetainedInputAllowed(
-            capturedPrimaryContextAnchors: identity.primaryContextAnchors,
-            capturedContextAnchors: identity.contextAnchors,
-            currentPrimaryContextAnchors: currentContext.primary,
-            currentContextAnchors: currentContext.secondary,
-            internalFocusMatches: internalFocusMatches,
-            structureMatches: true
-        )
-    }
-
-    private func telegramFastBoundaryMatches(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        guard Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
-              !session.app.isTerminated,
-              backgroundFocusBoundaryIsSafe(session),
-              stringAttribute(kAXRoleAttribute, from: session.element)
-                == session.inputRole,
-              stringAttribute(kAXSubroleAttribute, from: session.element)
-                == session.inputSubrole,
-              owningWindow(for: session.element).map({
-                CFEqual($0, session.window)
-              }) == true else {
-            return false
-        }
-        let appElement = AXUIElementCreateApplication(session.processIdentifier)
-        return elementAttribute(kAXFocusedWindowAttribute, from: appElement).map {
-            CFEqual($0, session.window)
-        } == true && elementAttribute(kAXFocusedUIElementAttribute, from: appElement).map {
-            CFEqual($0, session.element)
-        } == true
-    }
-
-    private func fastExactElementBoundaryMatches(
-        _ session: BackgroundDeliverySession
-    ) -> Bool {
-        guard backgroundElementMatchesSession(
-            session.element,
-            session: session,
-            isSameRetainedWrapper: true
-        ) else {
-            return false
-        }
-        switch session.focusMode {
-        case .preparedTargetedInput:
-            let appElement = AXUIElementCreateApplication(session.processIdentifier)
-            return elementAttribute(kAXFocusedWindowAttribute, from: appElement).map {
-                CFEqual($0, session.window)
-            } == true && elementAttribute(kAXFocusedUIElementAttribute, from: appElement).map {
-                CFEqual($0, session.element)
-            } == true
-        case .alreadyKeyboardFocused:
-            guard let focused = systemFocusedElement() else { return false }
-            return focused.pid == session.processIdentifier
-                && CFEqual(focused.element, session.element)
-        case .directExactElement:
-            return true
-        }
-    }
-
-    static func telegramRetainedInputAllowed(
-        capturedPrimaryContextAnchors: [String],
-        capturedContextAnchors: [String],
-        currentPrimaryContextAnchors: [String],
-        currentContextAnchors: [String],
-        internalFocusMatches: Bool,
-        structureMatches: Bool
-    ) -> Bool {
-        internalFocusMatches
-            && structureMatches
-            && telegramContextFingerprintMatches(
-                capturedPrimary: capturedPrimaryContextAnchors,
-                capturedSecondary: capturedContextAnchors,
-                currentPrimary: currentPrimaryContextAnchors,
-                currentSecondary: currentContextAnchors
+        let windowRestored = restoredWindow.map { CFEqual($0, previousWindow) } == true
+        let elementRestored: Bool
+        if let previousElement = session.previouslyFocusedElement {
+            if case .value(let restoredElement) = restoredElementRead {
+                elementRestored = CFEqual(restoredElement, previousElement)
+            } else {
+                elementRestored = false
+            }
+        } else if session.previouslyFocusedElementWasAbsent {
+            let restoredElementMatchesTarget: Bool
+            if case .value(let restoredElement) = restoredElementRead {
+                restoredElementMatchesTarget = CFEqual(
+                    restoredElement,
+                    session.element
+                )
+            } else {
+                restoredElementMatchesTarget = false
+            }
+            elementRestored = Self.absentPriorFocusedElementRestorationMatches(
+                restoredAvailability: restoredElementRead.availability,
+                restoredElementMatchesTarget: restoredElementMatchesTarget,
+                restoredTargetFocused: boolAttribute(
+                    kAXFocusedAttribute,
+                    from: session.element
+                ),
+                expectedTargetFocused: session.focusBooleanSnapshot.values[
+                    .targetElementFocused
+                ]
             )
+        } else {
+            elementRestored = false
+        }
+        let booleansVerified = session.focusBooleanSnapshot.matches { slot in
+            guard let (element, attribute) = self.backgroundFocusBooleanTarget(
+                for: slot,
+                session: session
+            ) else {
+                return nil
+            }
+            return self.boolAttribute(attribute, from: element)
+        }
+        guard restorationBoundaryIsSafe() else { return }
+        let restorationComplete = windowRestored
+            && elementRestored
+            && booleansRestored
+            && booleansVerified
+        if restorationComplete {
+            let targetPID = session.processIdentifier
+            teardownCompleted = session.lifecycle.finish {
+                CursorPaster.endTargetedInputSession(pid: targetPID)
+            }
+        } else {
+            // Do not pair the synthetic deactivation merely because the restoration
+            // setters returned. Retry the complete pointer + boolean restoration once;
+            // only the terminal policy may then end a still-partial session.
+            logger.error("Background internal-focus restoration incomplete; scheduling bounded resolution window=\(windowRestored, privacy: .public) element=\(elementRestored, privacy: .public) booleansWritten=\(booleansRestored, privacy: .public) booleansVerified=\(booleansVerified, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+        }
+        logger.info("Background internal focus restoration checked complete=\(restorationComplete, privacy: .public) window=\(windowRestored, privacy: .public) element=\(elementRestored, privacy: .public) booleansWritten=\(booleansRestored, privacy: .public) booleansVerified=\(booleansVerified, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
     }
 
-    static func telegramContextFingerprintMatches(
-        capturedPrimary: [String],
-        capturedSecondary: [String],
-        currentPrimary: [String],
-        currentSecondary: [String]
+    private func resolveBackgroundTeardown(
+        _ session: BackgroundDeliverySession,
+        boundary: BackgroundTeardownBoundaryStatus,
+        restorationIncomplete: Bool
+    ) {
+        let decision = Self.backgroundTeardownDecision(
+            boundary: boundary,
+            restorationIncomplete: restorationIncomplete,
+            retryCount: session.teardownRetryCount
+        )
+        switch decision {
+        case .restoreNow:
+            // This resolver is entered only after an unsafe boundary or an incomplete
+            // restoration. A safe complete state is handled inline by the caller. Fail
+            // closed if a future caller violates that invariant; never recurse on a
+            // freshly re-read boundary or leave an ownerless synthetic session.
+            _ = session.lifecycle.waiveTeardown()
+            logger.error("Background internal-focus teardown received an invalid restore-now resolution; teardown waived targetPid=\(session.processIdentifier, privacy: .public)")
+        case .retryFullRestoration:
+            guard session.lifecycle.markTeardownRetryScheduled(),
+                  session.teardownRetryCount == 0 else {
+                _ = session.lifecycle.waiveTeardown()
+                logger.error("Background internal-focus teardown retry could not be owned; teardown waived targetPid=\(session.processIdentifier, privacy: .public)")
+                return
+            }
+            session.teardownRetryCount += 1
+            // Resolve the only retry before returning to the serialized pipeline. A
+            // detached retry could otherwise race a newer session for the same PID and
+            // restore stale pointers or post that newer session's synthetic end.
+            Thread.sleep(forTimeInterval: 0.05)
+            finishBackgroundDelivery(session)
+        case .finishPartialAndEnd:
+            // The complete restoration path was retried once while the non-activating
+            // boundary was safe. Pair the activation session exactly once, keep the
+            // unresolved AX restoration in telemetry, and never spin indefinitely.
+            let targetPID = session.processIdentifier
+            _ = session.lifecycle.finish {
+                CursorPaster.endTargetedInputSession(pid: targetPID)
+            }
+            logger.error("Background internal-focus restoration remained partial after one full retry; activation session ended targetPid=\(targetPID, privacy: .public)")
+        case .waiveWithoutMutation:
+            // Target takeover, termination, or persistent unreadable focus makes any
+            // further AX write/deactivation less safe than stopping. This is an explicit
+            // terminal waiver, not a silently orphaned activation-session owner.
+            _ = session.lifecycle.waiveTeardown()
+            logger.notice("Background internal-focus teardown waived without another mutation targetPid=\(session.processIdentifier, privacy: .public) boundary=\(String(describing: boundary), privacy: .public)")
+        }
+    }
+
+    func backgroundInputText(for session: BackgroundDeliverySession) -> String? {
+        backgroundInputTextSnapshot(for: session)?.text
+    }
+
+    func backgroundInputTextSnapshot(
+        for session: BackgroundDeliverySession
+    ) -> FocusedInputTextSnapshot? {
+        guard backgroundDeliveryFastBoundaryMatches(session),
+              let text = stringAttribute(
+                kAXValueAttribute,
+                from: session.element
+              ) else {
+            return nil
+        }
+        return FocusedInputTextSnapshot(
+            text: text,
+            placeholder: stringAttribute(
+                kAXPlaceholderValueAttribute,
+                from: session.element
+            )
+        )
+    }
+
+    /// After a successful chat Send, Electron may replace the composer wrapper.
+    /// Re-resolve only inside the same frozen target/window/context and require the
+    /// new exact editor to own the target app's internal focus. This read is used for
+    /// clear/reset verification and diagnostics only; it never retargets the session,
+    /// mutates focus, or authorizes a retry.
+    func backgroundPostActionInputTextSnapshot(
+        for session: BackgroundDeliverySession
+    ) -> FocusedInputTextSnapshot? {
+        if let retained = backgroundInputTextSnapshot(for: session) {
+            return retained
+        }
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session),
+              let resolved = resolvedExactElement(for: session.target),
+              exactElement(
+                  resolved,
+                  belongsTo: session.window,
+                  bundleIdentifier: session.bundleIdentifier
+              ),
+              let internallyFocused = elementAttribute(
+                kAXFocusedUIElementAttribute,
+                from: AXUIElementCreateApplication(
+                    session.processIdentifier
+                )
+              ),
+              CFEqual(internallyFocused, resolved),
+              let text = stringAttribute(kAXValueAttribute, from: resolved) else {
+            return nil
+        }
+        return FocusedInputTextSnapshot(
+            text: text,
+            placeholder: stringAttribute(
+                kAXPlaceholderValueAttribute,
+                from: resolved
+            )
+        )
+    }
+
+    /// Privacy-safe rolling telemetry for one background Send attempt. This logs only
+    /// executable/build identity, focus/boundary booleans, timings, and aggregate text
+    /// counts. It never logs transcript, composer, placeholder, chat, URL, or clipboard
+    /// content. The repository trace runner retains allowlisted lines for seven days.
+    func logBackgroundAutoSendDiagnostic(
+        stage: String,
+        route: String,
+        verification: String,
+        beforeText: String,
+        afterSnapshot: FocusedInputTextSnapshot?,
+        session: BackgroundDeliverySession,
+        elapsedMilliseconds: Int,
+        sampleCount: Int
+    ) {
+        let identity = session.diagnosticApplicationIdentity
+        let currentFrontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier ?? -1
+        let systemFocusPID = systemFocusedElement()?.pid ?? -1
+        let retainedBoundary = backgroundDeliveryFastBoundaryMatches(session)
+        let fullBoundary = backgroundSessionRemainsPrepared(session)
+        let beforeCharacterCount = beforeText.count
+        let beforeNewlineCount = beforeText.reduce(into: 0) { count, scalar in
+            if scalar.isNewline { count += 1 }
+        }
+        let afterText = afterSnapshot?.text
+        let afterCharacterCount = afterText?.count ?? -1
+        let afterNewlineCount = afterText?.reduce(into: 0) { count, scalar in
+            if scalar.isNewline { count += 1 }
+        } ?? -1
+        let afterMatchesPlaceholder = afterSnapshot.flatMap { snapshot in
+            snapshot.placeholder.map { $0 == snapshot.text }
+        }
+        let afterTrimmedEmpty = afterText.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let endsWithNewline = afterText?.last.map {
+            $0 == "\n" || $0 == "\r"
+        }
+        let afterReadable = afterText != nil
+        let composerElementReplaced = afterReadable && !retainedBoundary
+        let targetBecameFrontmost = currentFrontmostPID
+            == session.processIdentifier
+        let auditedTupleMatched = Self.matchesAuditedOpenAISubmitBuild(
+            session.app
+        )
+        let characterDelta = afterText.map {
+            $0.count - beforeCharacterCount
+        } ?? Int.min
+        let newlineDelta = afterText.map { text in
+            text.reduce(into: 0) { count, scalar in
+                if scalar.isNewline { count += 1 }
+            } - beforeNewlineCount
+        } ?? Int.min
+        let placeholderReadable = afterSnapshot?.placeholder != nil
+        let matchesPlaceholderDescription = afterMatchesPlaceholder.map {
+            String(describing: $0)
+        } ?? "unknown"
+        let trimmedEmptyDescription = afterTrimmedEmpty.map {
+            String(describing: $0)
+        } ?? "unknown"
+        let endsWithNewlineDescription = endsWithNewline.map {
+            String(describing: $0)
+        } ?? "unknown"
+        let windowID = SkyLightTargetedMouseEventPost.windowID(
+            for: session.window
+        ) ?? 0
+        logger.info("Background auto-send diagnostic stage=\(stage, privacy: .public) route=\(route, privacy: .public) verification=\(verification, privacy: .public) app=\(identity.applicationBundleName, privacy: .public) bundle=\(identity.bundleIdentifier, privacy: .public) version=\(identity.shortVersion, privacy: .public) build=\(identity.build, privacy: .public) chromium=\(identity.chromium, privacy: .public) auditedTuple=\(auditedTupleMatched, privacy: .public) sessionMode=\(session.diagnosticMode, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) windowId=\(windowID, privacy: .public) windowHash=\(CFHash(session.window), privacy: .public) elementHash=\(CFHash(session.element), privacy: .public) targetActive=\(session.app.isActive, privacy: .public) targetBecameFrontmost=\(targetBecameFrontmost, privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(currentFrontmostPID, privacy: .public) systemFocusPid=\(systemFocusPID, privacy: .public) retainedBoundary=\(retainedBoundary, privacy: .public) fullBoundary=\(fullBoundary, privacy: .public) composerElementReplaced=\(composerElementReplaced, privacy: .public) beforeChars=\(beforeCharacterCount, privacy: .public) afterReadable=\(afterReadable, privacy: .public) afterChars=\(afterCharacterCount, privacy: .public) charDelta=\(characterDelta, privacy: .public) beforeNewlines=\(beforeNewlineCount, privacy: .public) afterNewlines=\(afterNewlineCount, privacy: .public) newlineDelta=\(newlineDelta, privacy: .public) endsWithNewline=\(endsWithNewlineDescription, privacy: .public) placeholderReadable=\(placeholderReadable, privacy: .public) matchesPlaceholder=\(matchesPlaceholderDescription, privacy: .public) trimmedEmpty=\(trimmedEmptyDescription, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public) samples=\(sampleCount, privacy: .public)")
+    }
+
+    func backgroundWindowContains(
+        _ text: String,
+        for session: BackgroundDeliverySession,
+        excludingSavedInput: Bool = false
     ) -> Bool {
-        guard !capturedPrimary.isEmpty, !currentPrimary.isEmpty,
-              Set(capturedPrimary) == Set(currentPrimary) else {
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session) else {
             return false
         }
-        // The selected-chat title/header is the mandatory identity. Message-history
-        // anchors are only corroboration: requiring every captured message made normal
-        // incoming messages or scrolling break delivery, while ignoring them entirely
-        // would make duplicate chat titles indistinguishable. When history existed at
-        // capture, require at least one exact stable overlap and otherwise fail closed.
-        guard !capturedSecondary.isEmpty else { return true }
-        let currentSecondarySet = Set(currentSecondary)
-        return capturedSecondary.contains { currentSecondarySet.contains($0) }
+        return descendants(of: session.window).contains { element in
+            if excludingSavedInput, CFEqual(element, session.element) {
+                return false
+            }
+            return stringAttribute(kAXValueAttribute, from: element)?.contains(text) == true
+        }
     }
 
-    /// Pure guard used by the post-submit verifier and its regression tests. A new
-    /// renderer wrapper is acceptable only for read-only verification after one Send:
-    /// it must remain in the exact saved process/window, be that app's internally
-    /// focused editor, preserve role/subrole and every stable identifier that existed,
-    /// and occupy the same tight composer geometry. This never authorizes insertion,
-    /// focus mutation, semantic-button lookup, or an auto-send retry.
-    static func postSubmissionReplacementAllowed(
-        sameProcess: Bool,
-        sameWindow: Bool,
-        internallyFocused: Bool,
-        roleMatches: Bool,
-        subroleMatches: Bool,
-        stableIdentifierMatches: Bool,
-        domIdentifierMatches: Bool,
-        expectedFrame: CGRect?,
-        currentFrame: CGRect?
-    ) -> Bool {
-        guard let expectedFrame, let currentFrame else { return false }
-        return sameProcess
-            && sameWindow
-            && internallyFocused
-            && roleMatches
-            && subroleMatches
-            && stableIdentifierMatches
-            && domIdentifierMatches
-            && elementGeometryMatches(
-                isSameRetainedWrapper: false,
-                expectedFrame: expectedFrame,
-                currentFrame: currentFrame
-            )
-    }
-
-    static func elementGeometryMatches(
-        isSameRetainedWrapper: Bool,
-        expectedFrame: CGRect?,
-        currentFrame: CGRect?
-    ) -> Bool {
-        if isSameRetainedWrapper { return true }
-        guard let expectedFrame else { return true }
-        guard let currentFrame else { return false }
-        return abs(currentFrame.origin.x - expectedFrame.origin.x)
-            + abs(currentFrame.origin.y - expectedFrame.origin.y)
-            + abs(currentFrame.size.width - expectedFrame.size.width)
-            + abs(currentFrame.size.height - expectedFrame.size.height) <= 24
-    }
-
-    /// Telegram and same-app/different-input delivery use AXSelectedText on the exact
-    /// saved wrapper. Telegram must additionally keep readable matching chat context.
-    /// Never replace the entire AXValue: rich editors can flatten or corrupt content.
+    /// Same-app/different-input delivery and Telegram's retained exact editor are
+    /// element-addressed. Never replace a generic AXValue: rich editors can lose
+    /// formatting. Telegram may use one bounded Unicode fallback only when this
+    /// attribute is proven unavailable before mutation; a setter error is verified
+    /// without retry because the app may already have accepted the text.
     func insertTextUsingAccessibility(
         _ text: String,
         for session: BackgroundDeliverySession
     ) -> BackgroundTextInsertionResult {
-        guard AXIsProcessTrusted(),
+        guard session.prefersAccessibilityTextInsertion,
               !text.isEmpty,
-              prefersAccessibilityTextInsertion(for: session) else {
+              backgroundSessionRemainsPrepared(session) else {
             return .unavailable
         }
-        guard backgroundDeliveryBoundaryMatches(session) else {
-            return .focusSafetyViolation
-        }
-
         var settable = DarwinBoolean(false)
         let settableResult = AXUIElementIsAttributeSettable(
             session.element,
@@ -1038,121 +1286,364 @@ final class FocusLockService: ObservableObject {
             &settable
         )
         guard settableResult == .success, settable.boolValue else {
-            logger.notice("Exact-input AXSelectedText is unavailable pid=\(session.processIdentifier, privacy: .public) bundle=\(session.bundleIdentifier ?? "nil", privacy: .public) AXError=\(settableResult.rawValue, privacy: .public)")
             return .unavailable
         }
-        // The settable query can run arbitrary app code. Re-run the complete exact
-        // document/chat boundary immediately before the irreversible mutation; a fast
-        // wrapper check is insufficient because Telegram can reuse it across chats.
-        guard backgroundDeliveryBoundaryMatches(session) else {
+        guard backgroundSessionRemainsPrepared(session) else {
             return .focusSafetyViolation
         }
-
         let result = AXUIElementSetAttributeValue(
             session.element,
             kAXSelectedTextAttribute as CFString,
             text as CFString
         )
-        let boundarySafe = backgroundDeliveryBoundaryMatches(session)
-        logger.info("Exact-input Accessibility insertion attempted pid=\(session.processIdentifier, privacy: .public) bundle=\(session.bundleIdentifier ?? "nil", privacy: .public) chars=\(text.count, privacy: .public) route=AXSelectedText result=\(result.rawValue, privacy: .public) boundarySafe=\(boundarySafe, privacy: .public)")
-        guard boundarySafe else { return .focusSafetyViolation }
+        guard backgroundSessionRemainsPrepared(session) else {
+            return .focusSafetyViolation
+        }
         return result == .success
             ? .acceptedSelectedText
             : .failed(result.rawValue)
     }
 
-    /// ChatGPT and Codex can expose the same bundle identifier. Keep the executable
-    /// path in delivery telemetry so live acceptance can prove which app was tested.
-    func backgroundTargetExecutablePath(
+    /// Reconcile one realtime-owned range inside an already prepared exact-input
+    /// session. This is not generic background AXValue replacement: the current value
+    /// must still contain the exact prior hypothesis at the exact UTF-16 range, then we
+    /// select only that range. Prepared Electron sessions use one bounded targeted-
+    /// Unicode replacement; direct/Telegram sessions may use AXSelectedText when the
+    /// attribute is proven settable. No caller may append the final transcript after a
+    /// conflict because that would duplicate the realtime draft.
+    func prepareRealtimeDraftReplacement(
+        _ replacement: String,
+        ownership: RealtimeInputDraftOwnership,
         for session: BackgroundDeliverySession
-    ) -> String? {
-        session.app.executableURL?.path ?? session.app.bundleURL?.path
+    ) -> PreparedRealtimeDraftReplacement {
+        guard targetsReferToSameExactInput(ownership.target, session.target),
+              backgroundSessionRemainsPrepared(session),
+              let currentValue = stringAttribute(
+                kAXValueAttribute,
+                from: session.element
+              ) else {
+            return .unavailableBeforeMutation
+        }
+        guard ownership.textRange.ownedSubstringMatches(in: currentValue),
+              let expectedValue = ownership.textRange.replacingOwnedText(
+                in: currentValue,
+                with: replacement
+              ) else {
+            return .ownershipConflict
+        }
+
+        let updated = RealtimeInputDraftOwnership(
+            id: ownership.id,
+            target: ownership.target,
+            textRange: ownership.textRange.replacingInsertedText(
+                with: replacement
+            )
+        )
+        if expectedValue == currentValue {
+            return .applied(updated)
+        }
+
+        guard isAttributeSettable(
+            kAXSelectedTextRangeAttribute,
+            on: session.element
+        ),
+        backgroundSessionRemainsPrepared(session) else {
+            return .unavailableBeforeMutation
+        }
+        guard setSelectedTextRange(
+            ownership.textRange.nsRange,
+            on: session.element
+        ) else {
+            // AX can report an error after accepting a setter. Selection is a real UI
+            // mutation, so the caller must not retry or append after this boundary.
+            return .indeterminateAfterMutation
+        }
+        guard backgroundSessionRemainsPrepared(session),
+              stringAttribute(kAXValueAttribute, from: session.element) == currentValue else {
+            return .indeterminateAfterMutation
+        }
+
+        if session.usesPreparedTargetedInput {
+            return .selectedForTargetedUnicode(
+                ownership: updated,
+                expectedValue: expectedValue
+            )
+        }
+
+        guard isAttributeSettable(
+            kAXSelectedTextAttribute,
+            on: session.element
+        ),
+        backgroundSessionRemainsPrepared(session) else {
+            return .unavailableBeforeMutation
+        }
+        _ = AXUIElementSetAttributeValue(
+            session.element,
+            kAXSelectedTextAttribute as CFString,
+            replacement as CFString
+        )
+        let postValue = backgroundInputText(for: session)
+        if postValue == expectedValue {
+            return .applied(updated)
+        }
+        return .indeterminateAfterMutation
+    }
+
+    /// Restore the original selection text only for a direct same-app/different-input
+    /// session. Cross-app cleanup is intentionally unavailable: keeping a partial draft
+    /// is safer than synthesizing activation merely to erase it.
+    func restorePreparedRealtimeDraft(
+        _ ownership: RealtimeInputDraftOwnership,
+        for session: BackgroundDeliverySession
+    ) -> RealtimeDraftMutationResult {
+        guard session.allowsDirectRealtimeDraftMutation else {
+            return .unavailableBeforeMutation
+        }
+        switch prepareRealtimeDraftReplacement(
+            ownership.textRange.originalText,
+            ownership: ownership,
+            for: session
+        ) {
+        case .applied(let updated):
+            return .applied(updated)
+        case .selectedForTargetedUnicode:
+            return .unavailableBeforeMutation
+        case .unavailableBeforeMutation:
+            return .unavailableBeforeMutation
+        case .ownershipConflict:
+            return .ownershipConflict
+        case .indeterminateAfterMutation:
+            return .indeterminateAfterMutation
+        }
+    }
+
+    func backgroundDeliveryBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        backgroundSessionRemainsPrepared(session)
+    }
+
+    static func isTelegram(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return telegramBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// Telegram can reuse one editor wrapper after a chat switch. Wrapper identity,
+    /// geometry, and internal focus therefore never identify the selected chat by
+    /// themselves. Every Telegram mutation/action requires this full boundary:
+    /// retained editor/window, unchanged structure, Telegram's own internal focus,
+    /// either readable matching AX chat anchors or a freshly matched audited visual
+    /// header digest, and proof it stayed backgrounded.
+    private func telegramDeliveryBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard telegramRetainedAXBoundaryMatches(session),
+              let identity = session.target.identity else {
+            return false
+        }
+
+        if identity.contextAnchors.isEmpty {
+            return session.telegramVisualIdentity != nil
+                && session.telegramVisualIdentityVerified
+        }
+
+        let currentContext = contextAnchors(
+            in: session.window,
+            region: identity.contextRegion,
+            excluding: session.element
+        )
+        return Self.telegramContextFingerprintMatches(
+            captured: identity.contextAnchors,
+            current: currentContext
+        )
+    }
+
+    /// Synchronous, data-free half of Telegram's identity boundary. The visual
+    /// digest is sampled asynchronously only at preparation and immediately before
+    /// each irreversible mutation/action; between those points every cheap guard
+    /// still proves the exact retained wrapper, window, structure, internal focus,
+    /// and unchanged user foreground.
+    private func telegramRetainedAXBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard session.mode == .telegramRetainedExactInput,
+              Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
+              backgroundFocusBoundaryIsSafeAfterSubmission(session),
+              let identity = session.target.identity,
+              exactStructureMatches(
+                  session.element,
+                  identity: identity,
+                  in: session.window
+              ) else {
+            return false
+        }
+        let appElement = AXUIElementCreateApplication(session.processIdentifier)
+        let internalWindowMatches = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ).map { CFEqual($0, session.window) } == true
+        let internalElementMatches = elementAttribute(
+            kAXFocusedUIElementAttribute,
+            from: appElement
+        ).map { CFEqual($0, session.element) } == true
+        return internalWindowMatches && internalElementMatches
+    }
+
+    /// Re-capture the audited Telegram header immediately before one irreversible
+    /// operation. The old proof is invalidated before suspension so no synchronous
+    /// boundary can accidentally authorize a mutation using a stale digest match.
+    func revalidateTelegramVisualIdentityIfRequired(
+        for session: BackgroundDeliverySession
+    ) async -> Bool {
+        guard session.requiresTelegramVisualRevalidation else {
+            return backgroundSessionRemainsPrepared(session)
+        }
+        guard let visualIdentity = session.telegramVisualIdentity else {
+            return false
+        }
+        session.telegramVisualIdentityVerified = false
+        guard telegramRetainedAXBoundaryMatches(session) else { return false }
+        let visualMatches = await TelegramWindowVisualIdentityService
+            .matchesCurrentWindow(visualIdentity)
+        guard visualMatches,
+              telegramRetainedAXBoundaryMatches(session),
+              SkyLightTargetedMouseEventPost.windowID(for: session.window)
+                == visualIdentity.windowID else {
+            return false
+        }
+        session.telegramVisualIdentityVerified = true
+        return true
+    }
+
+    static func telegramRetainedInputAllowed(
+        capturedContextAnchors: [String],
+        currentContextAnchors: [String],
+        internalFocusMatches: Bool,
+        structureMatches: Bool
+    ) -> Bool {
+        internalFocusMatches
+            && structureMatches
+            && telegramContextFingerprintMatches(
+                captured: capturedContextAnchors,
+                current: currentContextAnchors
+            )
+    }
+
+    static func telegramContextFingerprintMatches(
+        captured: [String],
+        current: [String]
+    ) -> Bool {
+        guard !captured.isEmpty, !current.isEmpty else { return false }
+        let currentSet = Set(current)
+        let matchCount = captured.reduce(into: 0) { count, anchor in
+            if currentSet.contains(anchor) { count += 1 }
+        }
+        let requiredMatches = captured.count <= 3
+            ? captured.count
+            : max(3, Int(ceil(Double(captured.count) * 0.75)))
+        return matchCount >= requiredMatches
+    }
+
+    /// Cheap per-chunk/readback guard. Full document/task re-resolution happens before,
+    /// at bounded checkpoints, and after targeted typing; every individual 20-unit
+    /// chunk still proves the retained wrapper, window, internal focus, and system-focus
+    /// boundary without repeatedly walking a large Chromium tree.
+    func backgroundDeliveryFastBoundaryMatches(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session),
+              stringAttribute(kAXRoleAttribute, from: session.element).map({
+                  isEditableInput(
+                      role: $0,
+                      subrole: stringAttribute(
+                          kAXSubroleAttribute,
+                          from: session.element
+                      )
+                  )
+              }) == true,
+              exactElement(
+                  session.element,
+                  belongsTo: session.window,
+                  bundleIdentifier: session.bundleIdentifier
+              ) else {
+            return false
+        }
+        switch session.mode {
+        case .directExactElement:
+            return true
+        case .preparedTargetedInput, .telegramRetainedExactInput:
+            let appElement = AXUIElementCreateApplication(
+                session.processIdentifier
+            )
+            return elementAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+            ).map({
+                CFEqual($0, session.window)
+            }) == true && elementAttribute(
+                kAXFocusedUIElementAttribute,
+                from: appElement
+            ).map({
+                CFEqual($0, session.element)
+            }) == true
+        }
     }
 
     func pressNearbySubmitButton(
         for session: BackgroundDeliverySession
-    ) -> NearbySubmitButtonResult {
-        guard AXIsProcessTrusted(),
-              Self.supportsSemanticSend(bundleIdentifier: session.bundleIdentifier),
-              !session.app.isTerminated,
-              backgroundDeliveryBoundaryMatches(session) else {
+    ) async -> NearbySubmitButtonResult {
+        guard backgroundSessionRemainsPrepared(session) else {
+            logger.error("Background submit refused because exact internal focus or target-not-frontmost proof was lost pid=\(session.processIdentifier, privacy: .public)")
             return .unavailable
         }
-        var result = pressNearbySubmitButton(
+        return await pressNearbySubmitButton(
             element: session.element,
+            window: session.window,
+            app: session.app,
             pid: session.processIdentifier,
-            preflight: {
-                self.backgroundDeliveryBoundaryMatches(session)
+            preserveSystemFocusAcrossAction: session.mode != .preparedTargetedInput,
+            allowsTargetedBackgroundClick: session.mode == .preparedTargetedInput,
+            waitForUnavailableCandidate: true,
+            traversalPreflight: { [weak self] in
+                self?.backgroundDeliveryFastBoundaryMatches(session) == true
+            },
+            actionPreflight: { [weak self] in
+                self?.backgroundSessionRemainsPrepared(session) == true
+            },
+            irreversibleActionPreflight: { [weak self] in
+                guard let self else { return false }
+                return await self.revalidateTelegramVisualIdentityIfRequired(
+                    for: session
+                )
+            },
+            postActionFocusGuard: { [weak self] in
+                self?.backgroundFocusBoundaryIsSafeAfterSubmission(session) == true
             }
         )
-        if result == .unavailable {
-            result = pressRetainedSubmitButton(for: session)
-        }
-        if !backgroundFocusBoundaryIsSafe(
-            session,
-            allowReplacementAfterSubmission: true
-        ) {
-            logger.error("Semantic Send violated the exact user-focus boundary pid=\(session.processIdentifier, privacy: .public)")
-            return .failed(AXError.cannotComplete.rawValue)
-        }
-        if Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
-           !telegramDeliveryBoundaryMatches(session) {
-            logger.error("Telegram semantic Send lost readable matching chat context after its one action pid=\(session.processIdentifier, privacy: .public)")
-            return .failed(AXError.cannotComplete.rawValue)
-        }
-        return result
-    }
-
-    private func pressRetainedSubmitButton(
-        for session: BackgroundDeliverySession
-    ) -> NearbySubmitButtonResult {
-        guard let button = session.target.retainedSubmitButton,
-              let capturedFrame = session.target.retainedSubmitButtonFrame,
-              let currentFrame = frame(of: button) else {
-            return .unavailable
-        }
-        var pid: pid_t = 0
-        let pidMatches = AXUIElementGetPid(button, &pid) == .success
-            && pid == session.processIdentifier
-        let geometryMatches = abs(currentFrame.origin.x - capturedFrame.origin.x)
-            + abs(currentFrame.origin.y - capturedFrame.origin.y)
-            + abs(currentFrame.size.width - capturedFrame.size.width)
-            + abs(currentFrame.size.height - capturedFrame.size.height) <= 8
-            && currentFrame.width >= 14
-            && currentFrame.width <= 96
-            && currentFrame.height >= 14
-            && currentFrame.height <= 96
-        return Self.performProvenSemanticSend(
-            isUnambiguous: true,
-            pidMatches: pidMatches,
-            windowMatches: owningWindow(for: button).map({
-                CFEqual($0, session.window)
-            }) == true,
-            geometryMatches: geometryMatches,
-            roleMatches: stringAttribute(kAXRoleAttribute, from: button)
-                == kAXButtonRole,
-            enabled: boolAttribute(kAXEnabledAttribute, from: button) != false,
-            label: submitLabel(for: button),
-            hasPressAction: actionNames(from: button).contains(kAXPressAction),
-            boundaryMatches: backgroundDeliveryBoundaryMatches(session)
-        ) {
-            let retainedResult = AXUIElementPerformAction(
-                button,
-                kAXPressAction as CFString
-            )
-            logger.info("Retained exact submit-button press attempted pid=\(session.processIdentifier, privacy: .public) bundle=\(session.bundleIdentifier ?? "nil", privacy: .public) result=\(retainedResult.rawValue, privacy: .public)")
-            return retainedResult.rawValue
-        }
     }
 
     /// Read the live editor text for bounded delivery verification. This is not used
-    /// to infer focus or choose a destination; it only lets an allowlisted chat path
+    /// to infer focus or choose a destination; it only lets the OpenAI composer path
     /// detect the otherwise invisible "Return was issued but ignored" failure after
     /// the transcript has already been pasted into the saved target.
     func focusedInputText(
         for target: Target,
         allowApplicationFallback: Bool = false
     ) -> String? {
+        focusedInputTextSnapshot(
+            for: target,
+            allowApplicationFallback: allowApplicationFallback
+        )?.text
+    }
+
+    /// Read the value and placeholder from one resolved editor wrapper. Codex may
+    /// expose its empty reset state through AXValue as the same string published in
+    /// AXPlaceholderValue, so foreground post-Return verification needs both values
+    /// from one snapshot. Delivery never logs either string.
+    func focusedInputTextSnapshot(
+        for target: Target,
+        allowApplicationFallback: Bool = false
+    ) -> FocusedInputTextSnapshot? {
         guard let element = liveElement(for: target, allowApplicationFallback: allowApplicationFallback) else {
             return nil
         }
@@ -1164,598 +1655,1267 @@ final class FocusLockService: ObservableObject {
         ) == .success else {
             return nil
         }
-        return value as? String
+        guard let text = value as? String else { return nil }
+        return FocusedInputTextSnapshot(
+            text: text,
+            placeholder: stringAttribute(kAXPlaceholderValueAttribute, from: element)
+        )
     }
 
-    /// Some chat editors expose an Accessibility button explicitly labelled Send even
-    /// when their text area ignores synthetic Return. Restrict discovery to proven chat
-    /// bundles and the nearest small shared composer container. Never treat an unlabelled
-    /// square as Send: the same OpenAI slot becomes Stop while an agent is running.
+    /// Compare replay-safe exact inputs, not app icons or PIDs. A renderer wrapper may
+    /// be replaced while the logical input survives, so both targets are resolved
+    /// through their saved window/context identities before pointer comparison. Telegram
+    /// with no readable chat identity intentionally fails this synchronous comparison;
+    /// realtime live mutation stays disabled there instead of guessing from a reused
+    /// parentless editor wrapper.
+    func targetsReferToSameExactInput(_ lhs: Target, _ rhs: Target) -> Bool {
+        guard lhs.hasExactInput,
+              rhs.hasExactInput,
+              lhs.pid == rhs.pid,
+              lhs.bundleIdentifier == rhs.bundleIdentifier,
+              !Self.isTelegram(bundleIdentifier: lhs.bundleIdentifier),
+              let left = resolvedExactElement(for: lhs),
+              let right = resolvedExactElement(for: rhs) else {
+            return false
+        }
+        return CFEqual(left, right)
+    }
+
+    /// Insert the first cumulative realtime hypothesis into the currently focused exact
+    /// input. The mutation replaces only the user's current selection via AXSelectedText;
+    /// it never writes the whole AXValue. The before/after full strings are retained only
+    /// in memory for immediate proof and never logged.
+    func insertForegroundRealtimeDraft(
+        _ text: String,
+        into target: Target
+    ) -> RealtimeDraftMutationResult {
+        guard !text.isEmpty,
+              !Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
+              targetOwnsSystemKeyboardFocus(target),
+              let element = resolvedExactElement(for: target),
+              let currentValue = stringAttribute(
+                kAXValueAttribute,
+                from: element
+              ),
+              let selectedRange = selectedTextRange(from: element),
+              isAttributeSettable(kAXSelectedTextAttribute, on: element) else {
+            return .unavailableBeforeMutation
+        }
+
+        let current = currentValue as NSString
+        guard selectedRange.location >= 0,
+              selectedRange.length >= 0,
+              NSMaxRange(selectedRange) <= current.length else {
+            return .unavailableBeforeMutation
+        }
+        let originalText = current.substring(with: selectedRange)
+        let expectedValue = current.replacingCharacters(
+            in: selectedRange,
+            with: text
+        )
+        guard targetOwnsSystemKeyboardFocus(target),
+              selectedTextRange(from: element) == selectedRange,
+              stringAttribute(kAXValueAttribute, from: element) == currentValue else {
+            return .unavailableBeforeMutation
+        }
+
+        _ = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        )
+        let ownership = RealtimeInputDraftOwnership(
+            target: target,
+            textRange: RealtimeDraftTextRange(
+                location: selectedRange.location,
+                insertedText: text,
+                originalText: originalText
+            )
+        )
+        if stringAttribute(kAXValueAttribute, from: element) == expectedValue {
+            return .applied(ownership)
+        }
+        return .indeterminateAfterMutation
+    }
+
+    /// Replace a mutable hypothesis only while its exact target still owns system
+    /// keyboard focus and the owned range still contains the prior hypothesis. Selecting
+    /// that range before AXSelectedText is the only focus-adjacent mutation; every
+    /// boundary is re-read immediately and no failure is retried.
+    func replaceForegroundRealtimeDraft(
+        _ replacement: String,
+        ownership: RealtimeInputDraftOwnership
+    ) -> RealtimeDraftMutationResult {
+        guard targetOwnsSystemKeyboardFocus(ownership.target),
+              let element = resolvedExactElement(for: ownership.target) else {
+            return .unavailableBeforeMutation
+        }
+        return replaceForegroundRealtimeDraft(
+            replacement,
+            ownership: ownership,
+            element: element
+        )
+    }
+
+    func restoreForegroundRealtimeDraft(
+        _ ownership: RealtimeInputDraftOwnership
+    ) -> RealtimeDraftMutationResult {
+        replaceForegroundRealtimeDraft(
+            ownership.textRange.originalText,
+            ownership: ownership
+        )
+    }
+
+    /// Read-only proof that the frozen exact input still owns system keyboard focus.
+    /// Delivery uses this at the irreversible Cmd-V/Return boundaries so a later click
+    /// routes through non-activating exact delivery instead of activating the saved app
+    /// or rewriting focus from a newer input in the same app.
+    func targetOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
+        guard target.hasExactInput,
+              let targetElement = resolvedExactElement(for: target),
+              let focusedInput = systemFocusedElement() else {
+            return false
+        }
+        return focusedInput.pid == target.pid
+            && CFEqual(focusedInput.element, targetElement)
+    }
+
+    /// Cheap, read-only proof for the exact retained wrapper. Unlike full replay-safe
+    /// resolution this performs no task-tree scan, so the uninterrupted Primary path
+    /// can arm optional post-Return verification without delaying its first Return.
+    func retainedInputOwnsSystemKeyboardFocus(_ target: Target) -> Bool {
+        guard let retainedElement = target.element,
+              let retainedWindow = target.window,
+              let focusedInput = systemFocusedElement(),
+              focusedInput.pid == target.pid,
+              CFEqual(focusedInput.element, retainedElement),
+              exactElement(
+                  retainedElement,
+                  belongsTo: retainedWindow,
+                  bundleIdentifier: target.bundleIdentifier
+              ) else {
+            return false
+        }
+        return true
+    }
+
+    /// A recording-start application fallback is only a capture-time convenience.
+    /// Before foreground Cmd-V, freeze the one editable element that currently owns
+    /// keyboard focus so paste, verification, and Return all share exact identity.
+    func promoteForegroundApplicationFallbackToExactInput(_ target: Target) -> Target? {
+        guard !target.hasExactInput,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
+              let focused = systemFocusedElement(),
+              focused.pid == target.pid else {
+            return nil
+        }
+        let role = stringAttribute(kAXRoleAttribute, from: focused.element)
+        let subrole = stringAttribute(kAXSubroleAttribute, from: focused.element)
+        guard isEditableInput(role: role, subrole: subrole),
+              let window = captureWindow(
+                  for: focused.element,
+                  pid: target.pid,
+                  bundleIdentifier: target.bundleIdentifier
+              ),
+              let identity = exactInputIdentity(for: focused.element, in: window) else {
+            return nil
+        }
+        return Target(
+            element: focused.element,
+            window: window,
+            identity: identity,
+            telegramVisualIdentityCapture: identity.contextAnchors.isEmpty
+                ? makeTelegramVisualIdentityCapture(
+                    app: target.app,
+                    window: window
+                )
+                : nil,
+            app: target.app,
+            pid: target.pid,
+            bundleIdentifier: target.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: target.displayInfo.applicationName,
+                inputName: inputDisplayName(for: focused.element),
+                applicationIcon: target.displayInfo.applicationIcon
+            )
+        )
+    }
+
+    /// OpenAI chat surfaces expose Send in a sibling FooterActions subtree rather than
+    /// as a direct editor sibling. Discovery is bounded to the exact editor's ancestor
+    /// chain and same window. Exact system keyboard focus is the authority here: a
+    /// non-activating panel may own it while NSWorkspace reports another app frontmost.
+    /// The action is revalidated after the asynchronous walk so an idle Send wrapper
+    /// that turns into Stop can never cross the AXPress boundary.
     func pressNearbySubmitButton(
         for target: Target,
         allowApplicationFallback: Bool = false
-    ) -> NearbySubmitButtonResult {
+    ) async -> NearbySubmitButtonResult {
         guard AXIsProcessTrusted() else {
             return .failed(AXError.apiDisabled.rawValue)
         }
         guard !target.app.isTerminated,
-              Self.supportsSemanticSend(bundleIdentifier: target.bundleIdentifier),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
-              (!target.hasExactInput || targetOwnsSystemKeyboardFocus(target)),
+              targetOwnsSystemKeyboardFocus(target),
               let element = liveElement(
-                for: target,
-                allowApplicationFallback: allowApplicationFallback
-              ) else {
+                  for: target,
+                  allowApplicationFallback: allowApplicationFallback
+              ),
+              let window = owningWindow(for: element) else {
             return .unavailable
         }
 
-        return pressNearbySubmitButton(
+        return await pressNearbySubmitButton(
             element: element,
+            window: window,
+            app: target.app,
             pid: target.pid,
-            preflight: {
-                NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid
-                    && (!target.hasExactInput
-                        || self.targetOwnsSystemKeyboardFocus(target))
-            }
+            preserveSystemFocusAcrossAction: false,
+            allowsTargetedBackgroundClick: false,
+            waitForUnavailableCandidate: false,
+            traversalPreflight: { [weak self] in
+                self?.retainedInputOwnsSystemKeyboardFocus(target) == true
+            },
+            actionPreflight: { [weak self] in
+                self?.targetOwnsSystemKeyboardFocus(target) == true
+            },
+            irreversibleActionPreflight: nil,
+            postActionFocusGuard: { true }
         )
     }
 
     private func pressNearbySubmitButton(
         element: AXUIElement,
+        window: AXUIElement,
+        app: NSRunningApplication,
         pid: pid_t,
-        preflight: () -> Bool
-    ) -> NearbySubmitButtonResult {
-        guard let candidate = nearbySubmitButtonCandidate(element: element, pid: pid),
-              let editorWindow = owningWindow(for: element),
-              let editorFrame = frame(of: element),
-              let candidateFrame = frame(of: candidate.element) else {
-            logger.notice("Nearby submit button unavailable or failed its final boundary pid=\(pid, privacy: .public)")
-            return .unavailable
-        }
-        var candidatePID: pid_t = 0
-        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
-        let result = Self.performProvenSemanticSend(
-            isUnambiguous: true,
-            pidMatches: AXUIElementGetPid(candidate.element, &candidatePID) == .success
-                && candidatePID == pid,
-            windowMatches: owningWindow(for: candidate.element).map({
-                CFEqual($0, editorWindow)
-            }) == true,
-            geometryMatches: candidateFrame.width >= 14
-                && candidateFrame.width <= 96
-                && candidateFrame.height >= 14
-                && candidateFrame.height <= 96
-                && editorFrame.insetBy(dx: -100, dy: -100).contains(center),
-            roleMatches: stringAttribute(kAXRoleAttribute, from: candidate.element)
-                == kAXButtonRole,
-            enabled: boolAttribute(kAXEnabledAttribute, from: candidate.element)
-                != false,
-            label: submitLabel(for: candidate.element),
-            hasPressAction: actionNames(from: candidate.element)
-                .contains(kAXPressAction),
-            boundaryMatches: preflight()
-        ) {
-            let actionResult = AXUIElementPerformAction(
-                candidate.element,
-                kAXPressAction as CFString
+        preserveSystemFocusAcrossAction: Bool,
+        allowsTargetedBackgroundClick: Bool,
+        waitForUnavailableCandidate: Bool,
+        traversalPreflight: () -> Bool,
+        actionPreflight: () -> Bool,
+        irreversibleActionPreflight: (() async -> Bool)?,
+        postActionFocusGuard: () -> Bool
+    ) async -> NearbySubmitButtonResult {
+        guard !app.isTerminated, traversalPreflight() else { return .unavailable }
+        // React may publish or enable the exact Send wrapper just after Accessibility
+        // insertion completes. Background delivery has no safe key fallback, so give
+        // only that route a bounded chance to re-resolve the complete relationship.
+        // Foreground callers return immediately to their exact-focus HID path.
+        let readinessDeadline = ProcessInfo.processInfo.systemUptime + 0.8
+        var candidate: NearbySubmitButtonCandidate?
+        repeat {
+            let lookup = await nearbySubmitButtonLookup(
+                editor: element,
+                window: window,
+                app: app,
+                pid: pid,
+                boundary: traversalPreflight
             )
-            logger.info("Nearby submit-button press attempted pid=\(pid, privacy: .public) label=\(candidate.label, privacy: .public) result=\(actionResult.rawValue, privacy: .public)")
-            return actionResult.rawValue
+            switch lookup {
+            case .ready(let readyCandidate):
+                candidate = readyCandidate
+            case .ambiguous:
+                logger.notice("Semantic Send lookup was ambiguous; no action issued pid=\(pid, privacy: .public)")
+                return .unavailable
+            case .boundaryChanged:
+                return .unavailable
+            case .unavailable:
+                guard waitForUnavailableCandidate,
+                      traversalPreflight(),
+                      !Task.isCancelled,
+                      ProcessInfo.processInfo.systemUptime < readinessDeadline else {
+                    return .unavailable
+                }
+                try? await Task.sleep(nanoseconds: 25_000_000)
+            }
+        } while candidate == nil
+        guard let candidate else { return .unavailable }
+        guard actionPreflight() else { return .focusLostBeforeAction }
+        guard !Task.isCancelled else { return .refusedAfterCandidate }
+
+        // Telegram's AX tree has no chat header, so a candidate search alone cannot
+        // prove which reused chat the retained composer currently belongs to. Recheck
+        // its capture-time visual digest before the final topology lookup. OpenAI and
+        // ordinary AX-anchored surfaces take the no-op branch.
+        if let irreversibleActionPreflight,
+           !(await irreversibleActionPreflight()) {
+            logger.notice("Semantic Send visual identity changed before action; no action issued pid=\(pid, privacy: .public)")
+            return .focusLostBeforeAction
         }
+        guard actionPreflight(), !Task.isCancelled else {
+            return .focusLostBeforeAction
+        }
+
+        // The first traversal discovers a candidate; the second is the irreversible
+        // action-time topology proof. Re-run the entire nearest-composer lookup and
+        // require the same sole candidate so a newly appeared sibling Send/Stop button
+        // cannot be hidden by merely rechecking the retained wrapper's own attributes.
+        let actionTimeLookup = await nearbySubmitButtonLookup(
+            editor: element,
+            window: window,
+            app: app,
+            pid: pid,
+            boundary: traversalPreflight
+        )
+        guard actionPreflight() else { return .focusLostBeforeAction }
+        guard case .ready(let actionTimeCandidate) = actionTimeLookup,
+              CFEqual(actionTimeCandidate.element, candidate.element),
+              !Task.isCancelled else {
+            logger.notice("Semantic Send action-time topology changed; no action issued pid=\(pid, privacy: .public)")
+            return .refusedAfterCandidate
+        }
+        let result = await pressVerifiedSubmitButton(
+            actionTimeCandidate,
+            editor: element,
+            window: window,
+            app: app,
+            pid: pid,
+            preserveSystemFocusAcrossAction: preserveSystemFocusAcrossAction,
+            allowsTargetedBackgroundClick: allowsTargetedBackgroundClick,
+            preflight: actionPreflight,
+            postActionFocusGuard: postActionFocusGuard
+        )
+        // A candidate existed and was uniquely re-found, so a final refusal means its
+        // semantics or exact boundary changed (for example idle Send became Stop).
+        // Preserve that distinction so callers never reinterpret it as permission to
+        // fall back to Return.
         if result == .unavailable {
-            logger.notice("Nearby submit button changed identity, label, geometry, or exact-input boundary immediately before press pid=\(pid, privacy: .public)")
+            return actionPreflight()
+                ? .refusedAfterCandidate
+                : .focusLostBeforeAction
         }
         return result
     }
 
-    /// Resolve exactly one explicitly labelled Send button from the nearest shared
-    /// composer container. The bounded ancestor/depth/geometry search keeps unrelated
-    /// window controls out, and ambiguity fails closed rather than guessing.
-    private func nearbySubmitButtonCandidate(
-        element: AXUIElement,
+    private func nearbySubmitButtonLookup(
+        editor: AXUIElement,
+        window: AXUIElement,
+        app: NSRunningApplication,
         pid: pid_t,
-        requireEnabled: Bool = true
-    ) -> NearbySubmitButtonCandidate? {
-        guard let editorFrame = frame(of: element),
-              let editorWindow = owningWindow(for: element) else {
-            return nil
+        boundary: () -> Bool
+    ) async -> NearbySubmitButtonLookup {
+        guard boundary() else {
+            logger.notice("Bounded OpenAI FooterActions sibling search stopped reason=initialBoundaryChanged pid=\(pid, privacy: .public)")
+            return .boundaryChanged
+        }
+        guard let editorFrame = frame(of: editor) else {
+            logger.notice("Bounded OpenAI FooterActions sibling search stopped reason=editorFrameUnreadable pid=\(pid, privacy: .public)")
+            return .unavailable
         }
 
         let searchStarted = ProcessInfo.processInfo.systemUptime
-        let timeBudget: TimeInterval = requireEnabled ? 0.075 : 0.030
-        let deadline = searchStarted + timeBudget
-        var remainingNodeBudget = requireEnabled ? 600 : 240
-        var visitedNodeHashes = Set<CFHashCode>()
-        var visitedNodeCount = 0
-        var ancestor = elementAttribute(kAXParentAttribute, from: element)
-        // Codex's current React composer nests FooterAction/Send several wrapper
-        // levels away from the AXTextArea. Keep this search inside the nearest
-        // composer-sized ancestors so recording capture stays cheap, but allow enough
-        // depth to reach the app's real explicitly labelled Send button. A whole-window
-        // scan here would regress recorder start/stop latency on large chat histories.
-        for ancestorIndex in 0..<10 {
-            guard remainingNodeBudget > 0,
-                  ProcessInfo.processInfo.systemUptime < deadline else {
+        let deadline = searchStarted + Self.semanticSendSearchSeconds
+        let traversalState = BoundedTraversalState(
+            nodeBudget: Self.semanticSendNodeBudget
+        )
+        var ancestorsVisited = 0
+        var editorBranch = editor
+        var ancestor = elementAttribute(kAXParentAttribute, from: editor)
+        for _ in 0..<16 {
+            guard boundary(), !Task.isCancelled,
+                  ProcessInfo.processInfo.systemUptime < deadline,
+                  traversalState.remainingNodeBudget > 0,
+                  let container = ancestor,
+                  !CFEqual(container, window) else {
                 break
             }
-            guard let container = ancestor else { break }
+            ancestorsVisited += 1
             ancestor = elementAttribute(kAXParentAttribute, from: container)
-            // Frameless Electron wrappers can represent huge virtual subtrees. Never
-            // traverse one: doing so made a bounded ancestor count effectively become a
-            // whole-window scan and delayed the recorder even when the button was Stop.
-            guard let containerFrame = frame(of: container),
-                  containerFrame.intersects(editorFrame),
-                  containerFrame.width <= editorFrame.width + 240,
-                  containerFrame.height <= editorFrame.height + 240 else {
-                continue
-            }
-
             var candidates: [NearbySubmitButtonCandidate] = []
-            let descendants = boundedDescendants(
+            let siblingBranches = traversalChildren(
                 of: container,
-                maximumDepth: 8,
-                remainingNodeBudget: &remainingNodeBudget,
-                visitedNodeHashes: &visitedNodeHashes,
-                deadline: deadline
-            )
-            visitedNodeCount += descendants.count
-            for (candidateElement, discoveredDepth) in descendants {
-                var candidatePID: pid_t = 0
-                guard !CFEqual(candidateElement, element),
-                      AXUIElementGetPid(candidateElement, &candidatePID) == .success,
-                      candidatePID == pid,
-                      owningWindow(for: candidateElement).map({
-                        CFEqual($0, editorWindow)
-                      }) == true,
-                      stringAttribute(kAXRoleAttribute, from: candidateElement)
-                        == kAXButtonRole,
-                      (!requireEnabled
-                        || boolAttribute(kAXEnabledAttribute, from: candidateElement) != false),
-                      let candidateFrame = frame(of: candidateElement),
-                      candidateFrame.width >= 14,
-                      candidateFrame.width <= 96,
-                      candidateFrame.height >= 14,
-                      candidateFrame.height <= 96 else {
-                    continue
-                }
-
-                let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
-                guard editorFrame.insetBy(dx: -100, dy: -100).contains(center),
-                      let label = submitLabel(for: candidateElement),
-                      Self.isProvenSemanticSendLabel(label) else {
-                    continue
-                }
-                let candidate = NearbySubmitButtonCandidate(
-                    element: candidateElement,
-                    label: label,
-                    score: abs(center.x - editorFrame.maxX)
-                        + abs(center.y - editorFrame.maxY),
-                    discoveredDepth: discoveredDepth
-                )
-                if let existingIndex = candidates.firstIndex(where: {
-                    CFEqual($0.element, candidateElement)
-                }) {
-                    if candidate.score < candidates[existingIndex].score {
-                        candidates[existingIndex] = candidate
+                state: traversalState
+            ).filter {
+                !CFEqual($0, editorBranch)
+            }
+            for sibling in siblingBranches {
+                let traversal = await visitBoundedDescendants(
+                    of: sibling,
+                    maximumDepth: 10,
+                    state: traversalState,
+                    deadline: deadline,
+                    boundary: boundary,
+                    visitor: { candidateElement in
+                        if let candidate = self.semanticSendCandidate(
+                            candidateElement,
+                            editor: editor,
+                            window: window,
+                            editorFrame: editorFrame,
+                            app: app,
+                            pid: pid,
+                            diagnostics: traversalState
+                        ) {
+                            candidates.append(candidate)
+                        }
+                        return self.uniqueCandidateCount(candidates) < 2
                     }
-                } else {
-                    candidates.append(candidate)
+                )
+                switch traversal.completion {
+                case .completed:
+                    break
+                case .stoppedByVisitor:
+                    return .ambiguous
+                case .cancelled:
+                    logSemanticSendSearchFailure(
+                        reason: "cancelled",
+                        pid: pid,
+                        searchStarted: searchStarted,
+                        ancestorsVisited: ancestorsVisited,
+                        state: traversalState
+                    )
+                    return .boundaryChanged
+                case .boundaryChanged:
+                    logSemanticSendSearchFailure(
+                        reason: "boundaryChanged",
+                        pid: pid,
+                        searchStarted: searchStarted,
+                        ancestorsVisited: ancestorsVisited,
+                        state: traversalState
+                    )
+                    return .boundaryChanged
+                case .exhausted:
+                    let reason: String
+                    if traversalState.remainingNodeBudget <= 0 {
+                        reason = "nodeBudgetExhausted"
+                    } else if ProcessInfo.processInfo.systemUptime >= deadline {
+                        reason = "deadlineExhausted"
+                    } else {
+                        reason = "depthOrQueueTruncated"
+                    }
+                    logSemanticSendSearchFailure(
+                        reason: reason,
+                        pid: pid,
+                        searchStarted: searchStarted,
+                        ancestorsVisited: ancestorsVisited,
+                        state: traversalState
+                    )
+                    return .unavailable
                 }
             }
 
-            let ranked = candidates.sorted { $0.score < $1.score }
-            if ranked.count == 1, let candidate = ranked.first {
+            let unique = uniqueCandidates(candidates)
+            if unique.count == 1, let candidate = unique.first {
                 let elapsedMilliseconds = Int(
                     (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
                 )
-                logger.info("Resolved explicitly labelled Send button in nearest composer container pid=\(pid, privacy: .public) label=\(candidate.label, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) discoveredDepth=\(candidate.discoveredDepth, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-                return candidate
+                logger.info("Resolved OpenAI FooterActions Send sibling pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(Self.semanticSendNodeBudget - traversalState.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .ready(candidate)
             }
-            if ranked.count > 1 {
-                let elapsedMilliseconds = Int(
-                    (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
-                )
-                logger.notice("Nearest composer container had ambiguous Send buttons pid=\(pid, privacy: .public) candidates=\(ranked.count, privacy: .public) ancestorIndex=\(ancestorIndex, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-                return nil
-            }
+            if unique.count > 1 { return .ambiguous }
+            editorBranch = container
         }
+        logSemanticSendSearchFailure(
+            reason: "completedWithoutCandidate",
+            pid: pid,
+            searchStarted: searchStarted,
+            ancestorsVisited: ancestorsVisited,
+            state: traversalState
+        )
+        return .unavailable
+    }
 
+    /// Keep failed live searches diagnosable without logging labels, editor contents,
+    /// window titles, or any other user data. Counts reveal which irreversible Send
+    /// gate rejected Codex while preserving the exact same fail-closed contract.
+    private func logSemanticSendSearchFailure(
+        reason: String,
+        pid: pid_t,
+        searchStarted: TimeInterval,
+        ancestorsVisited: Int,
+        state: BoundedTraversalState
+    ) {
         let elapsedMilliseconds = Int(
             (ProcessInfo.processInfo.systemUptime - searchStarted) * 1_000
         )
-        logger.notice("Bounded nearby Send search found no candidate pid=\(pid, privacy: .public) nodesVisited=\(visitedNodeCount, privacy: .public) remainingNodeBudget=\(remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
-        return nil
+        logger.notice("Bounded OpenAI FooterActions sibling search found no candidate reason=\(reason, privacy: .public) pid=\(pid, privacy: .public) ancestorsVisited=\(ancestorsVisited, privacy: .public) nodesVisited=\(Self.semanticSendNodeBudget - state.remainingNodeBudget, privacy: .public) remainingNodeBudget=\(state.remainingNodeBudget, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+        logger.notice("Bounded OpenAI FooterActions child counts pid=\(pid, privacy: .public) nav=\(state.navigationChildEdges, privacy: .public) visible=\(state.visibleChildEdges, privacy: .public) ordinary=\(state.ordinaryChildEdges, privacy: .public) merged=\(state.mergedChildEdges, privacy: .public) buttons=\(state.buttonNodes, privacy: .public)")
+        logger.notice("Bounded OpenAI FooterActions rejection counts pid=\(pid, privacy: .public) labelSend=\(state.labelledSendButtons, privacy: .public) labelOther=\(state.labelledOtherButtons, privacy: .public) labelUnlabelled=\(state.unlabelledButtons, privacy: .public) labelUnreadable=\(state.unreadableLabelButtons, privacy: .public) auditedUnlabelled=\(state.auditedUnlabelledButtons, privacy: .public) enabled=\(state.enabledButtons, privacy: .public) disabled=\(state.disabledButtons, privacy: .public) enabledUnreadable=\(state.unreadableEnabledButtons, privacy: .public) pressable=\(state.pressableButtons, privacy: .public) unpressable=\(state.unpressableButtons, privacy: .public) windowMatch=\(state.matchingWindowButtons, privacy: .public) windowMismatch=\(state.mismatchedWindowButtons, privacy: .public) frameReadable=\(state.readableFrameButtons, privacy: .public) frameUnreadable=\(state.unreadableFrameButtons, privacy: .public) geometryMatch=\(state.matchingGeometryButtons, privacy: .public) geometryMismatch=\(state.mismatchedGeometryButtons, privacy: .public)")
     }
 
-    /// Bring a known application to the foreground and verify that macOS actually
-    /// made it frontmost. `NSRunningApplication.activate` returned `false` for Codex
-    /// and VS Code during real cross-app delivery, so both destination activation and
-    /// post-delivery workspace restoration share the `NSWorkspace` fallback here.
-    func activateApplication(_ application: NSRunningApplication) async -> Bool {
-        let pid = application.processIdentifier
-        guard !application.isTerminated else {
-            logger.error("Application activation failed because the app terminated pid=\(pid, privacy: .public)")
-            return false
-        }
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-            return true
-        }
-
-        let directAccepted = application.activate(options: .activateAllWindows)
-        logger.info("Application activation requested through NSRunningApplication pid=\(pid, privacy: .public) accepted=\(directAccepted, privacy: .public)")
-        if directAccepted,
-           await waitForFrontmostApplication(pid: pid, timeout: activationTimeout) {
-            return true
-        }
-
-        guard let bundleURL = application.bundleURL else {
-            logger.error("Application activation fallback unavailable because the app has no bundle URL pid=\(pid, privacy: .public)")
-            return false
-        }
-
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.addsToRecentItems = false
-        let openedExpectedProcess = await withCheckedContinuation { continuation in
-            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { openedApplication, error in
-                if let error {
-                    self.logger.error("Application activation fallback failed pid=\(pid, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-                let matched = openedApplication?.processIdentifier == pid
-                self.logger.info("Application activation fallback completed pid=\(pid, privacy: .public) openedPid=\(openedApplication?.processIdentifier ?? -1, privacy: .public) matched=\(matched, privacy: .public)")
-                continuation.resume(returning: matched)
-            }
-        }
-        guard openedExpectedProcess else { return false }
-
-        let becameFrontmost = await waitForFrontmostApplication(pid: pid, timeout: activationTimeout)
-        if !becameFrontmost {
-            logger.error("Application activation fallback completed but app never became frontmost pid=\(pid, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-        }
-        return becameFrontmost
-    }
-
-    private func waitForFrontmostApplication(pid: pid_t, timeout: TimeInterval) async -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: focusPollInterval)
-        }
-        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-    }
-
-    private func waitForFocusedElement(
+    private func semanticSendCandidate(
+        _ candidateElement: AXUIElement,
+        editor: AXUIElement,
+        window: AXUIElement,
+        editorFrame: CGRect,
+        app: NSRunningApplication,
         pid: pid_t,
-        element: AXUIElement,
-        timeout: TimeInterval
-    ) async -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if let focusedInput = systemFocusedElement(),
-               focusedInput.pid == pid,
-               CFEqual(focusedInput.element, element) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: focusPollInterval)
+        diagnostics: BoundedTraversalState? = nil
+    ) -> NearbySubmitButtonCandidate? {
+        guard !CFEqual(candidateElement, editor),
+              stringAttribute(kAXRoleAttribute, from: candidateElement)
+                == kAXButtonRole else {
+            return nil
         }
-        guard let focusedInput = systemFocusedElement() else { return false }
-        return focusedInput.pid == pid && CFEqual(focusedInput.element, element)
+        diagnostics?.buttonNodes += 1
+
+        var candidatePID: pid_t = 0
+        guard AXUIElementGetPid(candidateElement, &candidatePID) == .success,
+              candidatePID == pid else {
+            return nil
+        }
+
+        let labelState = submitLabelState(for: candidateElement)
+        let label: String?
+        let usesAuditedUnlabelledContract: Bool
+        switch labelState {
+        case .labelled(let value):
+            label = value
+            usesAuditedUnlabelledContract = false
+            if Self.isProvenSemanticSendLabel(value) {
+                diagnostics?.labelledSendButtons += 1
+            } else {
+                diagnostics?.labelledOtherButtons += 1
+            }
+        case .unlabelled:
+            label = nil
+            usesAuditedUnlabelledContract = Self.matchesAuditedOpenAISubmitBuild(app)
+            diagnostics?.unlabelledButtons += 1
+            if usesAuditedUnlabelledContract {
+                diagnostics?.auditedUnlabelledButtons += 1
+            }
+        case .unreadable:
+            diagnostics?.unreadableLabelButtons += 1
+            return nil
+        }
+        guard Self.isProvenSemanticSendLabel(label)
+                || usesAuditedUnlabelledContract else {
+            return nil
+        }
+
+        switch boolAttribute(kAXEnabledAttribute, from: candidateElement) {
+        case true:
+            diagnostics?.enabledButtons += 1
+        case false:
+            diagnostics?.disabledButtons += 1
+            return nil
+        case nil:
+            diagnostics?.unreadableEnabledButtons += 1
+            return nil
+        }
+
+        guard supportsPressAction(candidateElement) else {
+            diagnostics?.unpressableButtons += 1
+            return nil
+        }
+        diagnostics?.pressableButtons += 1
+
+        guard owningWindow(for: candidateElement).map({
+            CFEqual($0, window)
+        }) == true else {
+            diagnostics?.mismatchedWindowButtons += 1
+            return nil
+        }
+        diagnostics?.matchingWindowButtons += 1
+
+        guard let candidateFrame = frame(of: candidateElement) else {
+            diagnostics?.unreadableFrameButtons += 1
+            return nil
+        }
+        diagnostics?.readableFrameButtons += 1
+        guard Self.semanticSendGeometryMatches(
+            editorFrame: editorFrame,
+            candidateFrame: candidateFrame
+        ) else {
+            diagnostics?.mismatchedGeometryButtons += 1
+            return nil
+        }
+        diagnostics?.matchingGeometryButtons += 1
+
+        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        return NearbySubmitButtonCandidate(
+            element: candidateElement,
+            usesAuditedUnlabelledContract: usesAuditedUnlabelledContract,
+            score: abs(center.x - editorFrame.maxX)
+                + abs(center.y - editorFrame.maxY)
+        )
     }
 
-    private func prepareBackgroundFocus(
-        _ session: BackgroundDeliverySession
-    ) async -> Bool {
-        switch session.focusMode {
-        case .alreadyKeyboardFocused, .directExactElement:
-            // These modes are deliberately non-mutating. The exact saved wrapper and
-            // current system-focus boundary must already make direct delivery safe.
-            return backgroundDeliveryBoundaryMatches(session)
+    private func pressVerifiedSubmitButton(
+        _ candidate: NearbySubmitButtonCandidate,
+        editor: AXUIElement,
+        window: AXUIElement,
+        app: NSRunningApplication,
+        pid: pid_t,
+        preserveSystemFocusAcrossAction: Bool,
+        allowsTargetedBackgroundClick: Bool,
+        preflight: () -> Bool,
+        postActionFocusGuard: () -> Bool
+    ) async -> NearbySubmitButtonResult {
+        guard preflight(), !Task.isCancelled,
+              let editorFrame = frame(of: editor),
+              let candidateFrame = frame(of: candidate.element) else {
+            return .unavailable
+        }
+        let revalidatedCandidate = semanticSendCandidate(
+            candidate.element,
+            editor: editor,
+            window: window,
+            editorFrame: editorFrame,
+            app: app,
+            pid: pid
+        )
+        let revalidatedSameElement = revalidatedCandidate.map {
+            CFEqual($0.element, candidate.element)
+        } == true
+        var candidatePID: pid_t = 0
+        guard revalidatedSameElement,
+              AXUIElementGetPid(candidate.element, &candidatePID) == .success,
+              candidatePID == pid,
+              owningWindow(for: candidate.element).map({
+                  CFEqual($0, window)
+              }) == true,
+              Self.semanticSendGeometryMatches(
+                  editorFrame: editorFrame,
+                  candidateFrame: candidateFrame
+              ),
+              stringAttribute(kAXRoleAttribute, from: candidate.element)
+                == kAXButtonRole,
+              boolAttribute(kAXEnabledAttribute, from: candidate.element) == true,
+              supportsPressAction(candidate.element),
+              !Task.isCancelled else {
+            return .unavailable
+        }
 
-        case .preparedTargetedInput:
-            guard preparedTargetFocusBoundaryIsSafe(session) else {
-                logger.error("Background exact focus refused before its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
-                return false
+        let auditedBuildStillMatches = candidate.usesAuditedUnlabelledContract
+            && Self.matchesAuditedOpenAISubmitBuild(app)
+        guard preflight(), !Task.isCancelled else { return .unavailable }
+        let focusBeforeAction: (element: AXUIElement, pid: pid_t)?
+        if preserveSystemFocusAcrossAction {
+            guard let currentFocus = systemFocusedElement() else {
+                return .unavailable
             }
-            guard CursorPaster.beginTargetedInputSession(
-                pid: session.processIdentifier
-            ) else {
-                logger.error("Background exact focus could not create its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
-                return false
+            focusBeforeAction = currentFocus
+        } else {
+            focusBeforeAction = nil
+        }
+
+        // This must be the final AX read before AXPress. Codex reuses the same control
+        // for idle Send and active Stop, so an earlier label snapshot is not semantic
+        // proof at the irreversible boundary. A renderer/read failure is fail-closed,
+        // never treated as the audited genuinely-unlabelled idle state.
+        let finalLabelState = submitLabelState(for: candidate.element)
+        let currentLabel: String?
+        let labelWasReadable: Bool
+        let currentAuditedUnlabelledContract: Bool
+        switch finalLabelState {
+        case .labelled(let value):
+            currentLabel = value
+            labelWasReadable = true
+            currentAuditedUnlabelledContract = false
+        case .unlabelled:
+            currentLabel = nil
+            labelWasReadable = true
+            currentAuditedUnlabelledContract = auditedBuildStillMatches
+        case .unreadable:
+            currentLabel = nil
+            labelWasReadable = false
+            currentAuditedUnlabelledContract = false
+        }
+
+        let semanticBoundaryProven = Self.isProvenSemanticSendBoundary(
+            isUnambiguous: true,
+            pidMatches: true,
+            windowMatches: true,
+            geometryMatches: true,
+            roleMatches: true,
+            enabled: true,
+            label: currentLabel,
+            labelWasReadable: labelWasReadable,
+            allowsAuditedUnlabelledSend: currentAuditedUnlabelledContract,
+            hasPressAction: true,
+            boundaryMatches: true
+        )
+        guard semanticBoundaryProven else { return .unavailable }
+
+        if allowsTargetedBackgroundClick,
+           currentAuditedUnlabelledContract {
+            guard preflight(), !Task.isCancelled,
+                  let windowFrame = frame(of: window),
+                  let windowID = SkyLightTargetedMouseEventPost.windowID(
+                    for: window
+                  ) else {
+                return .unavailable
             }
-            var keepSessionOpen = false
-            defer {
-                if !keepSessionOpen,
-                   preparedTargetFocusBoundaryIsSafe(session) {
-                    CursorPaster.endTargetedInputSession(
-                        pid: session.processIdentifier
-                    )
+            let targetPoint = CGPoint(
+                x: candidateFrame.midX,
+                y: candidateFrame.midY
+            )
+            guard windowFrame.contains(targetPoint) else { return .unavailable }
+            let targetPointInWindow = CGPoint(
+                x: targetPoint.x - windowFrame.minX,
+                y: targetPoint.y - windowFrame.minY
+            )
+            // This point is outside the exact window in both screen and local
+            // coordinates, including on multi-monitor layouts with negative origins.
+            let offWindowPoint = CGPoint(
+                x: windowFrame.minX - max(windowFrame.width, 2_048),
+                y: windowFrame.minY - max(windowFrame.height, 2_048)
+            )
+            let actionStarted = ProcessInfo.processInfo.systemUptime
+            let clickResult = await CursorPaster.performTargetedOpenAISendClick(
+                targetPID: pid,
+                windowID: windowID,
+                targetPoint: targetPoint,
+                targetPointInWindow: targetPointInWindow,
+                offWindowPoint: offWindowPoint,
+                canPost: preflight
+            )
+            let elapsedMilliseconds = Int(
+                (ProcessInfo.processInfo.systemUptime - actionStarted) * 1_000
+            )
+            switch clickResult {
+            case .actionGuardRefused:
+                logger.notice("Targeted OpenAI Send click refused at its final exact-input boundary pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .focusLostBeforeAction
+            case .commandNotPosted:
+                logger.error("Targeted OpenAI Send click transport unavailable pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) bridgeAvailable=\(SkyLightTargetedMouseEventPost.isAvailable, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .failed(AXError.cannotComplete.rawValue)
+            case .commandPosted:
+                guard postActionFocusGuard() else {
+                    logger.error("Targeted OpenAI Send click violated the non-activating focus boundary pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                    return .failed(AXError.cannotComplete.rawValue)
                 }
+                logger.info("Targeted OpenAI Send click attempted pid=\(pid, privacy: .public) windowId=\(windowID, privacy: .public) auditedTuple=true labelState=unlabelledAudited buttonIdentityStable=true buttonEnabled=true buttonWidth=\(Int(candidateFrame.width), privacy: .public) buttonHeight=\(Int(candidateFrame.height), privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
+                return .targetedClick
             }
-
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            guard preparedTargetFocusBoundaryIsSafe(session) else {
-                logger.error("Background exact focus stopped because the target acquired user focus during activation settlement targetPid=\(session.processIdentifier, privacy: .public)")
-                return false
-            }
-
-            let appElement = AXUIElementCreateApplication(session.processIdentifier)
-            let mainResult = AXUIElementSetAttributeValue(
-                session.window,
-                kAXMainAttribute as CFString,
-                kCFBooleanTrue
-            )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
-            let windowResult = AXUIElementSetAttributeValue(
-                appElement,
-                kAXFocusedWindowAttribute as CFString,
-                session.window
-            )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
-            let windowFocusedResult = AXUIElementSetAttributeValue(
-                session.window,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
-            let elementResult = AXUIElementSetAttributeValue(
-                appElement,
-                kAXFocusedUIElementAttribute as CFString,
-                session.element
-            )
-            guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
-            let elementFocusedResult = AXUIElementSetAttributeValue(
-                session.element,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            )
-            try? await Task.sleep(nanoseconds: 50_000_000)
-
-            let verified = backgroundDeliveryBoundaryMatches(session)
-            if !verified {
-                let actualWindow = elementAttribute(
-                    kAXFocusedWindowAttribute,
-                    from: appElement
-                )
-                let actualElement = elementAttribute(
-                    kAXFocusedUIElementAttribute,
-                    from: appElement
-                )
-                logger.error("Background exact focus verification failed after one bounded session targetPid=\(session.processIdentifier, privacy: .public) expectedWindowHash=\(CFHash(session.window), privacy: .public) actualWindowHash=\(actualWindow.map { String(CFHash($0)) } ?? "nil", privacy: .public) expectedElementHash=\(CFHash(session.element), privacy: .public) actualElementHash=\(actualElement.map { String(CFHash($0)) } ?? "nil", privacy: .public) mainAX=\(mainResult.rawValue, privacy: .public) windowAX=\(windowResult.rawValue, privacy: .public) windowFocusedAX=\(windowFocusedResult.rawValue, privacy: .public) elementAX=\(elementResult.rawValue, privacy: .public) elementFocusedAX=\(elementFocusedResult.rawValue, privacy: .public)")
-            }
-            keepSessionOpen = verified
-            return verified
         }
+
+        var actionResult: AXError?
+        let result = Self.performProvenSemanticSend(
+            isUnambiguous: true,
+            pidMatches: true,
+            windowMatches: true,
+            geometryMatches: true,
+            roleMatches: true,
+            enabled: true,
+            label: currentLabel,
+            labelWasReadable: labelWasReadable,
+            allowsAuditedUnlabelledSend: currentAuditedUnlabelledContract,
+            hasPressAction: true,
+            boundaryMatches: true,
+            action: {
+                let value = AXUIElementPerformAction(
+                    candidate.element,
+                    kAXPressAction as CFString
+                )
+                actionResult = value
+                return value.rawValue
+            }
+        )
+        guard result != .unavailable else { return result }
+
+        if let focusBeforeAction {
+            let focusAfterAction = systemFocusedElement()
+            guard focusAfterAction?.pid == focusBeforeAction.pid,
+                  focusAfterAction.map({
+                      CFEqual($0.element, focusBeforeAction.element)
+                  }) == true else {
+                logger.error("Semantic Send changed the user's system-focused input pid=\(pid, privacy: .public)")
+                return .failed(AXError.cannotComplete.rawValue)
+            }
+        }
+        guard postActionFocusGuard() else {
+            logger.error("Semantic Send violated the non-activating focus boundary pid=\(pid, privacy: .public)")
+            return .failed(AXError.cannotComplete.rawValue)
+        }
+        logger.info("Verified semantic Send press attempted pid=\(pid, privacy: .public) route=\(currentAuditedUnlabelledContract ? "auditedOpenAIIdleSend" : "labelledSend", privacy: .public) label=\(currentLabel ?? "nil", privacy: .public) result=\(actionResult?.rawValue ?? -1, privacy: .public)")
+        return result
     }
 
-    private func liveBackgroundInput(
-        for session: BackgroundDeliverySession,
-        allowReplacementAfterSubmission: Bool = false
-    ) -> AXUIElement? {
-        if Self.isTelegram(bundleIdentifier: session.bundleIdentifier) {
-            // Telegram may reuse one native editor wrapper across chats. Even read-only
-            // verification must keep requiring the retained wrapper plus readable,
-            // matching chat context; a renderer-style replacement is never accepted.
-            return telegramDeliveryBoundaryMatches(session) ? session.element : nil
+    private func uniqueCandidates(
+        _ candidates: [NearbySubmitButtonCandidate]
+    ) -> [NearbySubmitButtonCandidate] {
+        var unique: [NearbySubmitButtonCandidate] = []
+        for candidate in candidates.sorted(by: { $0.score < $1.score }) where
+            !unique.contains(where: { CFEqual($0.element, candidate.element) }) {
+            unique.append(candidate)
         }
-
-        guard !session.app.isTerminated,
-              backgroundFocusBoundaryIsSafe(
-                session,
-                allowReplacementAfterSubmission: allowReplacementAfterSubmission
-              ) else {
-            return nil
-        }
-
-        let focusedElement: AXUIElement
-        switch session.focusMode {
-        case .directExactElement:
-            guard resolvedExactElement(for: session.target).map({
-                CFEqual($0, session.element)
-            }) == true,
-                  backgroundElementMatchesSession(
-                    session.element,
-                    session: session,
-                    isSameRetainedWrapper: true
-                  ) else {
-                return nil
-            }
-            return session.element
-
-        case .alreadyKeyboardFocused:
-            guard let focused = systemFocusedElement(),
-                  focused.pid == session.processIdentifier else {
-                return nil
-            }
-            focusedElement = focused.element
-
-        case .preparedTargetedInput:
-            let appElement = AXUIElementCreateApplication(session.processIdentifier)
-            guard let focusedWindow = elementAttribute(
-                kAXFocusedWindowAttribute,
-                from: appElement
-            ), CFEqual(focusedWindow, session.window),
-                  let internalElement = elementAttribute(
-                    kAXFocusedUIElementAttribute,
-                    from: appElement
-                  ) else {
-                return nil
-            }
-            focusedElement = internalElement
-        }
-
-        if CFEqual(focusedElement, session.element),
-           resolvedExactElement(for: session.target).map({
-               CFEqual($0, session.element)
-           }) == true,
-           backgroundElementMatchesSession(
-            session.element,
-            session: session,
-            isSameRetainedWrapper: true
-           ) {
-            return session.element
-        }
-
-        // Allowlisted renderer chat composers can replace their wrapper after Send.
-        // Resolve the app's one internally focused element in the exact saved
-        // window and use it solely for the read-only clear/reset verifier below.
-        guard allowReplacementAfterSubmission,
-              Self.supportsSemanticSend(bundleIdentifier: session.bundleIdentifier),
-              !Self.isTelegram(bundleIdentifier: session.bundleIdentifier),
-              postSubmissionReplacementMatches(
-                focusedElement,
-                session: session
-              ) else {
-            return nil
-        }
-        return focusedElement
+        return unique
     }
 
-    private func liveBackgroundInputFast(
-        for session: BackgroundDeliverySession,
-        allowReplacementAfterSubmission: Bool
-    ) -> AXUIElement? {
-        if Self.isTelegram(bundleIdentifier: session.bundleIdentifier) {
-            return telegramFastBoundaryMatches(session) ? session.element : nil
-        }
-        guard backgroundFocusBoundaryIsSafe(
-            session,
-            allowReplacementAfterSubmission: allowReplacementAfterSubmission
+    private func uniqueCandidateCount(
+        _ candidates: [NearbySubmitButtonCandidate]
+    ) -> Int {
+        min(uniqueCandidates(candidates).count, 2)
+    }
+
+    private func backgroundFocusBoolean(
+        _ slot: BackgroundFocusBooleanSlot,
+        targetWindow: AXUIElement,
+        targetElement: AXUIElement,
+        previousWindow: AXUIElement?,
+        previousElement: AXUIElement?
+    ) -> Bool? {
+        guard let (element, attribute) = backgroundFocusBooleanTarget(
+            for: slot,
+            targetWindow: targetWindow,
+            targetElement: targetElement,
+            previousWindow: previousWindow,
+            previousElement: previousElement
         ) else {
             return nil
         }
+        return boolAttribute(attribute, from: element)
+    }
 
-        switch session.focusMode {
-        case .directExactElement:
-            return backgroundElementMatchesSession(
-                session.element,
-                session: session,
-                isSameRetainedWrapper: true
-            ) ? session.element : nil
+    private func backgroundFocusBooleanTarget(
+        for slot: BackgroundFocusBooleanSlot,
+        session: BackgroundDeliverySession
+    ) -> (AXUIElement, String)? {
+        backgroundFocusBooleanTarget(
+            for: slot,
+            targetWindow: session.window,
+            targetElement: session.element,
+            previousWindow: session.previouslyFocusedWindow,
+            previousElement: session.previouslyFocusedElement
+        )
+    }
 
-        case .alreadyKeyboardFocused:
-            guard let focused = systemFocusedElement(),
-                  focused.pid == session.processIdentifier else {
-                return nil
-            }
-            if CFEqual(focused.element, session.element),
-               backgroundElementMatchesSession(
-                session.element,
-                session: session,
-                isSameRetainedWrapper: true
-               ) {
-                return session.element
-            }
-            return allowReplacementAfterSubmission
-                && postSubmissionReplacementMatches(
-                    focused.element,
-                    session: session
-                ) ? focused.element : nil
-
-        case .preparedTargetedInput:
-            let appElement = AXUIElementCreateApplication(session.processIdentifier)
-            guard let focusedWindow = elementAttribute(
-                kAXFocusedWindowAttribute,
-                from: appElement
-            ), CFEqual(focusedWindow, session.window),
-                  let focusedElement = elementAttribute(
-                    kAXFocusedUIElementAttribute,
-                    from: appElement
-                  ) else {
-                return nil
-            }
-            if CFEqual(focusedElement, session.element),
-               backgroundElementMatchesSession(
-                session.element,
-                session: session,
-                isSameRetainedWrapper: true
-               ) {
-                return session.element
-            }
-            return allowReplacementAfterSubmission
-                && postSubmissionReplacementMatches(
-                    focusedElement,
-                    session: session
-                ) ? focusedElement : nil
+    private func backgroundFocusBooleanTarget(
+        for slot: BackgroundFocusBooleanSlot,
+        targetWindow: AXUIElement,
+        targetElement: AXUIElement,
+        previousWindow: AXUIElement?,
+        previousElement: AXUIElement?
+    ) -> (AXUIElement, String)? {
+        switch slot {
+        case .targetWindowMain:
+            return (targetWindow, kAXMainAttribute)
+        case .targetWindowFocused:
+            return (targetWindow, kAXFocusedAttribute)
+        case .targetElementFocused:
+            return (targetElement, kAXFocusedAttribute)
+        case .previousWindowMain:
+            return previousWindow.map { ($0, kAXMainAttribute) }
+        case .previousWindowFocused:
+            return previousWindow.map { ($0, kAXFocusedAttribute) }
+        case .previousElementFocused:
+            return previousElement.map { ($0, kAXFocusedAttribute) }
         }
     }
 
-    private func backgroundElementMatchesSession(
-        _ element: AXUIElement,
-        session: BackgroundDeliverySession,
-        isSameRetainedWrapper: Bool
-    ) -> Bool {
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success,
-              pid == session.processIdentifier,
-              stringAttribute(kAXRoleAttribute, from: element) == session.inputRole,
-              stringAttribute(kAXSubroleAttribute, from: element) == session.inputSubrole,
-              owningWindow(for: element).map({
-                CFEqual($0, session.window)
-              }) == true else {
+    private func requiredBackgroundFocusBooleanSlots(
+        targetWindow: AXUIElement,
+        targetElement: AXUIElement,
+        previousWindow: AXUIElement?,
+        previousElement: AXUIElement?,
+        mode: BackgroundDeliverySession.Mode
+    ) -> [BackgroundFocusBooleanSlot] {
+        guard mode == .preparedTargetedInput else { return [] }
+        var required: [BackgroundFocusBooleanSlot] = [
+            .targetWindowMain,
+            .targetWindowFocused,
+            .targetElementFocused
+        ]
+        if let previousWindow {
+            if !CFEqual(previousWindow, targetWindow) {
+                required.append(contentsOf: [
+                    .previousWindowMain,
+                    .previousWindowFocused
+                ])
+            }
+        } else {
+            // A prepared session may never exist without an exact prior window;
+            // include its slots so the defensive apply-time guard also fails closed.
+            required.append(contentsOf: [
+                .previousWindowMain,
+                .previousWindowFocused
+            ])
+        }
+        if let previousElement {
+            if !CFEqual(previousElement, targetElement) {
+                required.append(.previousElementFocused)
+            }
+        }
+        return required
+    }
+
+    private func applyBackgroundFocus(_ session: BackgroundDeliverySession) async -> Bool {
+        let requiredBooleanSlots = requiredBackgroundFocusBooleanSlots(
+            targetWindow: session.window,
+            targetElement: session.element,
+            previousWindow: session.previouslyFocusedWindow,
+            previousElement: session.previouslyFocusedElement,
+            mode: session.mode
+        )
+        guard session.mode == .preparedTargetedInput,
+              preparedTargetFocusBoundaryIsSafe(session),
+              session.lifecycle.canBegin,
+              session.focusBooleanSnapshot.containsAll(requiredBooleanSlots) else {
+            logger.error("Background exact focus refused before its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
+            return false
+        }
+        let targetPID = session.processIdentifier
+        guard session.lifecycle.begin(open: {
+            CursorPaster.beginTargetedInputSession(pid: targetPID)
+        }) else {
+            logger.error("Background exact focus could not begin its one bounded activation-state session targetPid=\(session.processIdentifier, privacy: .public)")
             return false
         }
 
-        let identity = session.target.identity
-        let identifierMatches = identity?.identifier.map {
-            nonEmptyStringAttribute(kAXIdentifierAttribute, from: element) == $0
-        } ?? true
-        let domIdentifierMatches = identity?.domIdentifier.map {
-            nonEmptyStringAttribute("AXDOMIdentifier", from: element) == $0
-        } ?? true
-        return identifierMatches
-            && domIdentifierMatches
-            && Self.elementGeometryMatches(
-                isSameRetainedWrapper: isSameRetainedWrapper,
-                expectedFrame: session.inputFrame,
-                currentFrame: frame(of: element)
-            )
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        guard preparedTargetFocusBoundaryIsSafe(session) else {
+            logger.error("Background exact focus refused because the target became frontmost during activation-state settlement targetPid=\(session.processIdentifier, privacy: .public)")
+            return false
+        }
+        let appElement = AXUIElementCreateApplication(session.processIdentifier)
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
+        let mainResult = AXUIElementSetAttributeValue(
+            session.window,
+            kAXMainAttribute as CFString,
+            kCFBooleanTrue
+        )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
+        let windowResult = AXUIElementSetAttributeValue(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            session.window
+        )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
+        let windowFocusedResult = AXUIElementSetAttributeValue(
+            session.window,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
+        let elementResult = AXUIElementSetAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            session.element
+        )
+        guard preparedTargetFocusBoundaryIsSafe(session) else { return false }
+        let elementFocusedResult = AXUIElementSetAttributeValue(
+            session.element,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        let actualWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
+        let actualElement = elementAttribute(kAXFocusedUIElementAttribute, from: appElement)
+        // Setter/action return codes are diagnostics, not proof. Electron has
+        // returned success while ignoring events, and some apps report an unsupported
+        // redundant setter after accepting the essential focus change. The verified
+        // live internal window + element and target-not-system-focused check are the
+        // load-bearing conditions. Ethan may move freely between unrelated apps.
+        let verified = actualWindow.map { CFEqual($0, session.window) } == true
+            && actualElement.map { CFEqual($0, session.element) } == true
+            && preparedTargetFocusBoundaryIsSafe(session)
+
+        if !verified {
+            logger.error("Background exact focus verification failed targetPid=\(session.processIdentifier, privacy: .public) expectedWindowHash=\(CFHash(session.window), privacy: .public) actualWindowHash=\(actualWindow.map { String(CFHash($0)) } ?? "nil", privacy: .public) expectedElementHash=\(CFHash(session.element), privacy: .public) actualElementHash=\(actualElement.map { String(CFHash($0)) } ?? "nil", privacy: .public) mainAX=\(mainResult.rawValue, privacy: .public) windowAX=\(windowResult.rawValue, privacy: .public) windowFocusedAX=\(windowFocusedResult.rawValue, privacy: .public) elementAX=\(elementResult.rawValue, privacy: .public) elementFocusedAX=\(elementFocusedResult.rawValue, privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) actualFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        }
+        return verified
     }
 
-    /// Electron/React can replace the composer wrapper after a successful Send. The
-    /// replacement allowance is deliberately post-action and read-only: same process,
-    /// exact saved window, internally focused element, role/subrole, stable IDs, and
-    /// strict geometry. No descendant search or focus setter participates.
-    private func postSubmissionReplacementMatches(
-        _ element: AXUIElement,
-        session: BackgroundDeliverySession
+    private func preparedTargetFocusBoundaryIsSafe(
+        _ session: BackgroundDeliverySession
     ) -> Bool {
-        var pid: pid_t = 0
-        let pidMatches = AXUIElementGetPid(element, &pid) == .success
-            && pid == session.processIdentifier
-        let appElement = AXUIElementCreateApplication(session.processIdentifier)
-        let focusedWindow = elementAttribute(kAXFocusedWindowAttribute, from: appElement)
-        let internallyFocusedElement = elementAttribute(
-            kAXFocusedUIElementAttribute,
-            from: appElement
-        )
-        let identity = session.target.identity
-        let identifierMatches = identity?.identifier.map {
-            nonEmptyStringAttribute(kAXIdentifierAttribute, from: element) == $0
-        } ?? true
-        let domIdentifierMatches = identity?.domIdentifier.map {
-            nonEmptyStringAttribute("AXDOMIdentifier", from: element) == $0
-        } ?? true
+        preparedTargetFocusBoundaryStatus(session) == .safe
+    }
 
-        return Self.postSubmissionReplacementAllowed(
-            sameProcess: pidMatches,
-            sameWindow: focusedWindow.map({
-                CFEqual($0, session.window)
-            }) == true && owningWindow(for: element).map({
-                CFEqual($0, session.window)
-            }) == true,
-            internallyFocused: internallyFocusedElement.map({
-                CFEqual($0, element)
-            }) == true,
-            roleMatches: stringAttribute(kAXRoleAttribute, from: element)
-                == session.inputRole,
-            subroleMatches: stringAttribute(kAXSubroleAttribute, from: element)
-                == session.inputSubrole,
-            stableIdentifierMatches: identifierMatches,
-            domIdentifierMatches: domIdentifierMatches,
-            expectedFrame: session.inputFrame,
-            currentFrame: frame(of: element)
+    private func preparedTargetFocusBoundaryStatus(
+        _ session: BackgroundDeliverySession
+    ) -> BackgroundTeardownBoundaryStatus {
+        guard !session.app.isTerminated else { return .targetTerminated }
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        let systemFocus = systemFocusedElement()
+        if frontmostPID == session.processIdentifier
+            || systemFocus?.pid == session.processIdentifier {
+            return .targetOwnsSystemFocus
+        }
+        guard frontmostPID != nil else { return .frontmostUnavailable }
+        guard systemFocus != nil else { return .systemFocusUnavailable }
+        return .safe
+    }
+
+    private func backgroundFocusBoundaryIsSafeAfterSubmission(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        guard !session.app.isTerminated,
+              let systemFocus = systemFocusedElement() else {
+            return false
+        }
+        switch session.mode {
+        case .preparedTargetedInput, .telegramRetainedExactInput:
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    != session.processIdentifier
+                && systemFocus.pid != session.processIdentifier
+        case .directExactElement:
+            return systemFocus.pid != session.processIdentifier
+                || !CFEqual(systemFocus.element, session.element)
+        }
+    }
+
+    /// Read-only proof for every insertion chunk and irreversible Send boundary.
+    /// It intentionally permits Ethan to move from unrelated app A to B.
+    private func backgroundSessionRemainsPrepared(
+        _ session: BackgroundDeliverySession
+    ) -> Bool {
+        if session.mode == .telegramRetainedExactInput {
+            return telegramDeliveryBoundaryMatches(session)
+        }
+        guard backgroundDeliveryFastBoundaryMatches(session),
+              resolvedExactElement(for: session.target).map({
+                  CFEqual($0, session.element)
+              }) == true,
+              liveWindow(for: session.target, resolvedElement: session.element).map({
+                  CFEqual($0, session.window)
+              }) == true else {
+            return false
+        }
+        return true
+    }
+
+    private func visitBoundedDescendants(
+        of root: AXUIElement,
+        maximumDepth: Int,
+        state: BoundedTraversalState,
+        deadline: TimeInterval,
+        boundary: () -> Bool,
+        visitor: (AXUIElement) -> Bool
+    ) async -> BoundedTraversalResult {
+        var queue: [(AXUIElement, Int)] = [(root, 0)]
+        var cursor = 0
+        var visitedCount = 0
+        var truncated = false
+        while cursor < queue.count {
+            guard boundary() else {
+                return BoundedTraversalResult(completion: .boundaryChanged)
+            }
+            guard !Task.isCancelled else {
+                return BoundedTraversalResult(completion: .cancelled)
+            }
+            guard state.remainingNodeBudget > 0,
+                  ProcessInfo.processInfo.systemUptime < deadline else {
+                return BoundedTraversalResult(completion: .exhausted)
+            }
+            let (element, depth) = queue[cursor]
+            cursor += 1
+            guard state.visitedNodeHashes.insert(CFHash(element)).inserted else {
+                continue
+            }
+            state.remainingNodeBudget -= 1
+            visitedCount += 1
+            guard visitor(element) else {
+                return BoundedTraversalResult(completion: .stoppedByVisitor)
+            }
+            if visitedCount.isMultiple(of: 24) {
+                await Task.yield()
+                guard boundary() else {
+                    return BoundedTraversalResult(completion: .boundaryChanged)
+                }
+            }
+            let children = traversalChildren(of: element, state: state)
+            guard depth < maximumDepth else {
+                if !children.isEmpty { truncated = true }
+                continue
+            }
+            let pendingCount = queue.count - cursor
+            let availableSlots = max(
+                0,
+                state.remainingNodeBudget - pendingCount
+            )
+            if children.count > availableSlots { truncated = true }
+            queue.append(contentsOf: children.prefix(availableSlots).map {
+                ($0, depth + 1)
+            })
+        }
+        guard boundary() else {
+            return BoundedTraversalResult(completion: .boundaryChanged)
+        }
+        return BoundedTraversalResult(
+            completion: truncated ? .exhausted : .completed
+        )
+    }
+
+    static func isAuditedOpenAISubmitBuild(
+        applicationBundleName: String?,
+        bundleIdentifier: String?,
+        shortVersion: String?,
+        build: String?,
+        chromium: String?
+    ) -> Bool {
+        guard bundleIdentifier == "com.openai.codex" else { return false }
+        switch applicationBundleName {
+        case auditedCodexSubmitBuild.applicationBundleName:
+            return shortVersion == auditedCodexSubmitBuild.shortVersion
+                && build == auditedCodexSubmitBuild.build
+                && chromium == auditedCodexSubmitBuild.chromium
+        case "ChatGPT.app":
+            return auditedChatGPTSubmitBuilds.contains { candidate in
+                shortVersion == candidate.shortVersion
+                    && build == candidate.build
+                    && chromium == candidate.chromium
+            }
+        default:
+            return false
+        }
+    }
+
+    static func semanticSendGeometryMatches(
+        editorFrame: CGRect,
+        candidateFrame: CGRect
+    ) -> Bool {
+        guard candidateFrame.width >= 14,
+              candidateFrame.width <= 96,
+              candidateFrame.height >= 14,
+              candidateFrame.height <= 96 else {
+            return false
+        }
+        let center = CGPoint(x: candidateFrame.midX, y: candidateFrame.midY)
+        return editorFrame.insetBy(dx: -360, dy: -320).contains(center)
+    }
+
+    /// Own the action closure inside the final semantic proof so rejected states have
+    /// zero side effects in production and unit tests. The unlabelled exception remains
+    /// valid only when the caller has re-proven the exact audited Codex/ChatGPT app
+    /// name plus build tuple and the button still has no accepted label at this same
+    /// boundary.
+    static func performProvenSemanticSend(
+        isUnambiguous: Bool,
+        pidMatches: Bool,
+        windowMatches: Bool,
+        geometryMatches: Bool,
+        roleMatches: Bool,
+        enabled: Bool,
+        label: String?,
+        labelWasReadable: Bool,
+        allowsAuditedUnlabelledSend: Bool,
+        hasPressAction: Bool,
+        boundaryMatches: Bool,
+        action: () -> Int32
+    ) -> NearbySubmitButtonResult {
+        guard isProvenSemanticSendBoundary(
+            isUnambiguous: isUnambiguous,
+            pidMatches: pidMatches,
+            windowMatches: windowMatches,
+            geometryMatches: geometryMatches,
+            roleMatches: roleMatches,
+            enabled: enabled,
+            label: label,
+            labelWasReadable: labelWasReadable,
+            allowsAuditedUnlabelledSend: allowsAuditedUnlabelledSend,
+            hasPressAction: hasPressAction,
+            boundaryMatches: boundaryMatches
+        ) else {
+            return .unavailable
+        }
+        let result = action()
+        return result == AXError.success.rawValue
+            ? .pressed
+            : .failed(result)
+    }
+
+    static func isProvenSemanticSendBoundary(
+        isUnambiguous: Bool,
+        pidMatches: Bool,
+        windowMatches: Bool,
+        geometryMatches: Bool,
+        roleMatches: Bool,
+        enabled: Bool,
+        label: String?,
+        labelWasReadable: Bool,
+        allowsAuditedUnlabelledSend: Bool,
+        hasPressAction: Bool,
+        boundaryMatches: Bool
+    ) -> Bool {
+        isUnambiguous
+            && pidMatches
+            && windowMatches
+            && geometryMatches
+            && roleMatches
+            && enabled
+            && labelWasReadable
+            && (isProvenSemanticSendLabel(label)
+                || (allowsAuditedUnlabelledSend && label == nil))
+            && hasPressAction
+            && boundaryMatches
+    }
+
+    static func isProvenSemanticSendLabel(_ label: String?) -> Bool {
+        guard let label else { return false }
+        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "send", "send message", "send follow-up", "submit":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func matchesAuditedOpenAISubmitBuild(
+        _ app: NSRunningApplication
+    ) -> Bool {
+        guard let bundleURL = app.bundleURL,
+              let bundle = Bundle(url: bundleURL) else {
+            return false
+        }
+        return isAuditedOpenAISubmitBuild(
+            applicationBundleName: bundleURL.lastPathComponent,
+            bundleIdentifier: bundle.bundleIdentifier,
+            shortVersion: bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String,
+            build: bundle.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String,
+            chromium: bundle.object(
+                forInfoDictionaryKey: "ChromiumBaseVersion"
+            ) as? String
+        )
+    }
+
+    private static func applicationIdentitySnapshot(
+        for app: NSRunningApplication
+    ) -> ApplicationIdentitySnapshot {
+        let bundleURL = app.bundleURL
+        let bundle = bundleURL.flatMap(Bundle.init(url:))
+        return ApplicationIdentitySnapshot(
+            applicationBundleName: bundleURL?.lastPathComponent ?? "unknown",
+            bundleIdentifier: bundle?.bundleIdentifier ?? "unknown",
+            shortVersion: bundle?.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "unknown",
+            build: bundle?.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String ?? "unknown",
+            chromium: bundle?.object(
+                forInfoDictionaryKey: "ChromiumBaseVersion"
+            ) as? String ?? "unknown"
+        )
+    }
+
+    /// Telegram's current parentless composer has no AX chat anchors. Start a
+    /// capture-time header fingerprint only for the exact audited app tuple and AX
+    /// window ID. The capture runs off the decision path, stores only a digest, and
+    /// later fails closed if Screen Recording is unavailable or the header changes.
+    private func makeTelegramVisualIdentityCapture(
+        app: NSRunningApplication,
+        window: AXUIElement
+    ) -> TelegramWindowVisualIdentityCapture? {
+        guard Self.isTelegram(bundleIdentifier: app.bundleIdentifier) else {
+            return nil
+        }
+        let snapshot = Self.applicationIdentitySnapshot(for: app)
+        let tuple = TelegramWindowVisualIdentity.ApplicationTuple(
+            applicationBundleName: snapshot.applicationBundleName,
+            bundleIdentifier: snapshot.bundleIdentifier,
+            shortVersion: snapshot.shortVersion,
+            build: snapshot.build
+        )
+        guard TelegramWindowVisualIdentityService.isAudited(tuple) else {
+            logger.notice("Telegram visual identity capture refused unaudited app tuple version=\(snapshot.shortVersion, privacy: .public) build=\(snapshot.build, privacy: .public)")
+            return nil
+        }
+        guard let windowID = SkyLightTargetedMouseEventPost.windowID(for: window) else {
+            logger.notice("Telegram visual identity capture could not resolve the exact AX window ID pid=\(app.processIdentifier, privacy: .public)")
+            return nil
+        }
+        return TelegramWindowVisualIdentityCapture(
+            applicationTuple: tuple,
+            processIdentifier: app.processIdentifier,
+            windowID: windowID
         )
     }
 
@@ -1778,6 +2938,23 @@ final class FocusLockService: ObservableObject {
         return (element, pid)
     }
 
+    /// A modifier/media-key transition can briefly make the system-wide focused-element
+    /// read unavailable even though both the saved target and Ethan's foreground app
+    /// are still valid. This retry is read-only and tightly bounded: it never activates
+    /// an app, rewrites focus, or retries any irreversible delivery action.
+    private func systemFocusedElementWithBoundedRetry()
+        async -> (element: AXUIElement, pid: pid_t)? {
+        let attempts = 3
+        for attempt in 0..<attempts {
+            if let focused = systemFocusedElement() {
+                return focused
+            }
+            guard attempt + 1 < attempts else { break }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return nil
+    }
+
     private func liveElement(
         for target: Target,
         allowApplicationFallback: Bool
@@ -1793,44 +2970,165 @@ final class FocusLockService: ObservableObject {
         return focused.element
     }
 
+    private func replaceForegroundRealtimeDraft(
+        _ replacement: String,
+        ownership: RealtimeInputDraftOwnership,
+        element: AXUIElement
+    ) -> RealtimeDraftMutationResult {
+        guard let currentValue = stringAttribute(
+            kAXValueAttribute,
+            from: element
+        ) else {
+            return .unavailableBeforeMutation
+        }
+        guard ownership.textRange.ownedSubstringMatches(in: currentValue),
+              let expectedValue = ownership.textRange.replacingOwnedText(
+                in: currentValue,
+                with: replacement
+              ) else {
+            return .ownershipConflict
+        }
+        let updated = RealtimeInputDraftOwnership(
+            id: ownership.id,
+            target: ownership.target,
+            textRange: ownership.textRange.replacingInsertedText(
+                with: replacement
+            )
+        )
+        if expectedValue == currentValue {
+            return .applied(updated)
+        }
+        guard isAttributeSettable(kAXSelectedTextRangeAttribute, on: element),
+              isAttributeSettable(kAXSelectedTextAttribute, on: element),
+              targetOwnsSystemKeyboardFocus(ownership.target) else {
+            return .unavailableBeforeMutation
+        }
+        guard setSelectedTextRange(
+                ownership.textRange.nsRange,
+                on: element
+              ) else {
+            return .indeterminateAfterMutation
+        }
+        guard targetOwnsSystemKeyboardFocus(ownership.target),
+              stringAttribute(kAXValueAttribute, from: element) == currentValue else {
+            return .indeterminateAfterMutation
+        }
+
+        _ = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            replacement as CFString
+        )
+        if stringAttribute(kAXValueAttribute, from: element) == expectedValue {
+            return .applied(updated)
+        }
+        return .indeterminateAfterMutation
+    }
+
+    private func selectedTextRange(from element: AXUIElement) -> NSRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+        let value,
+        CFGetTypeID(value) == AXValueGetTypeID() else {
+            return nil
+        }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else {
+            return nil
+        }
+        return NSRange(location: range.location, length: range.length)
+    }
+
+    private func setSelectedTextRange(
+        _ range: NSRange,
+        on element: AXUIElement
+    ) -> Bool {
+        var cfRange = CFRange(location: range.location, length: range.length)
+        guard let value = AXValueCreate(.cfRange, &cfRange) else {
+            return false
+        }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
+    }
+
+    private func isAttributeSettable(
+        _ attribute: String,
+        on element: AXUIElement
+    ) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element,
+            attribute as CFString,
+            &settable
+        ) == .success && settable.boolValue
+    }
+
     private func resolvedExactElement(for target: Target) -> AXUIElement? {
         let savedWindow = liveWindow(for: target, resolvedElement: nil)
         let directContextMatches = target.identity.map { identity in
-            let currentContext = savedWindow.map {
-                contextFingerprint(
-                    in: $0,
-                    region: identity.contextRegion,
-                    excluding: Self.isTelegram(bundleIdentifier: target.bundleIdentifier)
-                        ? target.element
-                        : nil,
+            if Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
+               identity.contextAnchors.isEmpty {
+                return false
+            }
+            guard !identity.contextAnchors.isEmpty else { return true }
+            guard let savedWindow else { return false }
+            let currentContext = contextAnchors(
+                in: savedWindow,
+                region: identity.contextRegion,
+                excluding: Self.isTelegram(
                     bundleIdentifier: target.bundleIdentifier
+                ) ? target.element : nil
+            )
+            if Self.isTelegram(bundleIdentifier: target.bundleIdentifier) {
+                return Self.telegramContextFingerprintMatches(
+                    captured: identity.contextAnchors,
+                    current: currentContext
                 )
-            } ?? ContextAnchorSelection(primary: [], secondary: [])
-            return Self.directCapturedElementContextAllowed(
-                bundleIdentifier: target.bundleIdentifier,
-                hasStableIdentifier: identity.identifier != nil
-                    || identity.domIdentifier != nil,
-                capturedPrimaryContextAnchors: identity.primaryContextAnchors,
-                capturedContextAnchors: identity.contextAnchors,
-                currentPrimaryContextAnchors: currentContext.primary,
-                currentContextAnchors: currentContext.secondary
+            }
+            return Self.contextFingerprintMatches(
+                captured: identity.contextAnchors,
+                current: currentContext
             )
         } ?? true
 
         if let element = target.element,
-           let identity = target.identity,
-           let savedWindow,
-           directContextMatches,
-           exactStructureMatches(element, identity: identity, in: savedWindow) {
-            return element
+           directContextMatches {
+            let role = stringAttribute(kAXRoleAttribute, from: element)
+            let subrole = stringAttribute(kAXSubroleAttribute, from: element)
+            let belongsToSavedWindow = savedWindow.map { savedWindow in
+                exactElement(
+                    element,
+                    belongsTo: savedWindow,
+                    bundleIdentifier: target.bundleIdentifier
+                )
+            } ?? true
+            let telegramStructureMatches = !Self.isTelegram(
+                bundleIdentifier: target.bundleIdentifier
+            ) || target.identity.flatMap { identity in
+                savedWindow.map {
+                    exactStructureMatches(element, identity: identity, in: $0)
+                }
+            } == true
+            if belongsToSavedWindow,
+               telegramStructureMatches,
+               isEditableInput(role: role, subrole: subrole) {
+                return element
+            }
         }
 
         guard let identity = target.identity,
               let window = savedWindow,
               exactInputContextMatches(
-                identity,
-                in: window,
-                bundleIdentifier: target.bundleIdentifier
+                  identity,
+                  in: window,
+                  bundleIdentifier: target.bundleIdentifier
               ) else {
             return nil
         }
@@ -1891,84 +3189,35 @@ final class FocusLockService: ObservableObject {
         return labelMatches.count == 1 ? labelMatches[0] : nil
     }
 
-    /// Failure telemetry intentionally reports only booleans, counts, roles, and AX
-    /// hashes—never chat titles or message text. This distinguishes an empty/mismatched
-    /// Telegram context from a stale window, replaced wrapper, or ambiguous editor tree
-    /// without leaking the user's conversation into unified logs.
-    private func exactInputResolutionDiagnostics(for target: Target) -> String {
-        let savedWindow = liveWindow(for: target, resolvedElement: nil)
-        let identity = target.identity
-        let currentContext: ContextAnchorSelection = if let savedWindow, let identity {
-            contextFingerprint(
-                in: savedWindow,
-                region: identity.contextRegion,
-                excluding: Self.isTelegram(bundleIdentifier: target.bundleIdentifier)
-                    ? target.element
-                    : nil,
-                bundleIdentifier: target.bundleIdentifier
-            )
-        } else {
-            ContextAnchorSelection(primary: [], secondary: [])
-        }
-        let directContextMatches = identity.map {
-            Self.directCapturedElementContextAllowed(
-                bundleIdentifier: target.bundleIdentifier,
-                hasStableIdentifier: $0.identifier != nil || $0.domIdentifier != nil,
-                capturedPrimaryContextAnchors: $0.primaryContextAnchors,
-                capturedContextAnchors: $0.contextAnchors,
-                currentPrimaryContextAnchors: currentContext.primary,
-                currentContextAnchors: currentContext.secondary
-            )
-        } ?? false
-        let currentContextSet = Set(currentContext.secondary)
-        let contextMatchCount = identity?.contextAnchors.reduce(into: 0) { count, anchor in
-            if currentContextSet.contains(anchor) { count += 1 }
-        } ?? 0
-        let directStructureMatches = if let element = target.element,
-                                        let identity,
-                                        let savedWindow {
-            exactStructureMatches(element, identity: identity, in: savedWindow)
-        } else {
-            false
-        }
-        let matchingRoleCandidateCount = if let identity, let savedWindow {
-            descendants(of: savedWindow).filter { element in
-                let role = stringAttribute(kAXRoleAttribute, from: element)
-                let subrole = stringAttribute(kAXSubroleAttribute, from: element)
-                return role == identity.role
-                    && subrole == identity.subrole
-                    && isEditableInput(role: role, subrole: subrole)
-            }.count
-        } else {
-            0
-        }
-        let focused = systemFocusedElement()
-        let currentFocusMatchesSaved = if let focused, let savedElement = target.element {
-            focused.pid == target.pid && CFEqual(focused.element, savedElement)
-        } else {
-            false
-        }
-        return "bundle=\(target.bundleIdentifier ?? "nil") savedWindow=\(savedWindow != nil) identity=\(identity != nil) capturedPrimary=\(identity?.primaryContextAnchors.count ?? 0) currentPrimary=\(currentContext.primary.count) capturedSecondary=\(identity?.contextAnchors.count ?? 0) currentSecondary=\(currentContext.secondary.count) matchedSecondary=\(contextMatchCount) directContext=\(directContextMatches) directStructure=\(directStructureMatches) roleCandidates=\(matchingRoleCandidateCount) currentFocusPid=\(focused?.pid ?? -1) currentFocusMatchesSaved=\(currentFocusMatchesSaved)"
-    }
-
     private func exactStructureMatches(
         _ element: AXUIElement,
         identity: ExactInputIdentity,
         in window: AXUIElement
     ) -> Bool {
         guard stringAttribute(kAXRoleAttribute, from: element) == identity.role,
-              stringAttribute(kAXSubroleAttribute, from: element) == identity.subrole,
-              owningWindow(for: element).map({ CFEqual($0, window) }) == true,
-              ancestorPath(from: element, through: window) == identity.ancestorPath,
-              isEditableInput(role: identity.role, subrole: identity.subrole) else {
+              stringAttribute(kAXSubroleAttribute, from: element)
+                == identity.subrole,
+              exactElement(
+                  element,
+                  belongsTo: window,
+                  bundleIdentifier: nil
+              ),
+              ancestorPath(from: element, through: window)
+                == identity.ancestorPath,
+              isEditableInput(
+                  role: identity.role,
+                  subrole: identity.subrole
+              ) else {
             return false
         }
         if let identifier = identity.identifier,
-           nonEmptyStringAttribute(kAXIdentifierAttribute, from: element) != identifier {
+           nonEmptyStringAttribute(kAXIdentifierAttribute, from: element)
+                != identifier {
             return false
         }
         if let domIdentifier = identity.domIdentifier,
-           nonEmptyStringAttribute("AXDOMIdentifier", from: element) != domIdentifier {
+           nonEmptyStringAttribute("AXDOMIdentifier", from: element)
+                != domIdentifier {
             return false
         }
         return true
@@ -1991,17 +3240,10 @@ final class FocusLockService: ObservableObject {
 
     private func exactInputIdentity(
         for element: AXUIElement,
-        in window: AXUIElement,
-        bundleIdentifier: String?
+        in window: AXUIElement
     ) -> ExactInputIdentity? {
         guard let role = stringAttribute(kAXRoleAttribute, from: element) else { return nil }
         let contextRegion = contentRegion(for: element, in: window)
-        let context = contextFingerprint(
-            in: window,
-            region: contextRegion,
-            excluding: element,
-            bundleIdentifier: bundleIdentifier
-        )
         return ExactInputIdentity(
             role: role,
             subrole: stringAttribute(kAXSubroleAttribute, from: element),
@@ -2013,8 +3255,11 @@ final class FocusLockService: ObservableObject {
             relativeFrame: relativeFrame(of: element, in: window),
             ancestorPath: ancestorPath(from: element, through: window),
             contextRegion: contextRegion,
-            primaryContextAnchors: context.primary,
-            contextAnchors: context.secondary
+            contextAnchors: contextAnchors(
+                in: window,
+                region: contextRegion,
+                excluding: element
+            )
         )
     }
 
@@ -2023,22 +3268,10 @@ final class FocusLockService: ObservableObject {
         in window: AXUIElement,
         bundleIdentifier: String?
     ) -> Bool {
-        if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
-            guard !identity.primaryContextAnchors.isEmpty else { return false }
-            let current = contextFingerprint(
-                in: window,
-                region: identity.contextRegion,
-                excluding: nil,
-                bundleIdentifier: bundleIdentifier
-            )
-            return Self.telegramContextFingerprintMatches(
-                capturedPrimary: identity.primaryContextAnchors,
-                capturedSecondary: identity.contextAnchors,
-                currentPrimary: current.primary,
-                currentSecondary: current.secondary
-            )
-        }
         if identity.contextAnchors.isEmpty {
+            if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
+                return false
+            }
             // Stable AX/DOM identifiers can safely re-resolve without document text.
             // With neither identifiers nor context, an existing exact AX wrapper is
             // still usable, but frame/path-only stale-wrapper recovery is unsafe: a
@@ -2049,43 +3282,17 @@ final class FocusLockService: ObservableObject {
         let currentContext = contextAnchors(
             in: window,
             region: identity.contextRegion,
-            excluding: nil,
-            bundleIdentifier: bundleIdentifier
+            excluding: nil
         )
+        if Self.isTelegram(bundleIdentifier: bundleIdentifier) {
+            return Self.telegramContextFingerprintMatches(
+                captured: identity.contextAnchors,
+                current: currentContext
+            )
+        }
         return Self.contextFingerprintMatches(
             captured: identity.contextAnchors,
             current: currentContext
-        )
-    }
-
-    static func directCapturedElementContextAllowed(
-        bundleIdentifier: String?,
-        hasStableIdentifier: Bool = false,
-        capturedPrimaryContextAnchors: [String] = [],
-        capturedContextAnchors: [String],
-        currentPrimaryContextAnchors: [String] = [],
-        currentContextAnchors: [String]
-    ) -> Bool {
-        if isTelegram(bundleIdentifier: bundleIdentifier) {
-            return telegramContextFingerprintMatches(
-                capturedPrimary: capturedPrimaryContextAnchors,
-                capturedSecondary: capturedContextAnchors,
-                currentPrimary: currentPrimaryContextAnchors,
-                currentSecondary: currentContextAnchors
-            )
-        }
-        if capturedContextAnchors.isEmpty {
-            guard let bundleIdentifier else { return true }
-            if exactWrapperRequiresIdentityOrContextBundleIdentifiers.contains(
-                bundleIdentifier
-            ) {
-                return hasStableIdentifier
-            }
-            return true
-        }
-        return contextFingerprintMatches(
-            captured: capturedContextAnchors,
-            current: currentContextAnchors
         )
     }
 
@@ -2104,35 +3311,18 @@ final class FocusLockService: ObservableObject {
     private func contextAnchors(
         in window: AXUIElement,
         region: CGRect?,
-        excluding excludedElement: AXUIElement?,
-        bundleIdentifier: String?
+        excluding excludedElement: AXUIElement?
     ) -> [String] {
-        let fingerprint = contextFingerprint(
-            in: window,
-            region: region,
-            excluding: excludedElement,
-            bundleIdentifier: bundleIdentifier
-        )
-        return fingerprint.primary + fingerprint.secondary
-    }
-
-    private func contextFingerprint(
-        in window: AXUIElement,
-        region: CGRect?,
-        excluding excludedElement: AXUIElement?,
-        bundleIdentifier: String?
-    ) -> ContextAnchorSelection {
-        var candidates: [ContextAnchorCandidate] = []
+        var anchors: [String] = []
+        var seen = Set<String>()
         for element in descendants(of: window) {
             if let excludedElement, CFEqual(element, excludedElement) { continue }
-            let elementFrame = relativeFrame(of: element, in: window)
-            if let region {
-                guard let elementFrame, region.intersects(elementFrame) else {
-                    continue
-                }
+            if let region,
+               let elementFrame = relativeFrame(of: element, in: window),
+               !region.intersects(elementFrame) {
+                continue
             }
-            let role = stringAttribute(kAXRoleAttribute, from: element)
-            switch role {
+            switch stringAttribute(kAXRoleAttribute, from: element) {
             case kAXStaticTextRole, kAXTextAreaRole, kAXTextFieldRole:
                 break
             default:
@@ -2144,138 +3334,17 @@ final class FocusLockService: ObservableObject {
             let normalized = rawValue
                 .split(whereSeparator: { $0.isWhitespace })
                 .joined(separator: " ")
-            guard Self.contextAnchorIsEligible(
-                    normalized,
-                    role: role,
-                    bundleIdentifier: bundleIdentifier
-                  ),
+            guard normalized.count >= 20,
                   normalized != "Ask for follow-up changes",
                   normalized != "Do anything" else {
                 continue
             }
             let anchor = String(normalized.prefix(180))
-            let isTelegramPrimary = Self.isTelegram(
-                bundleIdentifier: bundleIdentifier
-            )
-                && role == kAXStaticTextRole
-                && elementFrame != nil
-                && !hasAncestor(
-                    element,
-                    role: kAXScrollAreaRole,
-                    stoppingAt: window
-                )
-            candidates.append(ContextAnchorCandidate(
-                value: anchor,
-                isPrimary: isTelegramPrimary
-            ))
-        }
-        return Self.selectContextAnchors(candidates, limit: 16)
-    }
-
-    /// Reserve bounded slots for non-scroll Telegram header/title text before sorting
-    /// secondary message anchors. This makes a short selected-chat title survive a
-    /// populated history and keeps the same words inside message text from pretending
-    /// to be the selected title. Generic apps simply receive secondary anchors.
-    static func selectContextAnchors(
-        _ candidates: [ContextAnchorCandidate],
-        limit: Int
-    ) -> ContextAnchorSelection {
-        guard limit > 0 else {
-            return ContextAnchorSelection(primary: [], secondary: [])
-        }
-        var primarySeen = Set<String>()
-        let primary = Array(
-            candidates
-                .filter {
-                    $0.isPrimary
-                        && !$0.value.isEmpty
-                        && primarySeen.insert($0.value).inserted
-                }
-                .prefix(min(4, limit))
-                .map(\.value)
-        )
-        let primarySet = Set(primary)
-        var secondarySeen = Set<String>()
-        let secondary = Array(
-            candidates
-                .filter {
-                    !$0.isPrimary
-                        && !$0.value.isEmpty
-                        && !primarySet.contains($0.value)
-                        && secondarySeen.insert($0.value).inserted
-                }
-                .sorted { $0.value.count > $1.value.count }
-                .prefix(max(0, limit - primary.count))
-                .map(\.value)
-        )
-        return ContextAnchorSelection(primary: primary, secondary: secondary)
-    }
-
-    /// Telegram can expose an otherwise empty chat with only a short selected-chat
-    /// title. Generic collection historically discarded every value under 20
-    /// characters, so "Saved Messages" had no readable identity and every foreground
-    /// primary stop failed closed. Admit short values only when they are static text and
-    /// do not look like volatile status or generic app chrome. These short anchors are
-    /// then mandatory in `telegramContextFingerprintMatches`, preserving wrong-chat
-    /// rejection. Other apps retain the established 20-character threshold.
-    static func contextAnchorIsEligible(
-        _ normalized: String,
-        role: String?,
-        bundleIdentifier: String?
-    ) -> Bool {
-        guard isTelegram(bundleIdentifier: bundleIdentifier) else {
-            return normalized.count >= 20
-        }
-        let lowercased = normalized.lowercased()
-        guard !telegramGenericContextLabels.contains(lowercased),
-              !telegramVolatileContextPrefixes.contains(where: {
-                lowercased.hasPrefix($0)
-              }),
-              !telegramContextLooksVolatile(lowercased),
-              lowercased.contains(where: { $0.isLetter }) else {
-            return false
-        }
-        if normalized.count >= 20 { return true }
-        return role == kAXStaticTextRole && normalized.count >= 4
-    }
-
-    private static func telegramContextLooksVolatile(_ lowercased: String) -> Bool {
-        if lowercased.contains(" members")
-            || lowercased.contains(" member")
-            || lowercased.contains(" subscribers")
-            || lowercased.contains(" subscriber")
-            || lowercased.contains(" participants")
-            || lowercased.contains(" participant")
-            || lowercased.hasSuffix(" online") {
-            return true
-        }
-        let dateOrTimeCharacters = CharacterSet.decimalDigits.union(
-            CharacterSet(charactersIn: ":/.-")
-        )
-        let scalars = lowercased.unicodeScalars
-        return !scalars.isEmpty
-            && scalars.allSatisfy {
-                dateOrTimeCharacters.contains($0) || CharacterSet.whitespaces.contains($0)
+            if seen.insert(anchor).inserted {
+                anchors.append(anchor)
             }
-    }
-
-    private func hasAncestor(
-        _ element: AXUIElement,
-        role: String,
-        stoppingAt boundary: AXUIElement
-    ) -> Bool {
-        var current = elementAttribute(kAXParentAttribute, from: element)
-        for _ in 0..<30 {
-            guard let candidate = current,
-                  !CFEqual(candidate, boundary) else {
-                return false
-            }
-            if stringAttribute(kAXRoleAttribute, from: candidate) == role {
-                return true
-            }
-            current = elementAttribute(kAXParentAttribute, from: candidate)
         }
-        return false
+        return Array(anchors.sorted { $0.count > $1.count }.prefix(16))
     }
 
     private func contentRegion(
@@ -2316,6 +3385,100 @@ final class FocusLockService: ObservableObject {
         return nil
     }
 
+    /// Resolve a capture-time window without weakening exact-input ownership. Most
+    /// apps expose AXWindow/AXParent directly. Telegram may expose a standalone
+    /// composer, so only its already-frontmost process may use one unique enclosing
+    /// AXWindow from that same PID. This fallback never runs during later delivery.
+    private func captureWindow(
+        for element: AXUIElement,
+        pid: pid_t,
+        bundleIdentifier: String?
+    ) -> AXUIElement? {
+        if let window = owningWindow(for: element) {
+            return window
+        }
+        guard Self.isTelegram(bundleIdentifier: bundleIdentifier),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let elementFrame = frame(of: element) else {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        let windows = elementArrayAttribute(kAXWindowsAttribute, from: appElement)
+            .filter {
+                stringAttribute(kAXRoleAttribute, from: $0) == kAXWindowRole
+            }
+        let windowFrames = windows.map { frame(of: $0) }
+        guard let selectedIndex = Self.uniqueContainingWindowIndex(
+            elementFrame: elementFrame,
+            windowFrames: windowFrames
+        ) else {
+            logger.notice("Telegram capture could not identify one enclosing app window pid=\(pid, privacy: .public) windows=\(windows.count, privacy: .public) enclosing=\(windowFrames.compactMap { $0 }.filter { $0.insetBy(dx: -2, dy: -2).contains(elementFrame) }.count, privacy: .public)")
+            return nil
+        }
+        let selected = windows[selectedIndex]
+        var selectedPID: pid_t = 0
+        guard AXUIElementGetPid(selected, &selectedPID) == .success,
+              selectedPID == pid else {
+            return nil
+        }
+        let navigationChildren = elementArrayAttribute(
+            "AXChildrenInNavigationOrder",
+            from: selected
+        ).count
+        let children = elementArrayAttribute(
+            kAXChildrenAttribute,
+            from: selected
+        ).count
+        logger.notice("Telegram capture selected unique enclosing app window pid=\(pid, privacy: .public) windowHash=\(CFHash(selected), privacy: .public) children=\(children, privacy: .public) navigationChildren=\(navigationChildren, privacy: .public)")
+        return selected
+    }
+
+    static func uniqueContainingWindowIndex(
+        elementFrame: CGRect,
+        windowFrames: [CGRect?]
+    ) -> Int? {
+        let matches = windowFrames.indices.filter { index in
+            windowFrames[index]?.insetBy(dx: -2, dy: -2)
+                .contains(elementFrame) == true
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// Telegram's parentless composer cannot prove its window through AXParent. Its
+    /// replay-safe substitute is stricter than geometry alone: the saved window must
+    /// remain the sole same-PID AXWindow enclosing the exact retained editor. Chat
+    /// context and Telegram-internal focus are checked separately before every action.
+    private func exactElement(
+        _ element: AXUIElement,
+        belongsTo window: AXUIElement,
+        bundleIdentifier: String?
+    ) -> Bool {
+        if owningWindow(for: element).map({ CFEqual($0, window) }) == true {
+            return true
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              Self.isTelegram(
+                  bundleIdentifier: bundleIdentifier
+                      ?? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+              ),
+              let elementFrame = frame(of: element) else {
+            return false
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        let windows = elementArrayAttribute(kAXWindowsAttribute, from: appElement)
+            .filter {
+                stringAttribute(kAXRoleAttribute, from: $0) == kAXWindowRole
+            }
+        guard let selectedIndex = Self.uniqueContainingWindowIndex(
+            elementFrame: elementFrame,
+            windowFrames: windows.map { frame(of: $0) }
+        ) else {
+            return false
+        }
+        return CFEqual(windows[selectedIndex], window)
+    }
+
     private func descendants(of root: AXUIElement, maximumDepth: Int = 40) -> [AXUIElement] {
         var result: [AXUIElement] = []
         var queue: [(AXUIElement, Int)] = [(root, 0)]
@@ -2326,40 +3489,6 @@ final class FocusLockService: ObservableObject {
             cursor += 1
             guard seen.insert(CFHash(element)).inserted else { continue }
             result.append(element)
-            guard depth < maximumDepth else { continue }
-            for child in elementArrayAttribute(kAXChildrenAttribute, from: element) {
-                queue.append((child, depth + 1))
-            }
-        }
-        return result
-    }
-
-    /// Traverse only new nodes inside the semantic-Send search's shared node/time
-    /// budget. Outer composer ancestors overlap inner ones heavily; the cross-ancestor
-    /// hash set prevents repeatedly walking the same React subtree while still allowing
-    /// a larger framed ancestor to contribute previously unseen sibling controls.
-    private func boundedDescendants(
-        of root: AXUIElement,
-        maximumDepth: Int,
-        remainingNodeBudget: inout Int,
-        visitedNodeHashes: inout Set<CFHashCode>,
-        deadline: TimeInterval
-    ) -> [(AXUIElement, Int)] {
-        var result: [(AXUIElement, Int)] = []
-        var queue: [(AXUIElement, Int)] = [(root, 0)]
-        var cursor = 0
-        while cursor < queue.count,
-              remainingNodeBudget > 0,
-              ProcessInfo.processInfo.systemUptime < deadline {
-            let (element, depth) = queue[cursor]
-            cursor += 1
-            let hash = CFHash(element)
-            guard visitedNodeHashes.insert(hash).inserted else {
-                // A prior, nearer ancestor already traversed this whole bounded subtree.
-                continue
-            }
-            remainingNodeBudget -= 1
-            result.append((element, depth))
             guard depth < maximumDepth else { continue }
             for child in elementArrayAttribute(kAXChildrenAttribute, from: element) {
                 queue.append((child, depth + 1))
@@ -2424,6 +3553,30 @@ final class FocusLockService: ObservableObject {
         return attributeElement
     }
 
+    private func elementReferenceAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> ElementReferenceRead {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        )
+        switch result {
+        case .success:
+            guard let value else { return .absent }
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                return .failed(AXError.illegalArgument.rawValue)
+            }
+            return .value(value as! AXUIElement)
+        case .noValue:
+            return .absent
+        default:
+            return .failed(result.rawValue)
+        }
+    }
+
     private func elementArrayAttribute(_ attribute: String, from element: AXUIElement) -> [AXUIElement] {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
@@ -2433,13 +3586,45 @@ final class FocusLockService: ObservableObject {
         return elements
     }
 
-    private func actionNames(from element: AXUIElement) -> [String] {
-        var names: CFArray?
-        guard AXUIElementCopyActionNames(element, &names) == .success,
-              let names else {
-            return []
+    /// Chromium can publish FooterActions only through navigation order even while it
+    /// also exposes a populated but incomplete ordinary child list. Start with the
+    /// compact navigation order, then merge visible and ordinary children, deduplicated
+    /// by AX identity. The existing node/depth/deadline bounds still cap the walk.
+    static func mergedTraversalChildren<Element>(
+        visible: [Element],
+        ordinary: [Element],
+        navigationOrder: [Element],
+        areEquivalent: (Element, Element) -> Bool
+    ) -> [Element] {
+        var merged: [Element] = []
+        for candidate in navigationOrder + visible + ordinary where
+            !merged.contains(where: { areEquivalent($0, candidate) }) {
+            merged.append(candidate)
         }
-        return names as? [String] ?? []
+        return merged
+    }
+
+    private func traversalChildren(
+        of element: AXUIElement,
+        state: BoundedTraversalState
+    ) -> [AXUIElement] {
+        let visible = elementArrayAttribute(kAXVisibleChildrenAttribute, from: element)
+        let ordinary = elementArrayAttribute(kAXChildrenAttribute, from: element)
+        let navigationOrder = elementArrayAttribute(
+            "AXChildrenInNavigationOrder",
+            from: element
+        )
+        let merged = Self.mergedTraversalChildren(
+            visible: visible,
+            ordinary: ordinary,
+            navigationOrder: navigationOrder,
+            areEquivalent: { CFEqual($0, $1) }
+        )
+        state.navigationChildEdges += navigationOrder.count
+        state.visibleChildEdges += visible.count
+        state.ordinaryChildEdges += ordinary.count
+        state.mergedChildEdges += merged.count
+        return merged
     }
 
     private func boolAttribute(_ attribute: String, from element: AXUIElement) -> Bool? {
@@ -2450,60 +3635,40 @@ final class FocusLockService: ObservableObject {
         return value as? Bool
     }
 
-    private func submitLabel(for element: AXUIElement) -> String? {
-        [
-            kAXDescriptionAttribute,
-            kAXTitleAttribute,
-            kAXHelpAttribute,
-            kAXIdentifierAttribute
-        ]
-            .lazy
-            .compactMap { self.stringAttribute($0, from: element) }
-            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private func submitLabelState(for element: AXUIElement) -> SubmitLabelState {
+        for attribute in [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute] {
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(
+                element,
+                attribute as CFString,
+                &value
+            )
+            switch result {
+            case .success:
+                guard let value else { continue }
+                guard let string = value as? String else { return .unreadable }
+                let normalized = string.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !normalized.isEmpty {
+                    return .labelled(normalized.lowercased())
+                }
+            case .noValue, .attributeUnsupported:
+                continue
+            default:
+                return .unreadable
+            }
+        }
+        return .unlabelled
     }
 
-    static func isProvenSemanticSendLabel(_ label: String?) -> Bool {
-        guard let label else { return false }
-        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "send", "send message", "send follow-up", "submit", "send-button", "sendbutton":
-            return true
-        default:
+    private func supportsPressAction(_ element: AXUIElement) -> Bool {
+        var actionNames: CFArray?
+        guard AXUIElementCopyActionNames(element, &actionNames) == .success,
+              let names = actionNames as? [String] else {
             return false
         }
-    }
-
-    /// The final semantic-Send gate owns the action closure, making it impossible for
-    /// an ambiguous, stale, wrong-process, wrong-window, unlabelled, or boundary-lost
-    /// candidate to invoke AXPress. Production supplies AXUIElementPerformAction;
-    /// regression tests supply a counter and assert rejected candidates perform zero
-    /// side effects.
-    static func performProvenSemanticSend(
-        isUnambiguous: Bool,
-        pidMatches: Bool,
-        windowMatches: Bool,
-        geometryMatches: Bool,
-        roleMatches: Bool,
-        enabled: Bool,
-        label: String?,
-        hasPressAction: Bool,
-        boundaryMatches: Bool,
-        action: () -> Int32
-    ) -> NearbySubmitButtonResult {
-        guard isUnambiguous,
-              pidMatches,
-              windowMatches,
-              geometryMatches,
-              roleMatches,
-              enabled,
-              isProvenSemanticSendLabel(label),
-              hasPressAction,
-              boundaryMatches else {
-            return .unavailable
-        }
-        let result = action()
-        return result == AXError.success.rawValue
-            ? .pressed
-            : .failed(result)
+        return names.contains(kAXPressAction as String)
     }
 
     private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {

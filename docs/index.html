@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0d12">
-  <meta name="description" content="VoiceInk++ is Ethan's opinionated macOS voice-to-text workflow for Codex and Claude Code: speak, choose the exact destination, and keep moving.">
+  <meta name="description" content="VoiceInk++ writes realtime speech directly into your Mac input, lets one mouse button lock where it lands, and keeps Codex workflows moving.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="VoiceInk++ — Become Jarvis">
-  <meta property="og:description" content="Voice directly into Codex or Claude Code. Keep it moving. Not a second of waiting around.">
+  <meta property="og:description" content="See your words in the input while you speak. Keep it moving. Not a second of waiting around.">
   <meta property="og:url" content="https://ethansk.github.io/VoiceInkPlusPlus/">
   <meta property="og:image" content="https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/1024-mac.png">
   <meta name="twitter:card" content="summary">
@@ -30,6 +30,7 @@
       <span></span><span></span>
     </button>
     <nav id="site-nav" class="site-nav" aria-label="Primary" data-nav>
+      <a href="#realtime">Realtime input</a>
       <a href="#setup">Ethan's setup</a>
       <a href="#routing">Three routes</a>
       <a href="#agents">Agents</a>
@@ -48,7 +49,7 @@
           <span>Keep it moving.</span>
           <span class="hero-emphasis">Not a second of waiting around.</span>
         </h1>
-        <p class="hero-lede">VoiceInk++ fundamentally changes how you use computers. Speak instead of reaching for the keyboard, choose exactly where every thought lands, and move on while the work finishes behind you.</p>
+        <p class="hero-lede">VoiceInk++ fundamentally changes how you use computers. Your words appear in the real input while you speak. Keep current focus in charge, or lock an exact destination with one mouse button and move on while the work finishes behind you.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="#setup">Copy Ethan's setup</a>
           <a class="button button-secondary" href="https://github.com/EthanSK/VoiceInkPlusPlus">View the source <span aria-hidden="true">↗</span></a>
@@ -89,7 +90,7 @@
           <div class="relay-lane agent-lane">
             <span class="lane-label">AGENT</span>
             <span class="lane-line"><i class="relay-pulse"></i></span>
-            <span class="lane-action relay-steps"><b>transcribe</b><b>paste</b><b>send</b></span>
+            <span class="lane-action relay-steps"><b>listen</b><b>write live</b><b>send</b></span>
           </div>
         </div>
 
@@ -103,10 +104,46 @@
     </section>
 
     <section class="proof-strip" aria-label="VoiceInk++ highlights">
+      <p><strong>Live</strong><span>words appear as you speak</span></p>
       <p><strong>3</strong><span>intentional destination routes</span></p>
       <p><strong>N+1</strong><span>record while earlier results load</span></p>
       <p><strong>All</strong><span>connected monitors show status</span></p>
-      <p><strong>0</strong><span>reason to stare at a spinner</span></p>
+    </section>
+
+    <section class="realtime section" id="realtime" aria-labelledby="realtime-title">
+      <div class="section-heading realtime-heading">
+        <div>
+          <p class="eyebrow">The thought leaves your mouth—and lands</p>
+          <h2 id="realtime-title">Your words are already there.</h2>
+        </div>
+        <p>Soniox V5 streams one cumulative draft into the actual input while the recorder HUD keeps its own live copy. If you change inputs mid-speech, VoiceInk++ carries the complete thought forward.</p>
+      </div>
+
+      <div class="realtime-demo reveal" data-realtime-demo role="group" aria-label="Realtime transcript moves from a Codex input to a Terminal input as focus changes">
+        <div class="realtime-demo-topline">
+          <span><i class="live-dot"></i> SONIOX V5 · REALTIME</span>
+          <strong>OWNED RANGE ONLY</strong>
+        </div>
+        <div class="draft-workspace">
+          <article class="draft-input draft-input-a">
+            <header><span class="agent-badge codex-badge">C</span><div><small>INPUT A</small><strong>Codex</strong></div><em data-draft-a-status>focused first</em></header>
+            <p><span data-draft-a>Ship the release</span><i class="draft-caret" aria-hidden="true"></i></p>
+            <footer><span>safe copy may remain</span><strong>never steals focus to erase</strong></footer>
+          </article>
+          <div class="draft-transfer" aria-hidden="true"><span>FULL DRAFT</span><i></i><b>→</b></div>
+          <article class="draft-input draft-input-b is-current">
+            <header><span class="agent-badge cli-badge">›_</span><div><small>INPUT B</small><strong>Terminal</strong></div><em data-draft-b-status>current focus</em></header>
+            <p><span data-draft-b>Ship the release after the checks</span><i class="draft-caret" aria-hidden="true"></i></p>
+            <footer><span>final owner</span><strong>reconcile once · Return once</strong></footer>
+          </article>
+        </div>
+        <ol class="draft-rules">
+          <li><span>01</span><strong>Speak.</strong> The latest cumulative hypothesis replaces only the range VoiceInk++ inserted.</li>
+          <li><span>02</span><strong>Move.</strong> Focus another supported input and the complete draft-so-far appears there.</li>
+          <li><span>03</span><strong>Finish.</strong> Primary follows current focus; Next preserves an exact destination. No duplicate paste.</li>
+        </ol>
+        <p class="realtime-safety"><strong>Resilience over guessing.</strong> Same-app cleanup happens only when it is provably safe. A cross-app draft may remain rather than activate an old app or delete unrelated text.</p>
+      </div>
     </section>
 
     <section class="setup section" id="setup" aria-labelledby="setup-title">
@@ -139,7 +176,7 @@
           <details class="detail-drawer">
             <summary>Why this mouse and mapping?</summary>
             <div>
-              <p>G HUB is the configuration app; G502 X LIGHTSPEED is the mouse. Assign your existing VoiceInk++ shortcut to one button and the standard media action <em>Next Track</em> to your <strong>Next button</strong>. VoiceInk++ only intercepts that event when it has a destination job to do, so the button still controls media while idle.</p>
+              <p>G HUB is the configuration app; G502 X LIGHTSPEED is the mouse. Assign your existing VoiceInk++ shortcut to one button and the standard media action <em>Next Track</em> to your <strong>Next button</strong>. VoiceInk++ owns that event whenever the black recorder/transcription bar is visible—even an ineligible press becomes a safe no-op—then gives it back to media while idle.</p>
             </div>
           </details>
         </article>
@@ -147,14 +184,15 @@
         <article class="setup-card setup-stack reveal">
           <div class="step-index"><span>02</span> Configure</div>
           <div class="stack-display" role="group" aria-label="Ethan's VoiceInk++ settings">
-            <div><small>TRANSCRIBE</small><strong>Deepgram Nova‑3 Tuned</strong><span>Local proxy</span></div>
+            <div><small>TRANSCRIBE</small><strong>Soniox V5</strong><span>Real-time on</span></div>
             <div><small>AI MODEL</small><strong>OpenAI · gpt‑5.5</strong><span>Ready when a Mode needs it</span></div>
             <div><small>DELIVERY</small><strong>Direct paste</strong><span>Per-app auto-send</span></div>
           </div>
           <h3>Copy the fast path, then make it yours.</h3>
-          <p>Start with Ethan's low-friction defaults: automatic language detection, direct paste, and an app-specific Mode that presses Return in agent/chat apps but deliberately does <em>not</em> auto-send in Chrome.</p>
+          <p>Start with Ethan's low-friction defaults: Soniox V5 realtime, live input writing, English transcription, direct paste, and an app-specific Mode that presses Return in agent/chat apps but deliberately does <em>not</em> auto-send in Chrome.</p>
           <ul class="chips" aria-label="Additional settings">
-            <li>Language · Auto</li>
+            <li>Language · English</li>
+            <li>Realtime input · On</li>
             <li>Paste · Default</li>
             <li>Enhancement · Off for direct modes</li>
             <li>Mic · Your best input</li>
@@ -162,7 +200,7 @@
           <details class="detail-drawer">
             <summary>Important provider details</summary>
             <div>
-              <p>Ethan's “Deepgram Nova‑3 Tuned (Local Proxy)” endpoint is personal infrastructure and is not bundled with this repository. Use your own compatible Deepgram setup or another supported transcription model, and supply your own provider credentials. His current modes keep OpenAI gpt‑5.5 selected but leave enhancement off for the quickest direct-paste loop.</p>
+              <p>Add your own Soniox API key, select <strong>Soniox V5</strong>, enable <strong>Real-time</strong> in each Mode, and leave <strong>Write Realtime Transcript into Input</strong> on. Ethan's current modes keep OpenAI gpt‑5.5 selected but leave enhancement off for the quickest direct-paste loop. Other transcription providers retain final-paste-only behavior.</p>
             </div>
           </details>
         </article>
@@ -217,15 +255,15 @@
             </div>
             <div class="app-node target-node is-target">
               <span class="node-icon">›_</span>
-              <small>FOCUSED AT STOP</small>
+              <small>CURRENT AT DELIVERY</small>
               <strong>Terminal input</strong>
               <em>PASTE + RETURN</em>
             </div>
           </div>
           <div class="route-explanation">
-            <p class="route-kicker" data-route-kicker>Normal stop · focused at stop</p>
+            <p class="route-kicker" data-route-kicker>Normal stop · current at delivery</p>
             <h3 data-route-title>End wherever the thought belongs.</h3>
-            <p data-route-copy>Start in one app, move while talking, then use your normal recording button. VoiceInk++ locks the exact editable input focused when you stop.</p>
+            <p data-route-copy>Start in one app, move while talking, then stop normally. Primary owns no saved target: whichever editable input owns keyboard focus at final delivery receives the reconciled text and its Mode decides Return.</p>
             <ol data-route-steps>
               <li>Start recording in Codex.</li>
               <li>Move to Terminal while speaking.</li>
@@ -239,10 +277,10 @@
     <section class="agent-support section" id="agents" aria-labelledby="agents-title">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Agent destinations, explicitly supported</p>
+          <p class="eyebrow">Agent destinations, evidence first</p>
           <h2 id="agents-title">Talk straight into Codex or Claude Code.</h2>
         </div>
-        <p>The Next button works the same across desktop composers, terminals, and editor-hosted CLIs. VoiceInk++ locks the real editable input—not a guessed process name.</p>
+        <p>The route model is shared across desktop composers, terminals, and editor-hosted CLIs. Background delivery remains surface-specific, and VoiceInk++ fails visibly rather than claiming support that has not been physically proven.</p>
       </div>
 
       <div class="agent-matrix-shell reveal">
@@ -256,7 +294,7 @@
               <tr>
                 <th scope="col">Agent surface</th>
                 <th scope="col">VoiceInk++ locks</th>
-                <th scope="col">Auto-send path</th>
+                <th scope="col">Current evidence</th>
                 <th scope="col">Locked icon</th>
               </tr>
             </thead>
@@ -264,19 +302,19 @@
               <tr>
                 <th scope="row"><span class="agent-surface"><span class="agent-badge codex-badge">C</span><strong>Codex desktop</strong></span></th>
                 <td data-label="Locks">Exact Codex composer</td>
-                <td data-label="Send path">Verified Send + Return fallbacks</td>
+                <td data-label="Evidence">Recording-start Next physically verified; second chance pending</td>
                 <td data-label="Icon"><span class="host-chip">Codex</span></td>
               </tr>
               <tr>
                 <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">›_</span><strong>Codex CLI</strong></span></th>
                 <td data-label="Locks">Exact terminal or editor input</td>
-                <td data-label="Send path">Host app's paste + Return</td>
+                <td data-label="Evidence">Exact-session code tested; complete live route pending</td>
                 <td data-label="Icon"><span class="host-chip">Host app</span></td>
               </tr>
               <tr>
                 <th scope="row"><span class="agent-surface"><span class="agent-badge claude-badge">A</span><strong>Claude Code</strong></span></th>
                 <td data-label="Locks">Exact terminal or editor input</td>
-                <td data-label="Send path">Host app's paste + Return</td>
+                <td data-label="Evidence">Host-specific route; complete live proof pending</td>
                 <td data-label="Icon"><span class="host-chip">Host app</span></td>
               </tr>
             </tbody>
@@ -284,7 +322,7 @@
         </div>
         <aside class="host-rule">
           <span>THE HOST RULE</span>
-          <p><strong>A CLI has no separate macOS input.</strong> If Claude Code is running in Terminal, the locked icon says Terminal. If Codex CLI is in VS Code, it says VS Code. Configure Return for that host app, then use all three destination routes normally.</p>
+          <p><strong>A CLI has no separate macOS input.</strong> If Claude Code is running in Terminal, the locked icon says Terminal. If Codex CLI is in VS Code, it says VS Code. Configure Return for that host app only after proving it on your surface; an unavailable background route fails closed without pulling the host forward.</p>
           <code>[ MODE ] [ WAVEFORM ] [ CURRENT HOST ] [ LOCKED HOST ]</code>
         </aside>
       </div>
@@ -296,7 +334,7 @@
       <p class="manifesto-small">The VoiceInk++ rhythm</p>
       <div class="new-rhythm">
         <p><span>YOU</span><strong>speak → latch → keep moving → keep moving</strong></p>
-        <p><span>VOICEINK++</span><strong>transcribe → restore → paste → send</strong></p>
+        <p><span>VOICEINK++</span><strong>transcribe → resolve → paste → send</strong></p>
       </div>
       <blockquote>Something is always happening.</blockquote>
     </section>
@@ -336,8 +374,8 @@
         <article class="feature reveal">
           <div class="feature-visual safety-visual" aria-hidden="true"><span>⌘V</span><i>✓</i><span>↵</span></div>
           <p class="feature-number">04 / TRUST IT</p>
-          <h3>Foreground paste and verified auto-send.</h3>
-          <p>VoiceInk++ restores and verifies the saved input, pastes in the foreground, sends when that app's Mode asks it to, then restores your later workspace.</p>
+          <h3>Current-input paste. Exact Next delivery.</h3>
+          <p>Primary uses ordinary current-input paste. Next routes revalidate an exact saved input and prefer non-activating, surface-specific delivery; unsupported routes fail visibly instead of stealing focus.</p>
         </article>
         <article class="feature reveal">
           <div class="feature-visual control-visual" aria-hidden="true"><span>×</span><span>ϟ̸</span><span>▶︎</span></div>

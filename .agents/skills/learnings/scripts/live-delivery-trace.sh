@@ -11,8 +11,10 @@ TRACE_FILE="$TRACE_ROOT/trace.log"
 FIFO_PATH="$TRACE_ROOT/stream.fifo"
 LOCK_DIR="$TRACE_ROOT/operation.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
+LAUNCHD_LABEL="com.ethansk.voiceink.live-delivery-trace.$(id -u)"
+LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
 
-PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager")))'
+PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster")))'
 
 usage() {
   printf 'usage: %s start|status|stop|show [line-count]\n' "$0" >&2
@@ -66,6 +68,17 @@ stream_is_ours() {
     *"/usr/bin/log stream"*"com.ethansk.VoiceInkPlusPlus"*"ShortcutMonitor"*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+launchd_service_exists() {
+  launchctl print "$LAUNCHD_SERVICE" >/dev/null 2>&1
+}
+
+remove_launchd_service() {
+  if launchd_service_exists; then
+    launchctl kill SIGTERM "$LAUNCHD_SERVICE" 2>/dev/null || true
+    launchctl remove "$LAUNCHD_LABEL" 2>/dev/null || true
+  fi
 }
 
 atomic_pid_write() {
@@ -145,6 +158,10 @@ cleanup_stale_state() {
     printf 'removing orphaned managed log stream pid=%s\n' "$stream_pid" >&2
     terminate_managed_pid "$stream_pid" stream || true
   fi
+  # `nohup` children launched from Codex's bounded command runner are reaped when
+  # that runner exits. Keep the trace in one launchd-owned submitted job instead;
+  # remove any stale submitted job before creating its replacement.
+  remove_launchd_service
   rm -f "$RUNNER_PID_FILE" "$STREAM_PID_FILE" "$FIFO_PATH"
   return 0
 }
@@ -153,6 +170,7 @@ run_trace() {
   local stream_pid=""
 
   mkdir -p "$TRACE_ROOT"
+  atomic_pid_write "$$" "$RUNNER_PID_FILE"
   rm -f "$FIFO_PATH"
   mkfifo "$FIFO_PATH"
 
@@ -162,6 +180,9 @@ run_trace() {
       wait "$stream_pid" 2>/dev/null || true
     fi
     rm -f "$STREAM_PID_FILE" "$FIFO_PATH"
+    if [ "$(read_pid "$RUNNER_PID_FILE" || true)" = "$$" ]; then
+      rm -f "$RUNNER_PID_FILE"
+    fi
   }
   trap cleanup_runner EXIT INT TERM HUP
 
@@ -178,18 +199,28 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'paste:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'toggleRecord:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'toggleRecorderPanel:'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'record start:'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'Next stop:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'shortcut:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'focuslock:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'deliver: enter'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured editable input'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured Telegram exact-input identity'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured recording-start'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Recording-start main-composer'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Promoted recording-start'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused input capture'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused input restore'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Restored and verified focused input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background exact'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram retained'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram visual identity'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background internal focus'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact-input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Semantic Send'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'semantic Send'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Bounded OpenAI FooterActions'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Resolved OpenAI FooterActions'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Retained exact submit'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Nearby submit'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Resolved explicitly labelled Send'*|\
@@ -198,7 +229,13 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:ShortcutMonitor]'*'Event tap'*|\
       *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Recording shortcut'*|\
       *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Next Track'*|\
-      *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Event-tap'* )
+      *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Event-tap'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground paste'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground AppleScript paste'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground CGEvent paste'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to prepare clipboard for paste'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Accessibility permission is required to paste'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'* )
         printf '%s\n' "$line" >> "$TRACE_FILE"
         ;;
     esac
@@ -222,13 +259,19 @@ start_trace() {
 
   : > "$TRACE_FILE"
   printf '# VoiceInk++ delivery metadata trace; transcript contents are intentionally excluded.\n' >> "$TRACE_FILE"
-  nohup "$SCRIPT_PATH" __run >/dev/null 2>&1 &
-  runner_pid=$!
-  atomic_pid_write "$runner_pid" "$RUNNER_PID_FILE"
+  # A plain background/nohup process is still a descendant of Codex's bounded
+  # command runner and is killed as soon as that tool call closes. Submit one
+  # launchd-owned job so `start` really survives into the user's physical test.
+  # The runner writes its own PID file before opening the log-stream FIFO.
+  launchctl submit -l "$LAUNCHD_LABEL" -- \
+    /usr/bin/env "VOICEINK_TRACE_STATE_DIR=$TRACE_ROOT" \
+    "$SCRIPT_PATH" __run
 
   for attempt in $(seq 1 60); do
+    runner_pid="$(read_pid "$RUNNER_PID_FILE" || true)"
     stream_pid="$(read_pid "$STREAM_PID_FILE" || true)"
-    if [ -n "$stream_pid" ] && pid_is_live "$runner_pid" && runner_is_ours "$runner_pid" && \
+    if [ -n "$runner_pid" ] && [ -n "$stream_pid" ] && \
+       pid_is_live "$runner_pid" && runner_is_ours "$runner_pid" && \
        pid_is_live "$stream_pid" && stream_is_ours "$stream_pid"; then
       printf 'trace started runnerPid=%s streamPid=%s trace=%s\n' "$runner_pid" "$stream_pid" "$TRACE_FILE"
       release_lock
@@ -238,9 +281,10 @@ start_trace() {
   done
 
   printf 'trace failed to start cleanly\n' >&2
-  terminate_managed_pid "$runner_pid" runner || true
+  [ -z "$runner_pid" ] || terminate_managed_pid "$runner_pid" runner || true
   stream_pid="$(read_pid "$STREAM_PID_FILE" || true)"
   [ -z "$stream_pid" ] || terminate_managed_pid "$stream_pid" stream || true
+  remove_launchd_service
   rm -f "$RUNNER_PID_FILE" "$STREAM_PID_FILE" "$FIFO_PATH"
   release_lock
   return 1
@@ -275,6 +319,8 @@ stop_trace() {
   acquire_lock
   runner_pid="$(read_pid "$RUNNER_PID_FILE" || true)"
   stream_pid="$(read_pid "$STREAM_PID_FILE" || true)"
+
+  remove_launchd_service
 
   if [ -n "$runner_pid" ] && pid_is_live "$runner_pid"; then
     if runner_is_ours "$runner_pid"; then

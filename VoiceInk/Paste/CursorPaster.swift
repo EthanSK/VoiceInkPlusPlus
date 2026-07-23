@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Carbon
+import Darwin
 import os
 
 class CursorPaster {
@@ -11,6 +12,7 @@ class CursorPaster {
     enum PasteResult: Equatable {
         case commandPosted
         case commandNotPosted
+        case actionGuardRefused
 
         var didPostPasteCommand: Bool {
             self == .commandPosted
@@ -20,13 +22,14 @@ class CursorPaster {
     enum AutoSendResult: Equatable {
         case commandPosted
         case commandNotPosted
+        case actionGuardRefused
 
         var didPostAutoSendCommand: Bool {
             self == .commandPosted
         }
     }
 
-    enum AutoSendMethod {
+    enum AutoSendMethod: Equatable {
         case systemEvents
         case cgEvent
     }
@@ -48,10 +51,10 @@ class CursorPaster {
     @discardableResult
     static func startPasteAtCursor(
         _ text: String,
-        preflight: (() -> Bool)? = nil
+        canPost: @escaping @MainActor () -> Bool = { true }
     ) -> Task<PasteResult, Never> {
         Task { @MainActor in
-            await performPasteSession(text, preflight: preflight)
+            await performPasteSession(text, canPost: canPost)
         }
     }
 
@@ -63,7 +66,7 @@ class CursorPaster {
     @MainActor
     private static func performPasteSession(
         _ text: String,
-        preflight: (() -> Bool)?
+        canPost: @escaping @MainActor () -> Bool
     ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
@@ -78,27 +81,28 @@ class CursorPaster {
             logger.error("Failed to prepare clipboard for paste")
             return .commandNotPosted
         }
-        defer {
-            if shouldRestoreClipboard {
-                scheduleClipboardRestore(
-                    savedContents,
-                    expectedText: text,
-                    sessionID: sessionID,
-                    on: pasteboard
-                )
-            }
-        }
 
         await wait(prePasteDelay)
-        guard preflight?() != false else {
-            // The user may click away during the deliberate clipboard-settlement wait.
-            // Never let a global Cmd-V drift into that newly focused app; the caller can
-            // retry through its frozen exact-input, non-activating delivery session.
-            logger.notice("Cancelled foreground paste because its exact focus preflight changed before Cmd-V")
-            return .commandNotPosted
+
+        // Clipboard preparation intentionally precedes the delay, but Cmd-V is
+        // irreversible. Revalidate the saved exact input at this last boundary so a
+        // newer click cannot receive the transcription or trigger a compensating focus
+        // rewrite. A refused paste leaves the transcript safely on the clipboard.
+        guard canPost() else {
+            logger.error("Refused foreground paste because the exact-input action guard changed")
+            return .actionGuardRefused
         }
 
-        let pasteResult = await postPasteCommand(preflight: preflight)
+        let pasteResult = await postPasteCommand(canPost: canPost)
+        if shouldRestoreClipboard, pasteResult != .actionGuardRefused {
+            scheduleClipboardRestore(
+                savedContents,
+                expectedText: text,
+                sessionID: sessionID,
+                on: pasteboard
+            )
+        }
+
         return pasteResult
     }
 
@@ -115,14 +119,13 @@ class CursorPaster {
 
     @MainActor
     private static func postPasteCommand(
-        preflight: (() -> Bool)?
+        canPost: @escaping @MainActor () -> Bool
     ) async -> PasteResult {
+        guard canPost() else { return .actionGuardRefused }
         if PasteMethod.current() == .appleScript {
-            return pasteUsingAppleScript(preflight: preflight)
-                ? .commandPosted
-                : .commandNotPosted
+            return pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
         } else {
-            return await pasteFromClipboard(preflight: preflight)
+            return await pasteFromClipboard(canPost: canPost)
         }
     }
 
@@ -193,15 +196,9 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func pasteUsingAppleScript(
-        preflight: (() -> Bool)?
-    ) -> Bool {
+    private static func pasteUsingAppleScript() -> Bool {
         guard let script = layoutSwitchesToQWERTYOnCommand ? pasteScriptKeyCode : pasteScriptKeystroke else {
             logger.error("AppleScript paste script is unavailable")
-            return false
-        }
-        guard preflight?() != false else {
-            logger.notice("Cancelled foreground AppleScript paste because its exact focus preflight changed immediately before Cmd-V")
             return false
         }
 
@@ -218,7 +215,7 @@ class CursorPaster {
     // Posts Cmd+V via CGEvent without modifying the active input source.
     @MainActor
     private static func pasteFromClipboard(
-        preflight: (() -> Bool)?
+        canPost: @escaping @MainActor () -> Bool
     ) async -> PasteResult {
         guard AXIsProcessTrusted() else {
             logger.error("Accessibility permission is required to paste with simulated key events")
@@ -239,20 +236,15 @@ class CursorPaster {
         vDown.flags   = .maskCommand
         vUp.flags     = .maskCommand
 
-        guard preflight?() != false else {
-            logger.notice("Cancelled foreground CGEvent paste because its exact focus preflight changed immediately before Command-down")
-            return .commandNotPosted
-        }
-
+        guard canPost() else { return .actionGuardRefused }
         cmdDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
-        guard preflight?() != false else {
-            // Focus can move during the humanized Command-down/V-down interval. Release
-            // Command but never post V: a global Cmd-V in Ethan's newly selected input
-            // would be a wrong-target mutation, while a bare modifier release is safe.
+        // Cmd-down and V-down are separated only to match a real shortcut. Re-prove
+        // the exact input after that suspension; on refusal, release Command without
+        // ever posting V so a newer click cannot receive the transcript.
+        guard canPost() else {
             cmdUp.post(tap: .cghidEventTap)
-            logger.notice("Cancelled foreground CGEvent paste and released Command because its exact focus preflight changed before V-down")
-            return .commandNotPosted
+            return .actionGuardRefused
         }
         vDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
@@ -304,29 +296,43 @@ class CursorPaster {
     }
 
     @MainActor
-    static func typeTextIntoTargetedProcess(
+    /// Emit bounded Unicode only after FocusLockService has opened and verified one
+    /// exact internal activation-state session. This function deliberately does not
+    /// begin/end its own nested session; text and any later semantic Send action must
+    /// remain bound to the same prepared editor until the caller finishes it.
+    static func typeTextIntoPreparedTargetedProcess(
         _ text: String,
         pid: pid_t,
-        sessionAlreadyPrepared: Bool = false,
-        beforeChunk: ((Int) -> Bool)? = nil
+        canPost: @escaping @MainActor () -> Bool,
+        canRevalidateContext: @escaping @MainActor () -> Bool
     ) async -> Bool {
         guard !text.isEmpty,
               AXIsProcessTrusted(),
-              (sessionAlreadyPrepared || beginTargetedInputSession(pid: pid)) else {
+              canPost(),
+              canRevalidateContext() else {
             return false
         }
-        defer {
-            if !sessionAlreadyPrepared {
-                endTargetedInputSession(pid: pid)
-            }
-        }
 
-        let utf16 = Array(text.utf16)
         let source = CGEventSource(stateID: .hidSystemState)
-        let completed = await runTargetedUnicodeChunks(
-            utf16,
-            beforeChunk: beforeChunk
-        ) { chunk in
+        let utf16 = Array(text.utf16)
+        for start in stride(from: 0, to: utf16.count, by: 20) {
+            // PID-addressed Unicode follows Electron's current internal editor. Recheck
+            // the exact window/editor plus target-not-system-focused boundary before
+            // every chunk so a long transcript cannot split into a newer composer.
+            guard canPost() else {
+                logger.error("Stopped targeted Unicode because the exact session boundary changed pid=\(pid, privacy: .public) utf16Offset=\(start, privacy: .public)")
+                return false
+            }
+            // The full task/document resolver is intentionally less frequent than the
+            // fast per-chunk boundary: Chromium history trees can be large. Re-run it
+            // every 200 UTF-16 units so context drift cannot persist through long text.
+            if start > 0, start.isMultiple(of: 200),
+               !canRevalidateContext() {
+                logger.error("Stopped targeted Unicode because exact context revalidation failed pid=\(pid, privacy: .public) utf16Offset=\(start, privacy: .public)")
+                return false
+            }
+            let end = min(start + 20, utf16.count)
+            let chunk = Array(utf16[start..<end])
             guard let keyDown = CGEvent(
                 keyboardEventSource: source,
                 virtualKey: 0,
@@ -351,39 +357,174 @@ class CursorPaster {
             await wait(0.005)
             keyUp.postToPid(pid)
             await wait(0.005)
-            return true
         }
-        guard completed else {
-            logger.error("Stopped targeted Unicode insertion because the exact input boundary changed or a chunk could not be posted pid=\(pid, privacy: .public)")
-            return false
-        }
-        // The delivery owner polls the exact AXValue and continues as soon as the last
-        // Unicode chunk is observable. A fixed post-typing sleep only delayed semantic
-        // Send and widened the interval in which the user could change focus.
+        await wait(0.05)
+        guard canPost(), canRevalidateContext() else { return false }
         logger.info("Issued targeted Unicode text events pid=\(pid, privacy: .public) utf16Units=\(utf16.count, privacy: .public)")
         return true
     }
 
-    /// Execute the exact chunk loop behind targeted Unicode delivery through an
-    /// injectable posting closure. Production supplies real CGEvents; tests supply a
-    /// counter so they can prove a failed boundary causes zero later mutations. The
-    /// boundary is evaluated immediately before every irreversible chunk.
+    /// Click one exact, action-time-revalidated OpenAI Send control without moving
+    /// the system cursor or bringing its app forward.
+    ///
+    /// This is intentionally smaller than Cua/Trope's general background driver.
+    /// FocusLockService already owns and verifies the one internal activation-state
+    /// session, so this primitive omits PSN focus-without-raise and every activation,
+    /// public PID-post, and HID-tap fallback. All five NSEvent-bridged mouse events are
+    /// stamped before the first post. The off-window primer has no semantic target;
+    /// the target mouse-down is the sole irreversible Send attempt, and mouse-up is
+    /// unconditional cleanup. The caller must verify exact composer clear/reset and
+    /// must never follow this with AXPress, Return, or a second click.
     @MainActor
-    static func runTargetedUnicodeChunks(
-        _ utf16: [UInt16],
-        chunkSize: Int = 20,
-        beforeChunk: ((Int) -> Bool)? = nil,
-        postChunk: ([UInt16]) async -> Bool
-    ) async -> Bool {
-        guard chunkSize > 0 else { return false }
-        for start in stride(from: 0, to: utf16.count, by: chunkSize) {
-            guard beforeChunk?(start) != false else { return false }
-            let end = min(start + chunkSize, utf16.count)
-            guard await postChunk(Array(utf16[start..<end])) else {
-                return false
-            }
+    static func performTargetedOpenAISendClick(
+        targetPID: pid_t,
+        windowID: CGWindowID,
+        targetPoint: CGPoint,
+        targetPointInWindow: CGPoint,
+        offWindowPoint: CGPoint,
+        canPost: @MainActor () -> Bool
+    ) async -> AutoSendResult {
+        guard AXIsProcessTrusted() else {
+            logger.error("Accessibility permission is required for targeted OpenAI Send click")
+            return .commandNotPosted
         }
-        return true
+        guard canPost() else {
+            logger.error("Refused targeted OpenAI Send click because the exact-input boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+
+        func makeMouseEvent(
+            _ type: NSEvent.EventType,
+            clickCount: Int
+        ) -> CGEvent? {
+            NSEvent.mouseEvent(
+                with: type,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: Int(windowID),
+                context: nil,
+                eventNumber: 0,
+                clickCount: clickCount,
+                pressure: 1
+            )?.cgEvent
+        }
+
+        guard let move = makeMouseEvent(.mouseMoved, clickCount: 0),
+              let primerDown = makeMouseEvent(.leftMouseDown, clickCount: 1),
+              let primerUp = makeMouseEvent(.leftMouseUp, clickCount: 1),
+              let targetDown = makeMouseEvent(.leftMouseDown, clickCount: 1),
+              let targetUp = makeMouseEvent(.leftMouseUp, clickCount: 1) else {
+            logger.error("Failed to create NSEvent-bridged targeted OpenAI Send click events targetPid=\(targetPID, privacy: .public)")
+            return .commandNotPosted
+        }
+
+        let clickGroupID = Int64(
+            (ProcessInfo.processInfo.systemUptime * 1_000_000)
+                .truncatingRemainder(dividingBy: Double(Int32.max))
+        )
+        let offWindowLocalPoint = CGPoint(x: -2_048, y: -2_048)
+        let preparations = [
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                move,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: targetPoint,
+                windowLocalPoint: targetPointInWindow,
+                phase: 2,
+                clickState: 0,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                primerDown,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: offWindowPoint,
+                windowLocalPoint: offWindowLocalPoint,
+                phase: 1,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                primerUp,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: offWindowPoint,
+                windowLocalPoint: offWindowLocalPoint,
+                phase: 2,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                targetDown,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: targetPoint,
+                windowLocalPoint: targetPointInWindow,
+                phase: 3,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            ),
+            SkyLightTargetedMouseEventPost.prepareMouseEvent(
+                targetUp,
+                targetPID: targetPID,
+                windowID: windowID,
+                screenPoint: targetPoint,
+                windowLocalPoint: targetPointInWindow,
+                phase: 3,
+                clickState: 1,
+                clickGroupID: clickGroupID
+            )
+        ]
+        guard preparations.allSatisfy({ $0 }), canPost() else {
+            logger.error("Targeted OpenAI Send click preparation failed or exact-input boundary changed targetPid=\(targetPID, privacy: .public) bridgeAvailable=\(SkyLightTargetedMouseEventPost.isAvailable, privacy: .public) preparedCount=\(preparations.filter { $0 }.count, privacy: .public)")
+            return canPost() ? .commandNotPosted : .actionGuardRefused
+        }
+
+        guard SkyLightTargetedMouseEventPost.postPreparedEvent(
+            move,
+            to: targetPID
+        ) else {
+            return .commandNotPosted
+        }
+        await wait(0.015)
+        guard canPost(),
+              SkyLightTargetedMouseEventPost.postPreparedEvent(
+                primerDown,
+                to: targetPID
+              ) else {
+            return canPost() ? .commandNotPosted : .actionGuardRefused
+        }
+        await wait(0.001)
+        _ = SkyLightTargetedMouseEventPost.postPreparedEvent(
+            primerUp,
+            to: targetPID
+        )
+        await wait(0.1)
+
+        // The primer is deliberately outside the exact window. Revalidate every
+        // saved-input and Send-vs-Stop condition once more before the only target hit.
+        guard canPost() else {
+            logger.notice("Targeted OpenAI Send click cancelled after off-window primer because its action boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+        guard SkyLightTargetedMouseEventPost.postPreparedEvent(
+            targetDown,
+            to: targetPID
+        ) else {
+            return .commandNotPosted
+        }
+        await wait(0.001)
+        let boundaryAfterMouseDown = canPost()
+        let mouseUpPosted = SkyLightTargetedMouseEventPost.postPreparedEvent(
+            targetUp,
+            to: targetPID
+        )
+        if !mouseUpPosted {
+            logger.fault("Targeted OpenAI Send mouse-up cleanup failed after posted mouse-down targetPid=\(targetPID, privacy: .public)")
+        }
+        logger.info("Issued one targeted OpenAI Send click targetPid=\(targetPID, privacy: .public) windowId=\(windowID, privacy: .public) targetX=\(Int(targetPoint.x), privacy: .public) targetY=\(Int(targetPoint.y), privacy: .public) mouseUpPosted=\(mouseUpPosted, privacy: .public) boundaryAfterMouseDown=\(boundaryAfterMouseDown, privacy: .public)")
+        return .commandPosted
     }
 
     @MainActor
@@ -405,46 +546,90 @@ class CursorPaster {
         )?.cgEvent
     }
 
+    /// Submit one already-verified Telegram composer without activating Telegram.
+    /// Telegram ignores the ordinary two-event per-PID Return used by earlier
+    /// VoiceInk++ builds. A disposable Saved Messages probe established that its
+    /// native composer instead accepts the public CoreGraphics sequence used by
+    /// Computer Use: HID-system event source, modifier-state boundary, Return
+    /// down/up, then restoration of the live modifier state. This stays Telegram-
+    /// only and one-shot; the caller must revalidate exact chat identity immediately
+    /// before calling and must verify that the exact composer cleared afterward.
+    @MainActor
+    static func performTargetedTelegramHIDReturn(
+        targetPID: pid_t,
+        canPost: @MainActor () -> Bool
+    ) -> AutoSendResult {
+        guard AXIsProcessTrusted() else {
+            logger.error("Accessibility permission is required for targeted Telegram Return")
+            return .commandNotPosted
+        }
+        guard canPost() else {
+            logger.error("Refused targeted Telegram Return because the exact chat boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let modifiersBegan = CGEvent(source: source),
+              let keyDown = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: 0x24,
+                  keyDown: true
+              ),
+              let keyUp = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: 0x24,
+                  keyDown: false
+              ),
+              let modifiersEnded = CGEvent(source: source) else {
+            logger.error("Failed to create targeted Telegram Return sequence targetPid=\(targetPID, privacy: .public)")
+            return .commandNotPosted
+        }
+
+        modifiersBegan.type = .flagsChanged
+        modifiersBegan.flags = []
+        keyDown.flags = []
+        keyUp.flags = []
+        modifiersEnded.type = .flagsChanged
+        modifiersEnded.flags = CGEventSource.flagsState(.combinedSessionState)
+
+        modifiersBegan.timestamp = mach_absolute_time()
+        modifiersBegan.postToPid(targetPID)
+        guard canPost() else {
+            // The initial flags event has no Send semantics, but Telegram still needs
+            // its modifier state repaired if the exact-chat boundary changed before
+            // the sole irreversible Return-down.
+            modifiersEnded.timestamp = mach_absolute_time()
+            modifiersEnded.postToPid(targetPID)
+            logger.notice("Cancelled targeted Telegram Return after modifier setup because the exact chat boundary changed targetPid=\(targetPID, privacy: .public)")
+            return .actionGuardRefused
+        }
+
+        keyDown.timestamp = mach_absolute_time()
+        keyDown.postToPid(targetPID)
+        // Once Return-down is posted, key-up and modifier restoration are mandatory
+        // cleanup. Never turn a later boundary change into a second Send attempt.
+        keyUp.timestamp = mach_absolute_time()
+        keyUp.postToPid(targetPID)
+        modifiersEnded.timestamp = mach_absolute_time()
+        modifiersEnded.postToPid(targetPID)
+
+        let boundaryAfterAction = canPost()
+        logger.info("Issued one targeted Telegram HID Return sequence targetPid=\(targetPID, privacy: .public) boundaryAfterAction=\(boundaryAfterAction, privacy: .public)")
+        return .commandPosted
+    }
+
     // MARK: - Auto Send Keys
 
-    // Feature B (robust double-Enter) tunables.
-    //
-    // Problem: on a lagging Mac, a SINGLE auto-Enter sometimes doesn't register, so
-    // the message never submits (worse on longer transcripts — the field is busy
-    // settling the just-pasted text when the Enter arrives, so the keystroke gets
-    // dropped). Fix: for a plain Return auto-send, post Return once immediately, then
-    // post a SECOND Return after a short delay.
-    //
-    // Why this is safe (no double-send): after the first Enter submits, the input
-    // field is empty, so a second Return is a harmless no-op. But if the first Enter
-    // was DROPPED under load, the second one still submits. Net = redundancy without
-    // ever sending twice.
-    //
-    // We ONLY double-fire for plain `.enter`. Shift+Enter / Cmd+Enter are typically
-    // "insert newline" / "send" chord variants where a stray second keystroke could
-    // add an unwanted newline, so those stay single-fire.
-
-    // Base gap before the redundant Enter (covers ordinary, non-lagging cases).
-    private static let doubleEnterBaseDelay: TimeInterval = 0.12   // 120ms
-    // Extra delay added per character of pasted transcript — longer paste means the
-    // field settles slower, so the redundant Enter needs a touch more headroom.
-    private static let doubleEnterPerCharDelay: TimeInterval = 0.0004 // 0.4ms/char
-    // Hard ceiling so a very long transcript can't make the redundant Enter feel
-    // sluggish. ~600ms total keeps it imperceptible-to-snappy in practice.
-    private static let doubleEnterMaxDelay: TimeInterval = 0.60     // 600ms
-
-    // `transcriptLength` scales the optional redundant Enter delay. The caller
-    // can choose System Events for a foreground chat composer because a real OpenAI
-    // trace showed it ignoring zero-duration CGEvents while Terminal accepted them. Both
-    // routes remain foreground-only so a Return can never drift into another app.
+    // This primitive issues exactly one system-keyboard-focused key. That includes a
+    // non-activating panel which owns real keyboard focus while another application is
+    // still reported frontmost. Any retry belongs in the surface-specific verifier:
+    // only a readable unchanged OpenAI composer may receive one exact-focus-guarded
+    // HID Return retry. Generic editors and terminals never receive a second Return.
     @MainActor
     static func performAutoSend(
         _ key: AutoSendKey,
-        transcriptLength: Int = 0,
-        expectedFrontmostPID: pid_t,
+        targetPID: pid_t,
         method: AutoSendMethod = .cgEvent,
-        sendRedundantEnter: Bool = true,
-        preflight: (() -> Bool)? = nil
+        canPost: @escaping @MainActor () -> Bool
     ) async -> AutoSendResult {
         guard key.isEnabled else {
             logger.error("Refused to auto-send a disabled key")
@@ -454,59 +639,18 @@ class CursorPaster {
             logger.error("Accessibility permission is required to auto-send Return")
             return .commandNotPosted
         }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedFrontmostPID else {
-            logger.error("Refused to auto-send Return because the saved destination is not frontmost expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return .commandNotPosted
-        }
-        guard preflight?() != false else {
-            logger.error("Refused to auto-send Return because the exact-input preflight did not match")
-            return .commandNotPosted
+        guard canPost() else {
+            logger.error("Refused to auto-send Return because the exact input no longer owns system keyboard focus targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            return .actionGuardRefused
         }
 
-        let firstResult = await issueAutoSendKey(
+        // Re-run the caller's exact-input/continuity boundary at Return-down. This is
+        // still one immediate HID action; it adds no settling delay or target mutation.
+        return await issueAutoSendKey(
             key,
             method: method,
-            preflight: preflight
+            preflight: { canPost() }
         )
-        guard firstResult.didPostAutoSendCommand else { return firstResult }
-
-        // Feature B: schedule a SECOND Return ONLY for plain Enter, after a
-        // length-scaled delay, to survive a lag-dropped first keystroke.
-        guard sendRedundantEnter, key == .enter else { return .commandPosted }
-
-        let scaledDelay = min(
-            doubleEnterBaseDelay + Double(max(transcriptLength, 0)) * doubleEnterPerCharDelay,
-            doubleEnterMaxDelay
-        )
-
-        await wait(scaledDelay)
-
-        // The primary Return was posted successfully, so a failed safety retry is
-        // logged but does not turn the whole delivery into a visible false failure.
-        // Most importantly, never let the redundant Return land in another app.
-        guard AXIsProcessTrusted() else {
-            logger.error("Skipped redundant auto-send Return because Accessibility permission was revoked")
-            return .commandPosted
-        }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == expectedFrontmostPID else {
-            logger.notice("Skipped redundant auto-send Return because focus moved expectedPid=\(expectedFrontmostPID, privacy: .public) actualPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-            return .commandPosted
-        }
-        guard preflight?() != false else {
-            logger.notice("Skipped redundant auto-send Return because the exact-input preflight changed")
-            return .commandPosted
-        }
-
-        let retryResult = await issueAutoSendKey(
-            .enter,
-            method: method,
-            preflight: preflight
-        )
-        if !retryResult.didPostAutoSendCommand {
-            logger.error("Failed to issue redundant auto-send Return")
-        }
-
-        return .commandPosted
     }
 
     @MainActor

@@ -25,21 +25,34 @@ When diagnosing the hardware mapping, verify G HUB's active profile and resolved
 
 ## Timing defines the route
 
+Primary always uses base VoiceInk current-input delivery. The two Next routes below separately use
+exact saved-input delivery whenever their capture/state requirements pass. The historical
+`VIPPExactInputDeliveryEnabled` preference is ignored by current source; it is not an engine switch,
+route, or supported way to change either button's meaning. While the recorder bar is visible a Next
+press is consumed; after the bar hides it passes through as media. The second recorder slot remains
+visible as a warning whenever no exact Next destination is owned.
+
 | State before the press | Control pressed | Result | Destination value |
 | --- | --- | --- | --- |
-| Idle | Primary button | Start a new recording and capture its recording-start input | Not yet final |
-| Recording | Primary button again | **Normal stop** | Exact editable input focused at that stop (`focusedAtStop`) |
+| Idle | Primary button | Start a new recording; tentatively capture a recording-start candidate only in case Next is pressed | Not yet final |
+| Recording | Primary button again | **Normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
-| No active recording and no eligible normal-stop result still loading | Next button | Pass the Next Track event through to media normally | No VoiceInk++ destination action |
+| Recorder bar visible, but no session remains eligible for a destination change | Next button | Consume the press as a VoiceInk++ no-op; never advance media while the bar is visible | Existing destination remains unchanged |
+| Recorder bar hidden, with no active recording or eligible normal-stop result | Next button | Pass the Next Track event through to media normally | No VoiceInk++ destination action |
 
 If a new recording is active while an older result is transcribing, the active recording determines the button action: primary stops that recording normally; Next stops it into `recordingStart`. Do not silently reinterpret that press as a retarget of an older session.
 
+The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or no exact Next target is available. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
+
 ## Non-negotiable distinctions
 
-### Primary normal stop never means “paste back to start”
+### Primary normal stop is always base VoiceInk
 
-The second press of the primary/thumb/toggle button must use only the exact input focused at stop. It must not reuse, fall back to, or guess from the recording-start input. If the stop-time input cannot be captured or later verified, delivery must fail visibly and preserve the text safely rather than sending it to the old input.
+The second press of the primary/thumb/toggle button does not latch any exact input. It posts ordinary
+system-focused paste and the current Mode's generic auto-send key to whichever keyboard input macOS
+owns at delivery. It must not capture, reuse, restore, verify, or fall back to the tentative
+recording-start input, and it must never enter Telegram/OpenAI/Terminal or other app-specific delivery.
 
 The recording-start or “old known” input is invoked only by pressing the Next button while recording.
 
@@ -57,22 +70,44 @@ To **latch**, **lock on**, **attach**, **retarget**, or **hold on to** an input 
 
 The recorder's locked app icon is a compact representation of that exact saved input. It does not mean VoiceInk++ saved only an application-level destination.
 
-### “Current” depends on the decision moment
+### “Current” and “saved” are different policies
 
-- During a primary normal stop, “current input” means the input focused at the stop (`focusedAtStop`).
+- During a primary normal stop, “current input” means the keyboard input focused when delivery posts
+  ordinary Command-V (`primaryCurrentInput`). The user may change it after stopping.
 - During second chance, it means the input focused when Next is pressed after the normal stop (`focusedDuringTranscription`).
-- At delivery time, whichever input happens to be focused then is irrelevant; the per-session destination already owns the decision.
+- For either Next route, whichever input happens to be focused at delivery is irrelevant; that
+  per-session exact destination already owns the decision.
 
 ### Recording start is not transcription start
 
 **Recording** is microphone capture before the primary or Next stop. **Transcribing/loading/enhancing** begins after recording stops. “Input at recording start” means the input captured when the microphone recording command began, not the input focused when transcription began.
+
+## Realtime text is not a fourth destination
+
+With supported Soniox V5 realtime transcription, VoiceInk++ can mirror the cumulative transcript
+into the system-focused input while you are still speaking. That is **realtime input streaming** (or
+the **live draft**), not another Primary/Next route and not an early final paste.
+
+- VoiceInk++ owns only the exact selected-text range it inserted for that recording.
+- Moving the caret to another supported input seeds the complete transcript-so-far there and future
+  partials replace only that new owned range.
+- Primary still means the input and Mode current at final delivery.
+- Next while recording still means `recordingStart`.
+- Second-chance Next still means `focusedDuringTranscription`, and immediately seeds the available
+  live draft into that latched input.
+- A safe same-app migration may remove the earlier draft. A cross-app draft may remain rather than
+  risk activating an app or deleting unrelated text.
+
+The Settings label is **Write Realtime Transcript into Input** and its preference key is
+`VIPPRealtimeInputStreamingEnabled`. Turning it off restores ordinary final-paste-only behavior
+without changing any destination route.
 
 ## Historical confusion audit
 
 These are superseded ideas that still appear in Git history, comments, or session logs:
 
 1. In June 2026, the start-input workflow was explored as a long press of the existing recording shortcut. Code and reviews therefore use phrases such as “toggle mode,” “STOP hold,” and “focus lock.” That gesture is historical; it must not be mistaken for the current two-button contract.
-2. On 2026-07-12, the first proposal again compared short and long presses. Ethan then simplified it to two physical controls: the normal/primary button stops into the stop-time input, while Next stops into the recording-start input.
+2. On 2026-07-12, the first proposal again compared short and long presses. Ethan then simplified it to two physical controls. Historical source used a stop-time exact destination for Primary; on 2026-07-23 Ethan explicitly replaced that with base VoiceInk current-input-at-delivery behavior so app-specific latch work can never regress normal dictation. Next while recording still selects the recording-start input.
 3. “Input on start of transcription” was explicitly corrected in the same session to mean **recording start**. Future agents must not use that early wording to move the capture point past the stop.
 4. The post-stop **second chance** was added separately: while a normal-stop result is loading, Next captures the input focused at that later press. It is not an extension of the recording-start route.
 5. Commit `671b4c7` temporarily made Next toggle between start and stop destinations. Ethan rejected that design because it required two clicks for the common case. Commit `bed22b7` exactly reverted it. Never resurrect `671b4c7` or describe the accepted design as a Next toggle.
@@ -83,4 +118,4 @@ The accepted second-chance implementation is `1eabb1b` (`Fix second-chance trans
 
 ## Agent interpretation rule
 
-When a phrase is ambiguous, identify the physical control and timing before touching code. Restate the route in concrete terms—such as “primary button again while recording → `focusedAtStop`”—instead of asking whether Ethan means a generic “toggle.” Do not create a fourth route from an alias.
+When a phrase is ambiguous, identify the physical control and timing before touching code. Restate the route in concrete terms—such as “primary button again while recording → base current input at delivery (`primaryCurrentInput`)”—instead of asking whether Ethan means a generic “toggle.” Do not create a fourth route from an alias.

@@ -6,20 +6,1873 @@
 //
 
 import Testing
+import AppKit
+import Carbon.HIToolbox
+import CoreGraphics
+import Foundation
 import ApplicationServices
 @testable import VoiceInkPlusPlus
 
+private actor TranscriptionQueueTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let continuations = waiters
+        waiters.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+}
+
+@MainActor
+private final class TranscriptionQueueTestState {
+    var currentIdentities = Set<TranscriptionJobIdentity>()
+    var events: [String] = []
+}
+
 struct VoiceInkTests {
+
+    @Test func primaryModifierChordSuppressesOnlyTheCompletedPress() {
+        let shortcut = Shortcut.modifierOnly(
+            keyCode: nil,
+            modifierFlags: [.shift, .control, .option]
+        )
+
+        let partialShift = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Shift),
+            modifierFlags: [.shift]
+        )
+        #expect(partialShift == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+
+        let partialControl = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Control),
+            modifierFlags: [.shift, .control]
+        )
+        #expect(partialControl == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+
+        let completedPress = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control, .option]
+        )
+        #expect(completedPress == .init(
+            isDown: true,
+            suppressDownstream: true,
+            dispatchKeyDown: true,
+            dispatchKeyUp: false
+        ))
+
+        let completedRepeat = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: true,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control, .option]
+        )
+        #expect(completedRepeat == .init(
+            isDown: true,
+            suppressDownstream: true,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+
+        let firstRelease = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: true,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control]
+        )
+        #expect(firstRelease == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: true
+        ))
+
+        let remainingRelease = ShortcutMonitor.modifierOnlySequenceTransition(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Control),
+            modifierFlags: [.shift]
+        )
+        #expect(remainingRelease == .init(
+            isDown: false,
+            suppressDownstream: false,
+            dispatchKeyDown: false,
+            dispatchKeyUp: false
+        ))
+    }
+
+    @Test func recordingStartReservationRejectsDuplicatePendingStarts() {
+        var reservation = RecordingStartReservation()
+        let first = UUID()
+        let second = UUID()
+
+        #expect(reservation.reserve(id: first) == first)
+        #expect(reservation.reserve(id: second) == nil)
+        let consumedWrongReservation = reservation.consume(second)
+        #expect(!consumedWrongReservation)
+        let consumedFirstReservation = reservation.consume(first)
+        #expect(consumedFirstReservation)
+        #expect(reservation.reserve(id: second) == second)
+
+        reservation.invalidate()
+        #expect(reservation.pendingID == nil)
+    }
+
+    @Test func transcriptionJobRegistryBindsUniqueSessionTranscriptionAndAudio() throws {
+        var registry = TranscriptionJobRegistry()
+        let sessionA = UUID()
+        let transcriptionA = UUID()
+        let audioA = URL(fileURLWithPath: "/tmp/session-a.wav")
+        let registeredA = registry.register(
+            recordingSessionID: sessionA,
+            transcriptionID: transcriptionA,
+            audioURL: audioA
+        )
+        let identityA = try #require(registeredA)
+
+        #expect(identityA.enqueueSequence == 1)
+        #expect(registry.contains(identityA))
+        let duplicateSession = registry.register(
+            recordingSessionID: sessionA,
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/other.wav")
+        )
+        #expect(duplicateSession == nil)
+        let duplicateTranscription = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: transcriptionA,
+            audioURL: URL(fileURLWithPath: "/tmp/other.wav")
+        )
+        #expect(duplicateTranscription == nil)
+        let duplicateAudio = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: audioA
+        )
+        #expect(duplicateAudio == nil)
+
+        let registeredB = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        )
+        let identityB = try #require(registeredB)
+        #expect(identityB.enqueueSequence == 2)
+        #expect(identityB.recordingSessionID != identityA.recordingSessionID)
+        #expect(identityB.transcriptionID != identityA.transcriptionID)
+        #expect(identityB.audioURL != identityA.audioURL)
+    }
+
+    @Test func transcriptionJobRegistryResetInvalidatesOnlyOldGeneration() throws {
+        var registry = TranscriptionJobRegistry()
+        let registeredA = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        )
+        let identityA = try #require(registeredA)
+
+        registry.invalidateAll()
+        #expect(!registry.contains(identityA))
+
+        let registeredB = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        )
+        let identityB = try #require(registeredB)
+        #expect(identityB.generation == identityA.generation + 1)
+        #expect(identityB.enqueueSequence == identityA.enqueueSequence + 1)
+        #expect(registry.contains(identityB))
+    }
+
+    @MainActor
+    @Test func serialQueueKeepsInjectedResultsBoundToFIFOJobIdentity() async throws {
+        var registry = TranscriptionJobRegistry()
+        let registeredA = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        )
+        let identityA = try #require(registeredA)
+        let registeredB = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        )
+        let identityB = try #require(registeredB)
+        let injectedResults = [
+            identityA.transcriptionID: "result-a",
+            identityB.transcriptionID: "result-b",
+        ]
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA, identityB]
+        let queue = SerialTranscriptionJobQueue()
+
+        for identity in [identityA, identityB] {
+            queue.enqueue(
+                identity,
+                isCurrent: { state.currentIdentities.contains($0) },
+                onDiscard: { discarded in
+                    state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+                },
+                operation: { running in
+                    let result = injectedResults[running.transcriptionID] ?? "missing"
+                    state.events.append("\(running.audioURL.lastPathComponent):\(result)")
+                }
+            )
+        }
+
+        await queue.waitUntilIdle()
+        #expect(state.events == [
+            "session-a.wav:result-a",
+            "session-b.wav:result-b",
+        ])
+    }
+
+    @MainActor
+    @Test func resetCannotResumeAWaitingJobOrAuthorizeRunningJobDelivery() async throws {
+        var registry = TranscriptionJobRegistry()
+        let registeredA = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        )
+        let identityA = try #require(registeredA)
+        let registeredB = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        )
+        let identityB = try #require(registeredB)
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA, identityB]
+        let gate = TranscriptionQueueTestGate()
+        let queue = SerialTranscriptionJobQueue()
+
+        queue.enqueue(
+            identityA,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("start:\(running.audioURL.lastPathComponent)")
+                await gate.wait()
+                if !Task.isCancelled, state.currentIdentities.contains(running) {
+                    state.events.append("deliver:\(running.audioURL.lastPathComponent)")
+                }
+            }
+        )
+        queue.enqueue(
+            identityB,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("deliver:\(running.audioURL.lastPathComponent)")
+            }
+        )
+
+        while state.events.isEmpty {
+            await Task.yield()
+        }
+        state.currentIdentities.removeAll()
+        let canceledTasks = queue.cancelAll()
+        await gate.open()
+        for task in canceledTasks {
+            await task.value
+        }
+
+        #expect(state.events.contains("start:session-a.wav"))
+        #expect(!state.events.contains("deliver:session-a.wav"))
+        #expect(!state.events.contains("deliver:session-b.wav"))
+    }
+
+    @MainActor
+    @Test func newGenerationWaitsForCanceledRunningJobToUnwind() async throws {
+        var registry = TranscriptionJobRegistry()
+        let registeredA = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-a.wav")
+        )
+        let identityA = try #require(registeredA)
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA]
+        let gate = TranscriptionQueueTestGate()
+        let queue = SerialTranscriptionJobQueue()
+
+        queue.enqueue(
+            identityA,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("start:\(running.audioURL.lastPathComponent)")
+                await gate.wait()
+                state.events.append("unwind:\(running.audioURL.lastPathComponent)")
+            }
+        )
+
+        while state.events.isEmpty {
+            await Task.yield()
+        }
+
+        registry.invalidateAll()
+        state.currentIdentities.removeAll()
+        _ = queue.cancelAll()
+
+        let registeredB = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/session-b.wav")
+        )
+        let identityB = try #require(registeredB)
+        state.currentIdentities.insert(identityB)
+        queue.enqueue(
+            identityB,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { discarded in
+                state.events.append("discard:\(discarded.audioURL.lastPathComponent)")
+            },
+            operation: { running in
+                state.events.append("start:\(running.audioURL.lastPathComponent)")
+            }
+        )
+
+        // B must remain behind the reset barrier while canceled A is still unwinding.
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(state.events == ["start:session-a.wav"])
+
+        await gate.open()
+        await queue.waitUntilIdle()
+        #expect(state.events == [
+            "start:session-a.wav",
+            "unwind:session-a.wav",
+            "start:session-b.wav",
+        ])
+    }
+
+    @Test func transcriptionLineageDigestDistinguishesResultsWithoutContainingText() {
+        let first = TranscriptionLineageDigest.make("first private transcript")
+        let second = TranscriptionLineageDigest.make("second private transcript")
+
+        #expect(first.count == 16)
+        #expect(second.count == 16)
+        #expect(first != second)
+        #expect(!first.contains("first"))
+        #expect(!second.contains("second"))
+    }
+
+    @Test func sharedTranscriptionResourcesCannotCrossLiveSessionBoundaries() {
+        #expect(SharedTranscriptionResourcePolicy.allowsSpeculativePreload(liveSessionCount: 1))
+        #expect(!SharedTranscriptionResourcePolicy.allowsSpeculativePreload(liveSessionCount: 2))
+
+        #expect(SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: 0,
+            retiringOwnerIsCurrent: true
+        ))
+        #expect(!SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: 1,
+            retiringOwnerIsCurrent: true
+        ))
+        #expect(!SharedTranscriptionResourcePolicy.allowsCleanup(
+            liveSessionCount: 0,
+            retiringOwnerIsCurrent: false
+        ))
+    }
 
     @Test func recorderVersionSplitsMarketingAndBuildAcrossTwoRows() {
         let presentation = RecorderVersionPresentation(
             marketingVersion: "2.0",
-            buildNumber: "211"
+            buildNumber: "236"
         )
 
         #expect(presentation.topLine == "v2.0")
-        #expect(presentation.bottomLine == ".211")
-        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 211")
+        #expect(presentation.bottomLine == ".236")
+        #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 236")
+    }
+
+    @MainActor
+    @Test func primaryCurrentInputStructurallyRejectsExactDeliveryState() {
+        let accidentalDestinationMode = ModeConfig(
+            name: "Must be discarded",
+            isAIEnhancementEnabled: false,
+            outputMode: .paste,
+            autoSendKey: .enter
+        )
+        let primary = RecordingPasteTarget(
+            destination: .primaryCurrentInput,
+            focusedInput: nil,
+            mode: accidentalDestinationMode
+        )
+
+        #expect(RecordingPasteDestination.primaryCurrentInput.usesBaseCurrentInputDelivery)
+        #expect(!RecordingPasteDestination.primaryCurrentInput.usesAppSpecificExactDelivery)
+        #expect(RecordingPasteDestination.recordingStart.usesAppSpecificExactDelivery)
+        #expect(RecordingPasteDestination.focusedDuringTranscription.usesAppSpecificExactDelivery)
+        #expect(primary.focusedInput == nil)
+        #expect(primary.mode == nil)
+        #expect(primary.resolvedAutoSendKey(currentInputKey: .commandEnter) == AutoSendKey.commandEnter)
+
+        let latched = RecordingPasteTarget(
+            destination: .focusedDuringTranscription,
+            focusedInput: nil,
+            mode: accidentalDestinationMode
+        )
+        #expect(latched.mode == accidentalDestinationMode)
+        #expect(latched.resolvedAutoSendKey(currentInputKey: .shiftEnter) == AutoSendKey.enter)
+    }
+
+    @Test func realtimeDraftRangeReplacesOnlyItsMutableHypothesis() {
+        let initial = "before selected after"
+        let range = RealtimeDraftTextRange(
+            location: 7,
+            insertedText: "selected",
+            originalText: ""
+        )
+
+        #expect(range.ownedSubstringMatches(in: initial))
+        #expect(range.replacingOwnedText(
+            in: initial,
+            with: "mutable hypothesis"
+        ) == "before mutable hypothesis after")
+
+        let updated = range.replacingInsertedText(with: "mutable hypothesis")
+        #expect(updated.location == 7)
+        #expect(updated.nsRange.length == "mutable hypothesis".utf16.count)
+        #expect(updated.ownedSubstringMatches(
+            in: "before mutable hypothesis after"
+        ))
+    }
+
+    @Test func realtimeDraftRangeUsesUTF16AndRejectsStaleOrRepeatedText() {
+        let value = "🙂 prefix live suffix live"
+        let location = ("🙂 prefix " as NSString).length
+        let range = RealtimeDraftTextRange(
+            location: location,
+            insertedText: "live",
+            originalText: ""
+        )
+
+        #expect(range.ownedSubstringMatches(in: value))
+        #expect(range.replacingOwnedText(
+            in: value,
+            with: "new"
+        ) == "🙂 prefix new suffix live")
+        #expect(!range.ownedSubstringMatches(
+            in: "🙂 prefix changed suffix live"
+        ))
+        #expect(range.replacingOwnedText(
+            in: value,
+            with: ""
+        ) == "🙂 prefix  suffix live")
+    }
+
+    @Test func realtimeDraftOutputPolicyUsesTheExactTargetMode() {
+        #expect(RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: false,
+            outputMode: .paste
+        ))
+        #expect(!RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: false,
+            outputMode: .customCommand
+        ))
+        #expect(!RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: false,
+            outputMode: .respond
+        ))
+        #expect(RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: true,
+            outputMode: .customCommand
+        ))
+    }
+
+    @Test func realtimeCleanupLeaseRejectsFocusBackAndNewerHypotheses() {
+        let ownershipID = UUID()
+        let originalRange = RealtimeDraftTextRange(
+            location: 3,
+            insertedText: "first",
+            originalText: ""
+        )
+        let lease = RealtimeDraftCleanupLease(
+            ownershipID: ownershipID,
+            textRange: originalRange
+        )
+
+        #expect(lease.remainsValid(
+            currentOwnershipID: ownershipID,
+            currentTextRange: originalRange,
+            activeOwnershipID: nil
+        ))
+        #expect(!lease.remainsValid(
+            currentOwnershipID: ownershipID,
+            currentTextRange: originalRange,
+            activeOwnershipID: ownershipID
+        ))
+        #expect(!lease.remainsValid(
+            currentOwnershipID: ownershipID,
+            currentTextRange: originalRange.replacingInsertedText(with: "newer"),
+            activeOwnershipID: nil
+        ))
+        #expect(!lease.remainsValid(
+            currentOwnershipID: UUID(),
+            currentTextRange: originalRange,
+            activeOwnershipID: nil
+        ))
+    }
+
+    @MainActor
+    @Test func backgroundAutoSendSeparatesUnreadableFromReadableNoOp() {
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: nil
+        ) == .unreadable)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript"
+        ) == .unchanged)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: ""
+        ) == .verifiedCleared)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript\n"
+        ) == .modifiedWithoutSubmit)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "Ask for follow-up changes",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .verifiedCleared)
+        #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "unrelated reset status",
+            currentPlaceholder: nil
+        ) == .unreadable)
+
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: nil,
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .unreadable)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript\n",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .modifiedWithoutSubmit)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "Ask for follow-up changes",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .verifiedCleared)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "Ask for follow-up changes",
+            currentText: "Ask for follow-up changes",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .unchanged)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "latched transcript\nnew draft",
+            currentPlaceholder: "Ask for follow-up changes"
+        ) == .modifiedWithoutSubmit)
+        #expect(TranscriptionDelivery.classifyForegroundOpenAIAutoSendVerification(
+            previousText: "latched transcript",
+            currentText: "unrelated reset status",
+            currentPlaceholder: nil
+        ) == .unreadable)
+
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .unreadable
+        ) == .none)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .verifiedCleared
+        ) == .none)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .unchanged
+        ) == .unchangedComposerError)
+        #expect(TranscriptionDelivery.backgroundAutoSendUserFeedback(
+            verification: .modifiedWithoutSubmit
+        ) == .modifiedWithoutSubmitError)
+
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .verifiedCleared
+        ) == .verified)
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .unreadable
+        ) == .indeterminate)
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .unchanged
+        ) == .failed)
+        #expect(TranscriptionDelivery.autoSendOutcome(
+            verification: .modifiedWithoutSubmit
+        ) == .failed)
+
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .verifiedCleared,
+            exactTargetStillOwnsKeyboardFocus: false
+        ) == .verified)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ) == .failed)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .modifiedWithoutSubmit,
+            exactTargetStillOwnsKeyboardFocus: true
+        ) == .failed)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: false
+        ) == .indeterminate)
+        #expect(TranscriptionDelivery.foregroundOpenAIAutoSendOutcome(
+            verification: .modifiedWithoutSubmit,
+            exactTargetStillOwnsKeyboardFocus: false
+        ) == .indeterminate)
+
+        #expect(TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter,
+            verification: .modifiedWithoutSubmit,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: false
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .shiftEnter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+    }
+
+    @MainActor
+    @Test func backgroundFocusSnapshotRestoresFalseAndOmitsUnreadableValues() {
+        typealias Slot = FocusLockService.BackgroundFocusBooleanSlot
+        let snapshot = FocusLockService.BackgroundFocusBooleanSnapshot { slot in
+            switch slot {
+            case .targetWindowMain: false
+            case .targetWindowFocused: false
+            case .targetElementFocused: true
+            case .previousWindowMain: true
+            case .previousWindowFocused: true
+            case .previousElementFocused: nil
+            }
+        }
+        var restored: [Slot: Bool] = [:]
+
+        #expect(snapshot.restore { slot, value in
+            restored[slot] = value
+            return true
+        })
+        #expect(restored[.targetWindowMain] == false)
+        #expect(restored[.targetWindowFocused] == false)
+        #expect(restored[.targetElementFocused] == true)
+        #expect(restored[.previousWindowMain] == true)
+        #expect(restored[.previousWindowFocused] == true)
+        #expect(restored[.previousElementFocused] == nil)
+        #expect(snapshot.matches { restored[$0] })
+        #expect(!snapshot.containsAll([.previousElementFocused]))
+        #expect(snapshot.missing(from: [.targetWindowMain, .previousElementFocused]) == [
+            .previousElementFocused
+        ])
+
+        var restorationOrder: [Slot] = []
+        #expect(snapshot.restore { slot, _ in
+            restorationOrder.append(slot)
+            return true
+        })
+        #expect(restorationOrder == [
+            .targetWindowMain,
+            .targetWindowFocused,
+            .targetElementFocused,
+            .previousWindowMain,
+            .previousWindowFocused
+        ])
+
+        var attempted: [Slot] = []
+        #expect(!snapshot.restore { slot, _ in
+            attempted.append(slot)
+            return slot != .targetWindowFocused
+        })
+        #expect(attempted.contains(.previousWindowFocused))
+    }
+
+    @MainActor
+    @Test func telegramRetainedInputRequiresReadableMatchingChatAndInternalFocus() {
+        let captured = [
+            "VoiceInk Telegram disposable context anchor",
+            "Saved Messages stable disposable context"
+        ]
+        #expect(FocusLockService.isTelegram(
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(!FocusLockService.isTelegram(
+            bundleIdentifier: "com.openai.codex"
+        ))
+        #expect(FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: captured,
+            internalFocusMatches: true,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: [],
+            internalFocusMatches: true,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: ["Different disposable chat"],
+            internalFocusMatches: true,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: captured,
+            internalFocusMatches: false,
+            structureMatches: true
+        ))
+        #expect(!FocusLockService.telegramRetainedInputAllowed(
+            capturedContextAnchors: captured,
+            currentContextAnchors: captured,
+            internalFocusMatches: true,
+            structureMatches: false
+        ))
+    }
+
+    @MainActor
+    @Test func telegramParentlessComposerRequiresOneEnclosingWindow() {
+        let composer = CGRect(x: 120, y: 740, width: 540, height: 52)
+        #expect(FocusLockService.uniqueContainingWindowIndex(
+            elementFrame: composer,
+            windowFrames: [
+                CGRect(x: 900, y: 50, width: 60, height: 20),
+                CGRect(x: 80, y: 100, width: 650, height: 760)
+            ]
+        ) == 1)
+        #expect(FocusLockService.uniqueContainingWindowIndex(
+            elementFrame: composer,
+            windowFrames: [
+                CGRect(x: 80, y: 100, width: 650, height: 760),
+                CGRect(x: 100, y: 700, width: 600, height: 100)
+            ]
+        ) == nil)
+        #expect(FocusLockService.uniqueContainingWindowIndex(
+            elementFrame: composer,
+            windowFrames: [nil, CGRect(x: 0, y: 0, width: 40, height: 40)]
+        ) == nil)
+    }
+
+    @MainActor
+    @Test func nextTrackNeverPassesThroughWhileRecorderPanelIsVisible() {
+        #expect(RecordingShortcutManager
+            .shouldConsumeNextTrackWithoutEligibleRoute(
+                isRecorderPanelVisible: true
+            ))
+        #expect(!RecordingShortcutManager
+            .shouldConsumeNextTrackWithoutEligibleRoute(
+                isRecorderPanelVisible: false
+            ))
+    }
+
+    @Test func telegramVisualIdentityPinsTupleCropAndStableDigest() {
+        let tuple = TelegramWindowVisualIdentity.ApplicationTuple(
+            applicationBundleName: "Telegram.app",
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            shortVersion: "12.9",
+            build: "282526"
+        )
+        #expect(TelegramWindowVisualIdentityService.isAudited(tuple))
+        #expect(TelegramWindowVisualIdentityService.pixelCropRect(
+            imageWidth: 407,
+            imageHeight: 997
+        ) == CGRect(x: 48, y: 34, width: 262, height: 66))
+        #expect(TelegramWindowVisualIdentityService.pixelStableChatIdentityRect(
+            imageWidth: 262,
+            imageHeight: 66
+        ) == CGRect(x: 141, y: 22, width: 116, height: 35))
+
+        let stable = TelegramWindowVisualIdentityService.HeaderDigestSample(
+            width: 407,
+            height: 997,
+            digest: Data([1, 2, 3, 4]),
+            stableChatIdentityDigest: Data([5, 6, 7, 8])
+        )
+        let identity = TelegramWindowVisualIdentityService.stableIdentity(
+            applicationTuple: tuple,
+            processIdentifier: 737,
+            windowID: 244,
+            first: stable,
+            second: stable
+        )
+        #expect(identity?.windowID == 244)
+        #expect(identity?.headerDigest == stable.digest)
+        #expect(identity?.stableChatIdentityDigest == stable.stableChatIdentityDigest)
+
+        // Dynamic status pixels may change while the exact avatar/title row remains
+        // identical. This is the Telegram v2.0.245 false-rejection regression.
+        #expect(TelegramWindowVisualIdentityService.stableIdentity(
+            applicationTuple: tuple,
+            processIdentifier: 737,
+            windowID: 244,
+            first: stable,
+            second: .init(
+                width: 407,
+                height: 997,
+                digest: Data([9, 9, 9, 9]),
+                stableChatIdentityDigest: stable.stableChatIdentityDigest
+            )
+        ) != nil)
+
+        #expect(TelegramWindowVisualIdentityService.stableIdentity(
+            applicationTuple: tuple,
+            processIdentifier: 737,
+            windowID: 244,
+            first: stable,
+            second: .init(
+                width: 407,
+                height: 997,
+                digest: Data([9, 9, 9, 9]),
+                stableChatIdentityDigest: Data([8, 7, 6, 5])
+            )
+        ) == nil)
+        #expect(!TelegramWindowVisualIdentityService.isAudited(.init(
+            applicationBundleName: "Telegram.app",
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            shortVersion: "12.10",
+            build: "282527"
+        )))
+    }
+
+    @MainActor
+    @Test func telegramAccessibilityInsertionFallbackIsOneShot() async {
+        var accessibilityAttempts = 0
+        var unicodeAttempts = 0
+        var accessibilityErrors: [Int32] = []
+
+        let fallbackSucceeded = await TranscriptionDelivery
+            .executeAccessibilityFirstBackgroundInsertion(
+                allowsTargetedUnicodeFallback: true,
+                attemptAccessibility: {
+                    accessibilityAttempts += 1
+                    return .unavailable
+                },
+                fullBoundaryMatches: { true },
+                targetedUnicode: { boundary in
+                    unicodeAttempts += 1
+                    return boundary()
+                }
+            )
+        #expect(fallbackSucceeded)
+        #expect(accessibilityAttempts == 1)
+        #expect(unicodeAttempts == 1)
+
+        let setterErrorWasNotRetried = await TranscriptionDelivery
+            .executeAccessibilityFirstBackgroundInsertion(
+                allowsTargetedUnicodeFallback: true,
+                attemptAccessibility: {
+                    accessibilityAttempts += 1
+                    return .failed(AXError.cannotComplete.rawValue)
+                },
+                fullBoundaryMatches: { true },
+                onAccessibilityError: { accessibilityErrors.append($0) },
+                targetedUnicode: { _ in
+                    unicodeAttempts += 1
+                    return true
+                }
+            )
+        #expect(setterErrorWasNotRetried)
+        #expect(accessibilityAttempts == 2)
+        #expect(unicodeAttempts == 1)
+        #expect(accessibilityErrors == [AXError.cannotComplete.rawValue])
+
+        let directExactInputFailedClosed = await TranscriptionDelivery
+            .executeAccessibilityFirstBackgroundInsertion(
+                allowsTargetedUnicodeFallback: false,
+                attemptAccessibility: { .unavailable },
+                fullBoundaryMatches: { true },
+                targetedUnicode: { _ in
+                    unicodeAttempts += 1
+                    return true
+                }
+            )
+        #expect(!directExactInputFailedClosed)
+        #expect(unicodeAttempts == 1)
+    }
+
+    @MainActor
+    @Test func telegramIsAChatComposerButNeverAnOpenAIReturnRetry() {
+        #expect(TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "ru.keepcoder.Telegram"
+        ))
+        #expect(TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "com.openai.codex"
+        ))
+        #expect(!TranscriptionDelivery.isChatComposer(
+            bundleIdentifier: "com.apple.Terminal"
+        ))
+        #expect(!TranscriptionDelivery.shouldRetryForegroundOpenAIReturn(
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            autoSendKey: .enter,
+            verification: .unchanged,
+            exactTargetStillOwnsKeyboardFocus: true
+        ))
+    }
+
+    @Test func telegramRetainedSessionNeverWritesAXFocusPointers() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Modes/FocusLockService.swift"
+            ),
+            encoding: .utf8
+        )
+        let prepareStart = try #require(source.range(
+            of: "    private func prepareRetainedTelegramBackgroundDelivery("
+        ))
+        let prepareEnd = try #require(source.range(
+            of: "    static func runBackgroundPreparationWithOwnedFailureCleanup(",
+            range: prepareStart.upperBound..<source.endIndex
+        ))
+        let prepareBody = source[
+            prepareStart.lowerBound..<prepareEnd.lowerBound
+        ]
+        #expect(prepareBody.contains("CursorPaster.beginTargetedInputSession"))
+        #expect(prepareBody.contains("telegramDeliveryBoundaryMatches"))
+        #expect(!prepareBody.contains("AXUIElementSetAttributeValue"))
+
+        let finishStart = try #require(source.range(
+            of: "    private func finishRetainedTelegramBackgroundDelivery("
+        ))
+        let finishEnd = try #require(source.range(
+            of: "    func finishBackgroundDelivery(",
+            range: finishStart.upperBound..<source.endIndex
+        ))
+        let finishBody = source[
+            finishStart.lowerBound..<finishEnd.lowerBound
+        ]
+        #expect(finishBody.contains("CursorPaster.endTargetedInputSession"))
+        #expect(!finishBody.contains("AXUIElementSetAttributeValue"))
+    }
+
+    @MainActor
+    @Test func backgroundFocusPreservesExplicitlyAbsentPriorEditor() {
+        #expect(FocusLockService.priorFocusedElementReadIsRestorable(.value))
+        #expect(FocusLockService.priorFocusedElementReadIsRestorable(.absent))
+        #expect(!FocusLockService.priorFocusedElementReadIsRestorable(.failed))
+
+        #expect(FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .absent,
+            restoredElementMatchesTarget: false,
+            restoredTargetFocused: nil,
+            expectedTargetFocused: false
+        ))
+        #expect(FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .value,
+            restoredElementMatchesTarget: true,
+            restoredTargetFocused: false,
+            expectedTargetFocused: false
+        ))
+        #expect(!FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .value,
+            restoredElementMatchesTarget: false,
+            restoredTargetFocused: false,
+            expectedTargetFocused: false
+        ))
+        #expect(!FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .value,
+            restoredElementMatchesTarget: true,
+            restoredTargetFocused: true,
+            expectedTargetFocused: false
+        ))
+        #expect(!FocusLockService.absentPriorFocusedElementRestorationMatches(
+            restoredAvailability: .failed,
+            restoredElementMatchesTarget: false,
+            restoredTargetFocused: nil,
+            expectedTargetFocused: false
+        ))
+    }
+
+    @Test func cooperativeQuitIsBlockedWhileAnySessionIsInFlight() {
+        #expect(AppDelegate.shouldBlockTermination(hasInFlightSessions: true))
+        #expect(!AppDelegate.shouldBlockTermination(hasInFlightSessions: false))
+    }
+
+    @MainActor
+    @Test func backgroundFocusSessionLifecycleIsOneShotAndOwnsPartialCleanup() {
+        var lifecycle = FocusLockService.BackgroundFocusSessionLifecycle()
+        var beginCount = 0
+        var endCount = 0
+
+        #expect(lifecycle.canBegin)
+        let began = lifecycle.begin {
+            beginCount += 1
+            return true
+        }
+        #expect(began)
+        #expect(beginCount == 1)
+        #expect(!lifecycle.canBegin)
+        let beganAgain = lifecycle.begin {
+            beginCount += 1
+            return true
+        }
+        #expect(!beganAgain)
+        #expect(beginCount == 1)
+        #expect(lifecycle.requiresTeardown)
+        let scheduledRetry = lifecycle.markTeardownRetryScheduled()
+        #expect(scheduledRetry)
+        #expect(lifecycle.state == .teardownRetryScheduled)
+        let scheduledRetryAgain = lifecycle.markTeardownRetryScheduled()
+        #expect(!scheduledRetryAgain)
+        let finished = lifecycle.finish { endCount += 1 }
+        #expect(finished)
+        #expect(endCount == 1)
+        #expect(lifecycle.state == .finished)
+        let finishedAgain = lifecycle.finish { endCount += 1 }
+        #expect(!finishedAgain)
+        #expect(endCount == 1)
+
+        var beginFailed = FocusLockService.BackgroundFocusSessionLifecycle()
+        let failedToBegin = beginFailed.begin {
+            beginCount += 1
+            return false
+        }
+        #expect(!failedToBegin)
+        #expect(beginFailed.state == .ready)
+        let finishedWithoutBegin = beginFailed.finish { endCount += 1 }
+        #expect(!finishedWithoutBegin)
+        #expect(endCount == 1)
+
+        var waived = FocusLockService.BackgroundFocusSessionLifecycle()
+        let beganWaivedSession = waived.begin { true }
+        #expect(beganWaivedSession)
+        let waivedSession = waived.waiveTeardown()
+        #expect(waivedSession)
+        #expect(waived.state == .teardownWaived)
+        let finishedWaivedSession = waived.finish { endCount += 1 }
+        #expect(!finishedWaivedSession)
+        #expect(endCount == 1)
+
+        var waivedAfterRetry = FocusLockService.BackgroundFocusSessionLifecycle()
+        let beganRetryWaiver = waivedAfterRetry.begin { true }
+        #expect(beganRetryWaiver)
+        let scheduledRetryBeforeWaiver = waivedAfterRetry.markTeardownRetryScheduled()
+        #expect(scheduledRetryBeforeWaiver)
+        let waivedRetry = waivedAfterRetry.waiveTeardown()
+        #expect(waivedRetry)
+        #expect(waivedAfterRetry.state == .teardownWaived)
+        let finishedRetryWaiver = waivedAfterRetry.finish { endCount += 1 }
+        #expect(!finishedRetryWaiver)
+        #expect(endCount == 1)
+    }
+
+    @MainActor
+    @Test func backgroundTeardownDecisionCoversEveryTerminalBoundary() {
+        typealias Decision = FocusLockService.BackgroundTeardownDecision
+        typealias Boundary = FocusLockService.BackgroundTeardownBoundaryStatus
+
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: false,
+            retryCount: 0
+        ) == Decision.restoreNow)
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: false,
+            retryCount: 1
+        ) == Decision.restoreNow)
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: true,
+            retryCount: 0
+        ) == Decision.retryFullRestoration)
+        #expect(FocusLockService.backgroundTeardownDecision(
+            boundary: .safe,
+            restorationIncomplete: true,
+            retryCount: 1
+        ) == Decision.finishPartialAndEnd)
+
+        for unavailable in [Boundary.frontmostUnavailable, .systemFocusUnavailable] {
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: unavailable,
+                restorationIncomplete: false,
+                retryCount: 0
+            ) == Decision.retryFullRestoration)
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: unavailable,
+                restorationIncomplete: false,
+                retryCount: 1
+            ) == Decision.waiveWithoutMutation)
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: unavailable,
+                restorationIncomplete: true,
+                retryCount: 1
+            ) == Decision.waiveWithoutMutation)
+        }
+
+        for terminal in [Boundary.targetOwnsSystemFocus, .targetTerminated] {
+            #expect(FocusLockService.backgroundTeardownDecision(
+                boundary: terminal,
+                restorationIncomplete: true,
+                retryCount: 0
+            ) == Decision.waiveWithoutMutation)
+        }
+
+        let takeover = FocusLockService.preservedBackgroundTeardownBoundary(
+            current: .safe,
+            observed: .targetOwnsSystemFocus
+        )
+        #expect(takeover == .targetOwnsSystemFocus)
+        #expect(FocusLockService.preservedBackgroundTeardownBoundary(
+            current: takeover,
+            observed: .frontmostUnavailable
+        ) == .targetOwnsSystemFocus)
+        #expect(FocusLockService.preservedBackgroundTeardownBoundary(
+            current: takeover,
+            observed: .safe
+        ) == .targetOwnsSystemFocus)
+    }
+
+    @MainActor
+    @Test func failedBackgroundFocusPreparationBehaviorallyInvokesOwnedCleanup() async {
+        var cleanupCount = 0
+        let failed = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
+            prepare: { false },
+            cleanup: { cleanupCount += 1 }
+        )
+        #expect(!failed)
+        #expect(cleanupCount == 1)
+
+        let succeeded = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
+            prepare: { true },
+            cleanup: { cleanupCount += 1 }
+        )
+        #expect(succeeded)
+        #expect(cleanupCount == 1)
+
+        var lifecycle = FocusLockService.BackgroundFocusSessionLifecycle()
+        var beginCount = 0
+        var endCount = 0
+        let failedAfterBegin = await FocusLockService.runBackgroundPreparationWithOwnedFailureCleanup(
+            prepare: {
+                let began = lifecycle.begin {
+                    beginCount += 1
+                    return true
+                }
+                #expect(began)
+                return false
+            },
+            cleanup: {
+                let finished = lifecycle.finish { endCount += 1 }
+                #expect(finished)
+            }
+        )
+        #expect(!failedAfterBegin)
+        #expect(beginCount == 1)
+        #expect(endCount == 1)
+        #expect(lifecycle.state == .finished)
+        let finishedAgain = lifecycle.finish { endCount += 1 }
+        #expect(!finishedAgain)
+        #expect(endCount == 1)
+    }
+
+    @MainActor
+    @Test func unlabelledOpenAISendExceptionIsPinnedToExactAppAndBuildTuples() {
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "Codex.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72221",
+            build: "5307",
+            chromium: "150.0.7871.115"
+        ))
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.52143",
+            build: "5591",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.70719",
+            build: "5650",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72221",
+            build: "5307",
+            chromium: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "Codex.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "Codex.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.707.72222",
+            build: "5308",
+            chromium: "150.0.7871.115"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: nil
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.52143",
+            build: "5592",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.715.70719",
+            build: "5651",
+            chromium: "150.0.7871.124"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.chat",
+            shortVersion: "26.715.31925",
+            build: "5551",
+            chromium: "150.0.7871.124"
+        ))
+
+    }
+
+    @Test func targetedOpenAISendClickIsFailClosedAndOneShot() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let delivery = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let backgroundStart = try #require(delivery.range(
+            of: "    private func performBackgroundAutoSend("
+        ))
+        let backgroundEnd = try #require(delivery.range(
+            of: "    private func waitForBackgroundInsertion(",
+            range: backgroundStart.upperBound..<delivery.endIndex
+        ))
+        let backgroundRoute = delivery[
+            backgroundStart.lowerBound..<backgroundEnd.lowerBound
+        ]
+        #expect(backgroundRoute.contains("case .targetedClick:"))
+        #expect(backgroundRoute.contains("skyLightTargetedSendClick"))
+        #expect(backgroundRoute.contains("semanticAXPress"))
+        #expect(backgroundRoute.contains("telegramTargetedHIDReturn"))
+        #expect(backgroundRoute.contains("performTargetedTelegramHIDReturn"))
+        #expect(backgroundRoute.contains(
+            "revalidateTelegramVisualIdentityIfRequired"
+        ))
+        #expect(!backgroundRoute.contains("authenticatedSkyLightReturn"))
+        #expect(!backgroundRoute.contains("performAuthenticatedTargetedReturn"))
+        #expect(!backgroundRoute.contains("CursorPaster.performAutoSend"))
+
+        let bridge = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/SkyLightTargetedMouseEventPost.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(bridge.contains("SLEventPostToPid"))
+        #expect(bridge.contains("SLEventSetIntegerValueField"))
+        #expect(bridge.contains("CGEventSetWindowLocation"))
+        #expect(bridge.contains("_AXUIElementGetWindow"))
+        #expect(bridge.contains("clock_gettime_nsec_np(CLOCK_UPTIME_RAW)"))
+        #expect(!bridge.contains("SLEventSetAuthenticationMessage"))
+        #expect(!bridge.contains("event.postToPid("))
+        #expect(!bridge.contains("event.post(tap:"))
+
+        let paster = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/CursorPaster.swift"
+            ),
+            encoding: .utf8
+        )
+        let primitiveStart = try #require(paster.range(
+            of: "    static func performTargetedOpenAISendClick("
+        ))
+        let primitiveEnd = try #require(paster.range(
+            of: "    @MainActor\n    private static func makeOtherEvent(",
+            range: primitiveStart.upperBound..<paster.endIndex
+        ))
+        let primitive = paster[
+            primitiveStart.lowerBound..<primitiveEnd.lowerBound
+        ]
+        let lastPreparation = try #require(primitive.range(
+            of: "targetUp,\n                targetPID: targetPID"
+        ))
+        let firstPost = try #require(primitive.range(
+            of: "postPreparedEvent(\n            move"
+        ))
+        #expect(lastPreparation.lowerBound < firstPost.lowerBound)
+        #expect(primitive.contains("postPreparedEvent(\n                primerDown"))
+        #expect(primitive.contains("postPreparedEvent(\n            primerUp"))
+        #expect(primitive.contains("postPreparedEvent(\n            targetDown"))
+        #expect(primitive.contains("postPreparedEvent(\n            targetUp"))
+        #expect(!primitive.contains("performAutoSend("))
+        #expect(!primitive.contains("AXUIElementPerformAction"))
+        #expect(!primitive.contains("postToPid("))
+        #expect(!primitive.contains("post(tap:"))
+    }
+
+    @Test func targetedTelegramHIDReturnMatchesProvenPublicSequence() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paster = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/CursorPaster.swift"
+            ),
+            encoding: .utf8
+        )
+        let primitiveStart = try #require(paster.range(
+            of: "    static func performTargetedTelegramHIDReturn("
+        ))
+        let primitiveEnd = try #require(paster.range(
+            of: "    // MARK: - Auto Send Keys",
+            range: primitiveStart.upperBound..<paster.endIndex
+        ))
+        let primitive = paster[
+            primitiveStart.lowerBound..<primitiveEnd.lowerBound
+        ]
+
+        #expect(primitive.contains(
+            "CGEventSource(stateID: .hidSystemState)"
+        ))
+        #expect(primitive.contains("modifiersBegan.type = .flagsChanged"))
+        #expect(primitive.contains("keyDown.postToPid(targetPID)"))
+        #expect(primitive.contains("keyUp.postToPid(targetPID)"))
+        #expect(primitive.contains("modifiersEnded.type = .flagsChanged"))
+        #expect(primitive.contains(
+            "CGEventSource.flagsState(.combinedSessionState)"
+        ))
+        #expect(primitive.contains("modifiersEnded.postToPid(targetPID)"))
+        #expect(primitive.contains("mach_absolute_time()"))
+        #expect(primitive.contains("guard canPost() else"))
+        #expect(!primitive.contains("post(tap:"))
+        #expect(!primitive.contains("await wait"))
+        #expect(!primitive.contains("SLEvent"))
+        #expect(!primitive.contains("beginTargetedInputSession"))
+    }
+
+    @MainActor
+    @Test func semanticSendFinalGateRejectsStopAndUnauditedUnlabelledButtons() {
+        var actionCount = 0
+        func attempt(
+            label: String?,
+            allowsAuditedUnlabelledSend: Bool,
+            labelWasReadable: Bool = true
+        ) -> FocusLockService.NearbySubmitButtonResult {
+            FocusLockService.performProvenSemanticSend(
+                isUnambiguous: true,
+                pidMatches: true,
+                windowMatches: true,
+                geometryMatches: true,
+                roleMatches: true,
+                enabled: true,
+                label: label,
+                labelWasReadable: labelWasReadable,
+                allowsAuditedUnlabelledSend: allowsAuditedUnlabelledSend,
+                hasPressAction: true,
+                boundaryMatches: true,
+                action: {
+                    actionCount += 1
+                    return 0
+                }
+            )
+        }
+
+        #expect(attempt(label: "Stop", allowsAuditedUnlabelledSend: true) == .unavailable)
+        #expect(attempt(label: nil, allowsAuditedUnlabelledSend: false) == .unavailable)
+        #expect(attempt(
+            label: nil,
+            allowsAuditedUnlabelledSend: true,
+            labelWasReadable: false
+        ) == .unavailable)
+        #expect(actionCount == 0)
+        #expect(attempt(label: "Send", allowsAuditedUnlabelledSend: false) == .pressed)
+        #expect(actionCount == 1)
+        #expect(attempt(label: nil, allowsAuditedUnlabelledSend: true) == .pressed)
+        #expect(actionCount == 2)
+    }
+
+    @MainActor
+    @Test func CodexTraversalMergesNavigationVisibleAndOrdinaryChildren() {
+        #expect(FocusLockService.mergedTraversalChildren(
+            visible: [1],
+            ordinary: [2],
+            navigationOrder: [3],
+            areEquivalent: { $0 == $1 }
+        ) == [3, 1, 2])
+        #expect(FocusLockService.mergedTraversalChildren(
+            visible: [],
+            ordinary: [2],
+            navigationOrder: [3, 2],
+            areEquivalent: { $0 == $1 }
+        ) == [3, 2])
+        #expect(FocusLockService.mergedTraversalChildren(
+            visible: [2, 3],
+            ordinary: [1, 3],
+            navigationOrder: [3, 2],
+            areEquivalent: { $0 == $1 }
+        ) == [3, 2, 1])
+    }
+
+    @MainActor
+    @Test func semanticSendGeometryRejectsRemoteButtons() {
+        let editor = CGRect(x: 100, y: 100, width: 600, height: 100)
+        #expect(FocusLockService.semanticSendGeometryMatches(
+            editorFrame: editor,
+            candidateFrame: CGRect(x: 650, y: 150, width: 32, height: 32)
+        ))
+        #expect(!FocusLockService.semanticSendGeometryMatches(
+            editorFrame: editor,
+            candidateFrame: CGRect(x: 1_500, y: 900, width: 32, height: 32)
+        ))
+    }
+
+    @MainActor
+    @Test func deferredForegroundAutoSendNeverReactivatesAnExactInput() {
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: true,
+            targetIsFrontmost: true
+        ) == .foregroundExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: false
+        ) == .nonActivatingExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: true
+        ) == .foregroundExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: true,
+            exactInputOwnsKeyboardFocus: true,
+            targetIsFrontmost: false
+        ) == .foregroundExactInput)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: false,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: false
+        ) == .failClosed)
+        #expect(TranscriptionDelivery.deferredForegroundAutoSendRoute(
+            hasExactInput: false,
+            exactInputOwnsKeyboardFocus: false,
+            targetIsFrontmost: true
+        ) == .foregroundExactInput)
+    }
+
+    @Test func foregroundDeliveryRemainsAwaitedInsideSerializedPipeline() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let pasteStart = try #require(source.range(of: "    private func paste("))
+        let backgroundStart = try #require(source.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: pasteStart.upperBound..<source.endIndex
+        ))
+        let pasteBody = source[pasteStart.lowerBound..<backgroundStart.lowerBound]
+
+        #expect(pasteBody.contains("let pasteResult = await pasteTask.value"))
+        #expect(pasteBody.contains("defer { FocusLockService.shared.clearLock() }"))
+        #expect(!pasteBody.contains("waitForForegroundInsertion"))
+        #expect(!pasteBody.contains("Task { @MainActor in"))
+    }
+
+    @Test func primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let primaryStart = try #require(deliverySource.range(
+            of: "    private func deliverPrimaryToCurrentSystemInput("
+        ))
+        let pasteStart = try #require(deliverySource.range(of: "    private func paste("))
+        let backgroundStart = try #require(deliverySource.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: primaryStart.upperBound..<deliverySource.endIndex
+        ))
+        let pasteBody = deliverySource[pasteStart.lowerBound..<primaryStart.lowerBound]
+        #expect(pasteBody.contains("if target.destination.usesBaseCurrentInputDelivery"))
+        #expect(pasteBody.contains("await deliverPrimaryToCurrentSystemInput("))
+        #expect(pasteBody.contains("target.destination.usesAppSpecificExactDelivery"))
+        let primaryRoute = try #require(pasteBody.range(
+            of: "if target.destination.usesBaseCurrentInputDelivery"
+        ))
+        let exactRoute = try #require(pasteBody.range(
+            of: "target.destination.usesAppSpecificExactDelivery"
+        ))
+        #expect(primaryRoute.lowerBound < exactRoute.lowerBound)
+
+        let primaryBody = deliverySource[
+            primaryStart.lowerBound..<backgroundStart.lowerBound
+        ]
+
+        #expect(primaryBody.contains("startPasteAtCursor(pastedText)"))
+        #expect(primaryBody.contains("method: .cgEvent"))
+        #expect(primaryBody.contains("verification=notRequired"))
+        #expect(!primaryBody.contains("focusedInput"))
+        #expect(!primaryBody.contains("foregroundAutoSendMethod"))
+        #expect(!primaryBody.contains("await performAutoSend("))
+        #expect(!primaryBody.contains("prepareBackgroundDelivery"))
+        #expect(!primaryBody.contains("deliverToBackgroundExactInput"))
+        #expect(!primaryBody.contains("verifyAndRetry"))
+        #expect(!primaryBody.contains("telegramTargetedHIDReturn"))
+        #expect(!primaryBody.contains("pressNearbySubmitButton"))
+        #expect(!primaryBody.contains("foregroundOpenAIVerificationContext"))
+
+        let engineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        let primaryStopStart = try #require(engineSource.range(
+            of: "            case .primaryCurrentInput:"
+        ))
+        let secondChanceStart = try #require(engineSource.range(
+            of: "            case .focusedDuringTranscription:",
+            range: primaryStopStart.upperBound..<engineSource.endIndex
+        ))
+        let primaryStopBody = engineSource[
+            primaryStopStart.lowerBound..<secondChanceStart.lowerBound
+        ]
+        #expect(primaryStopBody.contains("focusedInput: nil"))
+        #expect(!primaryStopBody.contains("captureFocusedInput"))
+        #expect(!primaryStopBody.contains("modeSnapshot"))
+        #expect(!primaryStopBody.contains("prepareBackgroundDelivery"))
+
+        let pipelineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(pipelineSource.contains(
+            "pasteTargetForDelivery.resolvedAutoSendKey("
+        ))
+    }
+
+    @Test func realtimePrimaryReconciliationCannotEnterNextAppSpecificDelivery() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let realtimeStart = try #require(source.range(
+            of: "    private func deliverRealtimePrimaryToCurrentSystemInput("
+        ))
+        let baseStart = try #require(source.range(
+            of: "    private func deliverPrimaryToCurrentSystemInput("
+        ))
+        let realtimeBody = source[
+            realtimeStart.lowerBound..<baseStart.lowerBound
+        ]
+
+        #expect(realtimeBody.contains("draftSession.finalizePrimary"))
+        #expect(realtimeBody.contains("method: .cgEvent"))
+        #expect(realtimeBody.contains("targetOwnsSystemKeyboardFocus"))
+        #expect(!realtimeBody.contains("prepareBackgroundDelivery"))
+        #expect(!realtimeBody.contains("deliverToBackgroundExactInput"))
+        #expect(!realtimeBody.contains("pressNearbySubmitButton"))
+        #expect(!realtimeBody.contains("telegramTargetedHIDReturn"))
+        #expect(!realtimeBody.contains("foregroundAutoSendMethod"))
+    }
+
+    @Test func realtimeDraftMutationNeverWritesAnEntireAXValue() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Modes/FocusLockService.swift"
+            ),
+            encoding: .utf8
+        )
+        let insertionStart = try #require(source.range(
+            of: "    func insertForegroundRealtimeDraft("
+        ))
+        let insertionEnd = try #require(source.range(
+            of: "    /// Replace a mutable hypothesis only while its exact target",
+            range: insertionStart.upperBound..<source.endIndex
+        ))
+        let insertionBody = source[
+            insertionStart.lowerBound..<insertionEnd.lowerBound
+        ]
+
+        let preparedStart = try #require(source.range(
+            of: "    func prepareRealtimeDraftReplacement("
+        ))
+        let preparedEnd = try #require(source.range(
+            of: "    /// Restore the original selection text only for a direct",
+            range: preparedStart.upperBound..<source.endIndex
+        ))
+        let preparedBody = source[
+            preparedStart.lowerBound..<preparedEnd.lowerBound
+        ]
+
+        let replacementStart = try #require(source.range(
+            of: "    private func replaceForegroundRealtimeDraft("
+        ))
+        let replacementEnd = try #require(source.range(
+            of: "    private func selectedTextRange(",
+            range: replacementStart.upperBound..<source.endIndex
+        ))
+        let replacementBody = source[
+            replacementStart.lowerBound..<replacementEnd.lowerBound
+        ]
+
+        let mutationBodies = [
+            String(insertionBody),
+            String(preparedBody),
+            String(replacementBody)
+        ].joined(separator: "\n")
+        let wholeValueSetter = try NSRegularExpression(
+            pattern: #"AXUIElementSetAttributeValue\s*\(\s*[^,]+,\s*kAXValueAttribute"#
+        )
+        let wholeValueSetterRange = NSRange(
+            mutationBodies.startIndex..<mutationBodies.endIndex,
+            in: mutationBodies
+        )
+
+        #expect(insertionBody.contains("selectedTextRange(from: element)"))
+        #expect(insertionBody.contains("kAXSelectedTextAttribute"))
+        #expect(preparedBody.contains("kAXSelectedTextRangeAttribute"))
+        #expect(preparedBody.contains("kAXSelectedTextAttribute"))
+        #expect(!preparedBody.contains("guard !replacement.isEmpty"))
+        #expect(replacementBody.contains("kAXSelectedTextRangeAttribute"))
+        #expect(replacementBody.contains("kAXSelectedTextAttribute"))
+        #expect(!replacementBody.contains("guard !replacement.isEmpty"))
+        #expect(wholeValueSetter.firstMatch(
+            in: mutationBodies,
+            range: wholeValueSetterRange
+        ) == nil)
+    }
+
+    @Test func realtimeNonPasteDeliveryDiscardsOnlyFocusedOwnedRange() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let draftSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/RealtimeInputDraftSession.swift"
+            ),
+            encoding: .utf8
+        )
+        let cleanupStart = try #require(draftSource.range(
+            of: "    func discardCurrentDraftForNonPasteOutput()"
+        ))
+        let cleanupEnd = try #require(draftSource.range(
+            of: "    func finish()",
+            range: cleanupStart.upperBound..<draftSource.endIndex
+        ))
+        let cleanupBody = draftSource[
+            cleanupStart.lowerBound..<cleanupEnd.lowerBound
+        ]
+
+        #expect(cleanupBody.contains("discardCurrentSystemFocusedDraft"))
+        #expect(cleanupBody.contains("targetOwnsSystemKeyboardFocus"))
+        #expect(cleanupBody.contains("restoreForegroundRealtimeDraft"))
+        #expect(!cleanupBody.contains("prepareBackgroundDelivery"))
+        #expect(!cleanupBody.contains("captureFocusedInput"))
+        #expect(!cleanupBody.contains("AXValue"))
+
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let respondBranch = try #require(deliverySource.range(
+            of: "        if request.output.outputMode == .respond,"
+        ))
+        let pasteStart = try #require(deliverySource.range(
+            of: "        if let text = request.text {",
+            range: respondBranch.upperBound..<deliverySource.endIndex
+        ))
+        let nonPasteBranches = deliverySource[
+            respondBranch.lowerBound..<pasteStart.lowerBound
+        ]
+
+        #expect(nonPasteBranches.components(
+            separatedBy: "discardCurrentDraftForNonPasteOutput()"
+        ).count - 1 == 2)
+        #expect(nonPasteBranches.contains("await deliverResponse"))
+        #expect(nonPasteBranches.contains("await deliverCustomCommand"))
+    }
+
+    @MainActor
+    @Test func exactForegroundAutoSendUsesSurfaceSpecificHandlingAndBoundsHIDRetry() throws {
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .enter
+        ) == .systemEvents)
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "com.openai.chat",
+            autoSendKey: .enter
+        ) == .systemEvents)
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "ru.keepcoder.Telegram",
+            autoSendKey: .enter
+        ) == .cgEvent)
+        #expect(TranscriptionDelivery.foregroundAutoSendMethod(
+            bundleIdentifier: "com.openai.codex",
+            autoSendKey: .shiftEnter
+        ) == .cgEvent)
+
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let autoSendStart = try #require(source.range(
+            of: "    private func performAutoSend("
+        ))
+        let feedbackStart = try #require(source.range(
+            of: "    private func showAutoSendFailure(",
+            range: autoSendStart.upperBound..<source.endIndex
+        ))
+        let autoSendBody = source[autoSendStart.lowerBound..<feedbackStart.lowerBound]
+
+        #expect(autoSendBody.contains("foregroundAutoSendMethod"))
+        #expect(autoSendBody.contains("method: sendMethod"))
+        #expect(autoSendBody.contains("verification=pending"))
+        #expect(autoSendBody.contains("verifyAndRetryForegroundOpenAIReturn"))
+        #expect(autoSendBody.contains("case .actionGuardRefused:"))
+        #expect(autoSendBody.contains("return .needsNonActivatingExactInput"))
+        #expect(autoSendBody.contains("foregroundOpenAIVerificationContext"))
+        #expect(!autoSendBody.contains("pressNearbySubmitButton"))
+        #expect(!autoSendBody.contains("performAuthenticatedTargetedReturn"))
+        #expect(autoSendBody.contains("method: .cgEvent"))
+    }
+
+    @Test func autoSendFailureWarningStaysVisibleButSilent() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let failureStart = try #require(deliverySource.range(
+            of: "    private func showAutoSendFailure("
+        ))
+        let nextFunction = try #require(deliverySource.range(
+            of: "    private func handleMissingPasteTarget(",
+            range: failureStart.upperBound..<deliverySource.endIndex
+        ))
+        let failureBody = deliverySource[
+            failureStart.lowerBound..<nextFunction.lowerBound
+        ]
+
+        #expect(failureBody.contains("type: .error"))
+        #expect(failureBody.contains("playSound: false"))
+
+        let notificationSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Notifications/NotificationManager.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(notificationSource.contains("playSound: Bool = true"))
+        #expect(notificationSource.contains("if type == .error && playSound"))
     }
 
     @MainActor
@@ -58,7 +1911,7 @@ struct VoiceInkTests {
     @Test func recorderIconPulseMapsPrimaryAndNextRoutesToSeparateIcons() {
         let session = RecordingSession()
 
-        session.signalDestinationAction(.focusedAtStop)
+        session.signalDestinationAction(.primaryCurrentInput)
         let primaryPulse = session.iconActionPulse
         #expect(primaryPulse?.icon == .currentFocus)
         #expect(session.currentFocusIconActionPulseID == primaryPulse?.id)
@@ -126,633 +1979,6 @@ struct VoiceInkTests {
         #expect(!FocusLockService.contextFingerprintMatches(
             captured: captured,
             current: []
-        ))
-    }
-
-    @MainActor
-    @Test func chatComposerSubmissionRequiresAReadableClearOrReset() {
-        let previous = "This is a test"
-
-        #expect(TranscriptionDelivery.classifyChatComposerSubmission(
-            from: previous,
-            to: ""
-        ) == .verified)
-        #expect(TranscriptionDelivery.classifyChatComposerSubmission(
-            from: previous,
-            to: " \n\t"
-        ) == .modifiedWithoutSubmit)
-        #expect(TranscriptionDelivery.classifyChatComposerSubmission(
-            from: previous,
-            to: previous
-        ) == .unchanged)
-        #expect(TranscriptionDelivery.classifyChatComposerSubmission(
-            from: previous,
-            to: previous + "\n"
-        ) == .modifiedWithoutSubmit)
-        #expect(TranscriptionDelivery.classifyChatComposerSubmission(
-            from: previous,
-            to: "edited but still present"
-        ) == .modifiedWithoutSubmit)
-        #expect(TranscriptionDelivery.classifyChatComposerSubmission(
-            from: previous,
-            to: nil
-        ) == .unavailable)
-
-    }
-
-    @MainActor
-    @Test func backgroundDeliveryAllowsUnrelatedForegroundChangesOnly() {
-        #expect(FocusLockService.backgroundTargetRemainsNonFrontmost(
-            currentFrontmostPID: 101,
-            targetPID: 202
-        ))
-        #expect(!FocusLockService.backgroundTargetRemainsNonFrontmost(
-            currentFrontmostPID: 202,
-            targetPID: 202
-        ))
-        #expect(!FocusLockService.backgroundTargetRemainsNonFrontmost(
-            currentFrontmostPID: nil,
-            targetPID: 202
-        ))
-    }
-
-    @MainActor
-    @Test func backgroundFocusModeSeparatesPreparedFloatingAndDirectRoutes() {
-        #expect(FocusLockService.backgroundFocusMode(
-            keyboardFocusMatchesTarget: true,
-            keyboardFocusOwnedByTarget: true,
-            targetIsFrontmost: false
-        ) == .alreadyKeyboardFocused)
-        #expect(FocusLockService.backgroundFocusMode(
-            keyboardFocusMatchesTarget: false,
-            keyboardFocusOwnedByTarget: true,
-            targetIsFrontmost: true
-        ) == .directExactElement)
-        #expect(FocusLockService.backgroundFocusMode(
-            keyboardFocusMatchesTarget: false,
-            keyboardFocusOwnedByTarget: false,
-            targetIsFrontmost: true
-        ) == .directExactElement)
-        #expect(FocusLockService.backgroundFocusMode(
-            keyboardFocusMatchesTarget: false,
-            keyboardFocusOwnedByTarget: false,
-            targetIsFrontmost: false
-        ) == .preparedTargetedInput)
-    }
-
-    @MainActor
-    @Test func telegramRetainedComposerRequiresReadableMatchingChatAndExactInternalFocus() {
-        let capturedPrimary = ["Saved Messages"]
-        let capturedSecondary = [
-            "Earlier disposable verification message",
-            "Another stable chat-context anchor",
-            "Fourth readable context anchor"
-        ]
-
-        #expect(FocusLockService.telegramRetainedInputAllowed(
-            capturedPrimaryContextAnchors: capturedPrimary,
-            capturedContextAnchors: capturedSecondary,
-            currentPrimaryContextAnchors: capturedPrimary,
-            currentContextAnchors: capturedSecondary + ["newer message"],
-            internalFocusMatches: true,
-            structureMatches: true
-        ))
-        #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedPrimaryContextAnchors: capturedPrimary,
-            capturedContextAnchors: capturedSecondary,
-            currentPrimaryContextAnchors: [],
-            currentContextAnchors: [],
-            internalFocusMatches: true,
-            structureMatches: true
-        ))
-        #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedPrimaryContextAnchors: capturedPrimary,
-            capturedContextAnchors: capturedSecondary,
-            currentPrimaryContextAnchors: ["Different chat"],
-            currentContextAnchors: ["Different chat", "Unrelated conversation"],
-            internalFocusMatches: true,
-            structureMatches: true
-        ))
-        #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedPrimaryContextAnchors: capturedPrimary,
-            capturedContextAnchors: capturedSecondary,
-            currentPrimaryContextAnchors: capturedPrimary,
-            currentContextAnchors: capturedSecondary,
-            internalFocusMatches: false,
-            structureMatches: true
-        ))
-        #expect(!FocusLockService.telegramRetainedInputAllowed(
-            capturedPrimaryContextAnchors: capturedPrimary,
-            capturedContextAnchors: capturedSecondary,
-            currentPrimaryContextAnchors: capturedPrimary,
-            currentContextAnchors: capturedSecondary,
-            internalFocusMatches: true,
-            structureMatches: false
-        ))
-    }
-
-    @MainActor
-    @Test func telegramShortChatTitleIdentifiesEmptySavedMessagesAndRejectsWrongChat() {
-        #expect(FocusLockService.contextAnchorIsEligible(
-            "Saved Messages",
-            role: "AXStaticText",
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(!FocusLockService.contextAnchorIsEligible(
-            "Saved Messages",
-            role: "AXTextField",
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(!FocusLockService.contextAnchorIsEligible(
-            "Saved Messages",
-            role: "AXStaticText",
-            bundleIdentifier: "com.openai.codex"
-        ))
-        #expect(!FocusLockService.contextAnchorIsEligible(
-            "online",
-            role: "AXStaticText",
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(!FocusLockService.contextAnchorIsEligible(
-            "last seen a few minutes ago",
-            role: "AXStaticText",
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(!FocusLockService.contextAnchorIsEligible(
-            "248 members",
-            role: "AXStaticText",
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(!FocusLockService.contextAnchorIsEligible(
-            "12:48",
-            role: "AXStaticText",
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-
-        #expect(FocusLockService.telegramContextFingerprintMatches(
-            capturedPrimary: ["Saved Messages"],
-            capturedSecondary: [],
-            currentPrimary: ["Saved Messages"],
-            currentSecondary: []
-        ))
-        #expect(!FocusLockService.telegramContextFingerprintMatches(
-            capturedPrimary: ["Saved Messages"],
-            capturedSecondary: [],
-            currentPrimary: ["Work chat"],
-            currentSecondary: []
-        ))
-        #expect(!FocusLockService.telegramContextFingerprintMatches(
-            capturedPrimary: ["Saved Messages"],
-            capturedSecondary: ["Earlier disposable verification message"],
-            currentPrimary: ["Different chat"],
-            currentSecondary: [
-                "Saved Messages",
-                "Earlier disposable verification message"
-            ]
-        ))
-        #expect(!FocusLockService.telegramContextFingerprintMatches(
-            capturedPrimary: ["Engineering Project Chat"],
-            capturedSecondary: [
-                "First overlapping generic context anchor",
-                "Second overlapping generic context anchor",
-                "Third overlapping generic context anchor"
-            ],
-            currentPrimary: ["Different Project Chat"],
-            currentSecondary: [
-                "First overlapping generic context anchor",
-                "Second overlapping generic context anchor",
-                "Third overlapping generic context anchor"
-            ]
-        ))
-
-        let selection = FocusLockService.selectContextAnchors(
-            [
-                FocusLockService.ContextAnchorCandidate(
-                    value: "Saved Messages",
-                    isPrimary: false
-                )
-            ] + (0..<20).map {
-                FocusLockService.ContextAnchorCandidate(
-                    value: "Long populated message history anchor number \($0)",
-                    isPrimary: false
-                )
-            } + [
-                FocusLockService.ContextAnchorCandidate(
-                    value: "Saved Messages",
-                    isPrimary: true
-                )
-            ],
-            limit: 16
-        )
-        #expect(selection.primary == ["Saved Messages"])
-        #expect(selection.secondary.count == 15)
-        #expect(!selection.secondary.contains("Saved Messages"))
-    }
-
-    @MainActor
-    @Test func telegramPrefersExactAccessibilityInsertionAndUsesChatVerification() {
-        #expect(FocusLockService.prefersAccessibilityTextInsertion(
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(!FocusLockService.prefersAccessibilityTextInsertion(
-            bundleIdentifier: "com.openai.codex"
-        ))
-        #expect(TranscriptionDelivery.isChatComposer(
-            bundleIdentifier: "ru.keepcoder.Telegram"
-        ))
-        #expect(TranscriptionDelivery.isChatComposer(
-            bundleIdentifier: "com.openai.codex"
-        ))
-        #expect(TranscriptionDelivery.isChatComposer(
-            bundleIdentifier: "com.anthropic.claudefordesktop"
-        ))
-        #expect(FocusLockService.supportsSemanticSend(
-            bundleIdentifier: "com.anthropic.claudefordesktop"
-        ))
-        #expect(!TranscriptionDelivery.isChatComposer(
-            bundleIdentifier: "com.apple.TextEdit"
-        ))
-
-        #expect(TranscriptionDelivery.shouldUseTargetedUnicodeFallback(
-            after: .unavailable,
-            requiresDirectAccessibilityInsertion: false
-        ))
-        #expect(!TranscriptionDelivery.shouldUseTargetedUnicodeFallback(
-            after: .focusSafetyViolation,
-            requiresDirectAccessibilityInsertion: false
-        ))
-        #expect(!TranscriptionDelivery.shouldUseTargetedUnicodeFallback(
-            after: .failed(AXError.cannotComplete.rawValue),
-            requiresDirectAccessibilityInsertion: false
-        ))
-        #expect(!TranscriptionDelivery.shouldUseTargetedUnicodeFallback(
-            after: .acceptedSelectedText,
-            requiresDirectAccessibilityInsertion: false
-        ))
-        #expect(!TranscriptionDelivery.shouldUseTargetedUnicodeFallback(
-            after: .unavailable,
-            requiresDirectAccessibilityInsertion: true
-        ))
-    }
-
-    @MainActor
-    @Test func foregroundChatSubmitWaitsOnlyUntilTheExactPasteAppears() {
-        #expect(TranscriptionDelivery.foregroundChatPasteIsReady(
-            insertedText: "This is a test ",
-            previousText: "draft",
-            currentText: "draftThis is a test "
-        ))
-        #expect(!TranscriptionDelivery.foregroundChatPasteIsReady(
-            insertedText: "This is a test",
-            previousText: "draft",
-            currentText: "draft"
-        ))
-        #expect(!TranscriptionDelivery.foregroundChatPasteIsReady(
-            insertedText: "This is a test",
-            previousText: "draft",
-            currentText: nil
-        ))
-
-        #expect(TranscriptionDelivery.foregroundPastePreflightMatches(
-            targetPID: 100,
-            frontmostPID: 100,
-            hasExactInput: true,
-            exactInputOwnsKeyboardFocus: true
-        ))
-        #expect(!TranscriptionDelivery.foregroundPastePreflightMatches(
-            targetPID: 100,
-            frontmostPID: 200,
-            hasExactInput: false,
-            exactInputOwnsKeyboardFocus: false
-        ))
-        #expect(!TranscriptionDelivery.foregroundPastePreflightMatches(
-            targetPID: 100,
-            frontmostPID: 100,
-            hasExactInput: true,
-            exactInputOwnsKeyboardFocus: false
-        ))
-    }
-
-    @MainActor
-    @Test func foregroundChatSemanticFallbackIsOneShotAndExactFocusGated() {
-        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
-            result: .pressed,
-            exactInputOwnsKeyboardFocus: false
-        ) == .verifyOnly)
-        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
-            result: .failed(AXError.cannotComplete.rawValue),
-            exactInputOwnsKeyboardFocus: true
-        ) == .verifyOnly)
-        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
-            result: .unavailable,
-            exactInputOwnsKeyboardFocus: true
-        ) == .issueExactFocusReturn)
-        #expect(TranscriptionDelivery.foregroundSemanticActionPlan(
-            result: .unavailable,
-            exactInputOwnsKeyboardFocus: false
-        ) == .focusMoved)
-
-        #expect(TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
-            bundleIdentifier: "com.openai.codex",
-            semanticResult: .pressed,
-            verification: .unchanged,
-            exactInputOwnsKeyboardFocus: true
-        ))
-        #expect(!TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
-            bundleIdentifier: "com.openai.codex",
-            semanticResult: .failed(AXError.cannotComplete.rawValue),
-            verification: .unchanged,
-            exactInputOwnsKeyboardFocus: true
-        ))
-        #expect(!TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
-            bundleIdentifier: "com.anthropic.claudefordesktop",
-            semanticResult: .pressed,
-            verification: .unchanged,
-            exactInputOwnsKeyboardFocus: true
-        ))
-        #expect(!TranscriptionDelivery.shouldRetryForegroundSemanticSendWithReturn(
-            bundleIdentifier: "com.openai.codex",
-            semanticResult: .pressed,
-            verification: .unchanged,
-            exactInputOwnsKeyboardFocus: false
-        ))
-    }
-
-    @MainActor
-    @Test func telegramUnicodeFallbackChecksFullChatBeforeEveryChunk() async {
-        var accessibilityAttempts = 0
-        var fullBoundaryChecks = 0
-        var postedChunks = 0
-
-        let result = await TranscriptionDelivery
-            .executeAccessibilityFirstBackgroundInsertion(
-                requiresDirectAccessibilityInsertion: false,
-                attemptAccessibility: {
-                    accessibilityAttempts += 1
-                    return .unavailable
-                },
-                fullBoundaryMatches: {
-                    fullBoundaryChecks += 1
-                    // Initial fallback gate and chunk zero are safe. The chat then
-                    // changes before chunk two, which must never be posted.
-                    return fullBoundaryChecks <= 2
-                },
-                targetedUnicode: { beforeChunk in
-                    await CursorPaster.runTargetedUnicodeChunks(
-                        Array(repeating: UInt16(65), count: 60),
-                        beforeChunk: beforeChunk
-                    ) { _ in
-                        postedChunks += 1
-                        return true
-                    }
-                }
-            )
-
-        #expect(!result)
-        #expect(accessibilityAttempts == 1)
-        #expect(fullBoundaryChecks == 3)
-        #expect(postedChunks == 1)
-    }
-
-    @MainActor
-    @Test func telegramInsertionFallbackIsOneShotAndSetterErrorsNeverRetry() async {
-        var directUnicodeCalls = 0
-        let directResult = await TranscriptionDelivery
-            .executeAccessibilityFirstBackgroundInsertion(
-                requiresDirectAccessibilityInsertion: true,
-                attemptAccessibility: { .unavailable },
-                fullBoundaryMatches: { true },
-                targetedUnicode: { _ in
-                    directUnicodeCalls += 1
-                    return true
-                }
-            )
-        #expect(!directResult)
-        #expect(directUnicodeCalls == 0)
-
-        var accessibilityAttempts = 0
-        var unicodeCallsAfterSetterError = 0
-        var observedError: Int32?
-        let setterErrorResult = await TranscriptionDelivery
-            .executeAccessibilityFirstBackgroundInsertion(
-                requiresDirectAccessibilityInsertion: false,
-                attemptAccessibility: {
-                    accessibilityAttempts += 1
-                    return .failed(AXError.cannotComplete.rawValue)
-                },
-                fullBoundaryMatches: { true },
-                onAccessibilityError: { observedError = $0 },
-                targetedUnicode: { _ in
-                    unicodeCallsAfterSetterError += 1
-                    return true
-                }
-            )
-        #expect(setterErrorResult)
-        #expect(accessibilityAttempts == 1)
-        #expect(unicodeCallsAfterSetterError == 0)
-        #expect(observedError == AXError.cannotComplete.rawValue)
-    }
-
-    @MainActor
-    @Test func semanticSendLabelsAcceptSendAndRejectStopOrUnlabelledControls() {
-        for label in ["Send", "Send message", "Send follow-up", "Submit", "send-button", "sendbutton"] {
-            #expect(FocusLockService.isProvenSemanticSendLabel(label))
-        }
-        for label in [nil, "", "Stop", "Cancel", "Pause", "Voice message"] as [String?] {
-            #expect(!FocusLockService.isProvenSemanticSendLabel(label))
-        }
-    }
-
-    @MainActor
-    @Test func semanticSendGatePerformsNoActionForAmbiguousOrWrongTarget() {
-        var actionCount = 0
-        let action = { () -> Int32 in
-            actionCount += 1
-            return AXError.success.rawValue
-        }
-
-        let ambiguous = FocusLockService.performProvenSemanticSend(
-            isUnambiguous: false,
-            pidMatches: true,
-            windowMatches: true,
-            geometryMatches: true,
-            roleMatches: true,
-            enabled: true,
-            label: "Send",
-            hasPressAction: true,
-            boundaryMatches: true,
-            action: action
-        )
-        let wrongPID = FocusLockService.performProvenSemanticSend(
-            isUnambiguous: true,
-            pidMatches: false,
-            windowMatches: true,
-            geometryMatches: true,
-            roleMatches: true,
-            enabled: true,
-            label: "Send",
-            hasPressAction: true,
-            boundaryMatches: true,
-            action: action
-        )
-        let wrongWindow = FocusLockService.performProvenSemanticSend(
-            isUnambiguous: true,
-            pidMatches: true,
-            windowMatches: false,
-            geometryMatches: true,
-            roleMatches: true,
-            enabled: true,
-            label: "Send",
-            hasPressAction: true,
-            boundaryMatches: true,
-            action: action
-        )
-        #expect(ambiguous == .unavailable)
-        #expect(wrongPID == .unavailable)
-        #expect(wrongWindow == .unavailable)
-        #expect(actionCount == 0)
-
-        let valid = FocusLockService.performProvenSemanticSend(
-            isUnambiguous: true,
-            pidMatches: true,
-            windowMatches: true,
-            geometryMatches: true,
-            roleMatches: true,
-            enabled: true,
-            label: "Send",
-            hasPressAction: true,
-            boundaryMatches: true,
-            action: action
-        )
-        #expect(valid == .pressed)
-        #expect(actionCount == 1)
-    }
-
-    @MainActor
-    @Test func postSubmitReplacementRequiresExactIdentityFocusAndGeometry() {
-        let expected = CGRect(x: 100, y: 200, width: 500, height: 80)
-        let nearby = CGRect(x: 104, y: 202, width: 500, height: 80)
-
-        #expect(FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: false,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: false,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: false,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: false,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: CGRect(x: 180, y: 200, width: 500, height: 80)
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: false,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: false,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: false,
-            expectedFrame: expected,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: nil,
-            currentFrame: nearby
-        ))
-        #expect(!FocusLockService.postSubmissionReplacementAllowed(
-            sameProcess: true,
-            sameWindow: true,
-            internallyFocused: true,
-            roleMatches: true,
-            subroleMatches: true,
-            stableIdentifierMatches: true,
-            domIdentifierMatches: true,
-            expectedFrame: expected,
-            currentFrame: nil
         ))
     }
 
