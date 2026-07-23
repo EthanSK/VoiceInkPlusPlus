@@ -29,9 +29,9 @@ Each entry looks like:
 **Trigger:** Ethan asked whether the other voice model was working and required it to be selected only after a real successful test.
 **Symptom:** Soniox real-time initially looked as though it timed out, so every active Mode remained on tuned Deepgram with real-time disabled.
 **Root cause:** The first standalone probe waited for the WebSocket connection to emit finished after sending Soniox <fin>, but Soniox intentionally keeps that stream open; VoiceInk++ correctly treats the committed final token after <fin> as completion.
-**Fix:** A corrected funded-account probe sent synthetic non-private speech to Soniox stt-rt-v5, received a committed non-empty 69-character transcript in 4.99 seconds, and all seven live Mode records plus CurrentTranscriptionModel were switched to Soniox V5 stt-async-v5 with real-time enabled before launching v2.0.249.
+**Fix:** A corrected funded-account probe sent synthetic non-private speech to Soniox stt-rt-v5, received a committed non-empty 69-character transcript in 4.99 seconds, and all seven live Mode records plus CurrentTranscriptionModel were switched to Soniox V5 stt-async-v5 with real-time enabled before launching v2.0.249. Ethan's first real microphone recording then connected in 0.426 seconds and produced a committed 99-character final transcript 0.320 seconds after stop.
 **Commit:** runtime configuration on installed v2.0.249 source 5c85c78
-**Guard:** After launch, defaults prove 7/7 Mode records select stt-async-v5 with isRealtimeTranscriptionEnabled=true; the app resolves that pair to stt-rt-v5. One real microphone dictation remains the final physical acceptance test.
+**Guard:** After launch, defaults prove 7/7 Mode records select stt-async-v5 with isRealtimeTranscriptionEnabled=true; the app resolves that pair to stt-rt-v5. The live microphone trace confirms the streaming provider itself. That run's later Telegram exact-input resolution failure is separate delivery evidence and must not be misdiagnosed as a Soniox failure.
 ---
 
 
