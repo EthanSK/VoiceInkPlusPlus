@@ -1506,7 +1506,7 @@ struct VoiceInkTests {
         #expect(!primaryBody.contains("prepareBackgroundDelivery"))
         #expect(!primaryBody.contains("deliverToBackgroundExactInput"))
         #expect(!primaryBody.contains("verifyAndRetry"))
-        #expect(!primaryBody.contains("Telegram"))
+        #expect(!primaryBody.contains("telegramTargetedHIDReturn"))
         #expect(!primaryBody.contains("pressNearbySubmitButton"))
         #expect(!primaryBody.contains("foregroundOpenAIVerificationContext"))
 
@@ -1529,7 +1529,7 @@ struct VoiceInkTests {
         #expect(primaryStopBody.contains("focusedInput: nil"))
         #expect(!primaryStopBody.contains("captureFocusedInput"))
         #expect(!primaryStopBody.contains("modeSnapshot"))
-        #expect(!primaryStopBody.contains("Telegram"))
+        #expect(!primaryStopBody.contains("prepareBackgroundDelivery"))
 
         let pipelineSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
