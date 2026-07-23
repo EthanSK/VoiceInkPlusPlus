@@ -586,6 +586,15 @@ final class TranscriptionDelivery {
         defer { FocusLockService.shared.clearLock() }
 
         if let draftSession = targetRealtimeDraftSession,
+           draftSession.isMutationBlocked(for: deliveryInput) {
+            _ = ClipboardManager.copyToClipboard(pastedText)
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Couldn’t safely finalize the realtime draft — final transcription copied to clipboard"),
+                type: .error
+            )
+            vippLog.error("paste: foreground realtime draft blocked after an earlier indeterminate mutation; skipped duplicate paste/Return targetPid=\(targetPID, privacy: .public)")
+            return
+        } else if let draftSession = targetRealtimeDraftSession,
            let ownership = draftSession.ownership(matching: deliveryInput) {
             // The transcript is already present in this exact input. Replace only the
             // range owned by this recording with the final processed text; ordinary
@@ -849,6 +858,14 @@ final class TranscriptionDelivery {
         vippLog.info("paste: background exact focus verified targetPid=\(session.processIdentifier, privacy: .public) preparationFrontmostPid=\(session.frontmostProcessIdentifierAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public) destination=\(String(describing: target.destination), privacy: .public)")
         let insertionVerified: Bool
         if let draftSession = realtimeInputDraftSession,
+           draftSession.isMutationBlocked(for: focusedInput) {
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "realtime draft mutation was previously indeterminate for this app"
+            )
+            return
+        } else if let draftSession = realtimeInputDraftSession,
            let ownership = draftSession.ownership(matching: focusedInput) {
             // The exact background target already contains an earlier realtime
             // hypothesis. Select and replace only that owned range; falling through to

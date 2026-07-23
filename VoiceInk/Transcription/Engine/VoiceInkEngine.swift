@@ -333,7 +333,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // newest cumulative hypothesis into whichever input owns the system caret
             // now, then freeze partial mutations. Final delivery reconciles that exact
             // owned range and performs one Return; non-realtime sessions are no-ops.
-            active.realtimeInputDraftSession?.flushBeforeStop()
+            active.realtimeInputDraftSession?.flushBeforeStop(
+                forceRawOutput: active.skipPostProcessing
+            )
 
             switch stopPasteDestination {
             case .recordingStart:
@@ -609,12 +611,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 return
                             }
                             session.partialTranscript = partial
-                            let currentOutput = ModeRuntimeResolver.outputConfiguration()
                             session.realtimeInputDraftSession?.receive(
                                 partial,
-                                mayWriteCurrentMode:
-                                    session.skipPostProcessing
-                                    || currentOutput.outputMode == .paste
+                                forceRawOutput: session.skipPostProcessing
                             )
                             // Mirror to the engine's derived partial only while this is the
                             // active recording session (it always is here, but be explicit).

@@ -494,6 +494,63 @@ struct VoiceInkTests {
         #expect(!range.ownedSubstringMatches(
             in: "🙂 prefix changed suffix live"
         ))
+        #expect(range.replacingOwnedText(
+            in: value,
+            with: ""
+        ) == "🙂 prefix  suffix live")
+    }
+
+    @Test func realtimeDraftOutputPolicyUsesTheExactTargetMode() {
+        #expect(RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: false,
+            outputMode: .paste
+        ))
+        #expect(!RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: false,
+            outputMode: .customCommand
+        ))
+        #expect(!RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: false,
+            outputMode: .respond
+        ))
+        #expect(RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: true,
+            outputMode: .customCommand
+        ))
+    }
+
+    @Test func realtimeCleanupLeaseRejectsFocusBackAndNewerHypotheses() {
+        let ownershipID = UUID()
+        let originalRange = RealtimeDraftTextRange(
+            location: 3,
+            insertedText: "first",
+            originalText: ""
+        )
+        let lease = RealtimeDraftCleanupLease(
+            ownershipID: ownershipID,
+            textRange: originalRange
+        )
+
+        #expect(lease.remainsValid(
+            currentOwnershipID: ownershipID,
+            currentTextRange: originalRange,
+            activeOwnershipID: nil
+        ))
+        #expect(!lease.remainsValid(
+            currentOwnershipID: ownershipID,
+            currentTextRange: originalRange,
+            activeOwnershipID: ownershipID
+        ))
+        #expect(!lease.remainsValid(
+            currentOwnershipID: ownershipID,
+            currentTextRange: originalRange.replacingInsertedText(with: "newer"),
+            activeOwnershipID: nil
+        ))
+        #expect(!lease.remainsValid(
+            currentOwnershipID: UUID(),
+            currentTextRange: originalRange,
+            activeOwnershipID: nil
+        ))
     }
 
     @MainActor
@@ -1673,8 +1730,10 @@ struct VoiceInkTests {
         #expect(insertionBody.contains("kAXSelectedTextAttribute"))
         #expect(preparedBody.contains("kAXSelectedTextRangeAttribute"))
         #expect(preparedBody.contains("kAXSelectedTextAttribute"))
+        #expect(!preparedBody.contains("guard !replacement.isEmpty"))
         #expect(replacementBody.contains("kAXSelectedTextRangeAttribute"))
         #expect(replacementBody.contains("kAXSelectedTextAttribute"))
+        #expect(!replacementBody.contains("guard !replacement.isEmpty"))
         #expect(wholeValueSetter.firstMatch(
             in: mutationBodies,
             range: wholeValueSetterRange

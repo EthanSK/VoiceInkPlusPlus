@@ -1316,8 +1316,7 @@ final class FocusLockService: ObservableObject {
         ownership: RealtimeInputDraftOwnership,
         for session: BackgroundDeliverySession
     ) -> PreparedRealtimeDraftReplacement {
-        guard !replacement.isEmpty,
-              targetsReferToSameExactInput(ownership.target, session.target),
+        guard targetsReferToSameExactInput(ownership.target, session.target),
               backgroundSessionRemainsPrepared(session),
               let currentValue = stringAttribute(
                 kAXValueAttribute,
@@ -1348,14 +1347,20 @@ final class FocusLockService: ObservableObject {
             kAXSelectedTextRangeAttribute,
             on: session.element
         ),
-        backgroundSessionRemainsPrepared(session),
-        setSelectedTextRange(
+        backgroundSessionRemainsPrepared(session) else {
+            return .unavailableBeforeMutation
+        }
+        guard setSelectedTextRange(
             ownership.textRange.nsRange,
             on: session.element
-        ),
-        backgroundSessionRemainsPrepared(session),
-        stringAttribute(kAXValueAttribute, from: session.element) == currentValue else {
-            return .unavailableBeforeMutation
+        ) else {
+            // AX can report an error after accepting a setter. Selection is a real UI
+            // mutation, so the caller must not retry or append after this boundary.
+            return .indeterminateAfterMutation
+        }
+        guard backgroundSessionRemainsPrepared(session),
+              stringAttribute(kAXValueAttribute, from: session.element) == currentValue else {
+            return .indeterminateAfterMutation
         }
 
         if session.usesPreparedTargetedInput {
@@ -1741,8 +1746,7 @@ final class FocusLockService: ObservableObject {
         _ replacement: String,
         ownership: RealtimeInputDraftOwnership
     ) -> RealtimeDraftMutationResult {
-        guard !replacement.isEmpty,
-              targetOwnsSystemKeyboardFocus(ownership.target),
+        guard targetOwnsSystemKeyboardFocus(ownership.target),
               let element = resolvedExactElement(for: ownership.target) else {
             return .unavailableBeforeMutation
         }
@@ -2996,14 +3000,18 @@ final class FocusLockService: ObservableObject {
         }
         guard isAttributeSettable(kAXSelectedTextRangeAttribute, on: element),
               isAttributeSettable(kAXSelectedTextAttribute, on: element),
-              targetOwnsSystemKeyboardFocus(ownership.target),
-              setSelectedTextRange(
+              targetOwnsSystemKeyboardFocus(ownership.target) else {
+            return .unavailableBeforeMutation
+        }
+        guard setSelectedTextRange(
                 ownership.textRange.nsRange,
                 on: element
-              ),
-              targetOwnsSystemKeyboardFocus(ownership.target),
+              ) else {
+            return .indeterminateAfterMutation
+        }
+        guard targetOwnsSystemKeyboardFocus(ownership.target),
               stringAttribute(kAXValueAttribute, from: element) == currentValue else {
-            return .unavailableBeforeMutation
+            return .indeterminateAfterMutation
         }
 
         _ = AXUIElementSetAttributeValue(

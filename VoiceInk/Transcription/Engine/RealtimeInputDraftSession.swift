@@ -24,6 +24,19 @@ enum RealtimeInputDraftFeature {
     }
 }
 
+/// Raw realtime text belongs in an input only when that input's resolved output is a
+/// paste, or when the recording's one-shot raw bypass explicitly forces a paste. Keep
+/// this decision target-local: a provider callback can race with an app/input change,
+/// so a boolean captured from the formerly current global Mode is not authoritative.
+enum RealtimeDraftOutputPolicy {
+    static func allowsInputMutation(
+        forceRawOutput: Bool,
+        outputMode: ModeOutputMode
+    ) -> Bool {
+        forceRawOutput || outputMode == .paste
+    }
+}
+
 /// AX selected-text ranges use UTF-16 offsets. Keep the range and the exact text that
 /// VoiceInk++ inserted together so a mutable realtime hypothesis can replace only its
 /// own bytes. `originalText` is retained solely to restore a pre-existing selection
@@ -83,6 +96,25 @@ struct RealtimeInputDraftOwnership {
     }
 }
 
+/// A same-app cleanup suspends while it prepares a direct exact-input session. During
+/// that await Ethan may return to the old input or a newer hypothesis may replace its
+/// range. The cleanup may proceed only while this immutable lease still describes the
+/// stored, inactive ownership; otherwise it could erase the newly active draft.
+struct RealtimeDraftCleanupLease: Equatable {
+    let ownershipID: UUID
+    let textRange: RealtimeDraftTextRange
+
+    func remainsValid(
+        currentOwnershipID: UUID?,
+        currentTextRange: RealtimeDraftTextRange?,
+        activeOwnershipID: UUID?
+    ) -> Bool {
+        currentOwnershipID == ownershipID
+            && currentTextRange == textRange
+            && activeOwnershipID != ownershipID
+    }
+}
+
 enum RealtimeDraftMutationResult {
     case applied(RealtimeInputDraftOwnership)
     /// Every preflight failed before a text mutation. A fresh Primary target may still
@@ -133,8 +165,13 @@ final class RealtimeInputDraftSession {
     private var activeOwnershipID: UUID?
     private var updateTask: Task<Void, Never>?
     private var latestRevision = 0
-    private var mayWriteCurrentMode = true
+    private var forceRawOutput = false
     private var acceptsLiveUpdates = true
+    // An AX setter can report failure or unreadable post-state after it may already
+    // have mutated text/selection. Never retry that app during this recording: a broad
+    // PID-level fail-closed block is safer than appending a duplicate into another
+    // wrapper from the same renderer process.
+    private var mutationBlockedPIDs: Set<pid_t> = []
     let isEnabled: Bool
 
     init(
@@ -154,9 +191,9 @@ final class RealtimeInputDraftSession {
     /// Coalesce provider bursts to at most one AX mutation every 40 ms. This is a
     /// throttle, not a trailing-edge debounce: continuous Soniox hypotheses still
     /// advance visibly instead of being postponed until the speaker pauses.
-    func receive(_ transcript: String, mayWriteCurrentMode: Bool) {
+    func receive(_ transcript: String, forceRawOutput: Bool) {
         latestTranscript = transcript
-        self.mayWriteCurrentMode = mayWriteCurrentMode
+        self.forceRawOutput = forceRawOutput
         latestRevision += 1
         guard isEnabled, acceptsLiveUpdates else { return }
         scheduleUpdateIfNeeded()
@@ -165,9 +202,10 @@ final class RealtimeInputDraftSession {
     /// The stop press is an explicit ordering boundary. Flush the newest hypothesis
     /// synchronously before the recorder callback is detached, then freeze partial
     /// updates. The final committed/processed text is reconciled later by delivery.
-    func flushBeforeStop() {
+    func flushBeforeStop(forceRawOutput: Bool) {
         updateTask?.cancel()
         updateTask = nil
+        self.forceRawOutput = forceRawOutput
         guard isEnabled, acceptsLiveUpdates else {
             acceptsLiveUpdates = false
             return
@@ -203,10 +241,17 @@ final class RealtimeInputDraftSession {
     func finalizePrimary(with finalText: String) -> PrimaryFinalizationResult {
         updateTask?.cancel()
         updateTask = nil
-        guard isEnabled,
-              !finalText.isEmpty,
-              let target = focusService.captureFocusedInput() else {
+        guard isEnabled, !finalText.isEmpty else {
             return .notApplicable
+        }
+        guard let target = focusService.captureFocusedInput() else {
+            // Once this recording owns any live range, an unreadable current caret can
+            // no longer fall through to blind Cmd-V: it may append the complete final
+            // text beside an existing draft. Preserve the final text instead.
+            return ownerships.isEmpty ? .notApplicable : .unsafeToFallback
+        }
+        guard !isMutationBlocked(for: target) else {
+            return .unsafeToFallback
         }
 
         let existing = ownership(matching: target)
@@ -245,6 +290,10 @@ final class RealtimeInputDraftSession {
         ownerships.first {
             focusService.targetsReferToSameExactInput($0.target, target)
         }
+    }
+
+    func isMutationBlocked(for target: FocusLockService.Target) -> Bool {
+        mutationBlockedPIDs.contains(target.processIdentifier)
     }
 
     func storeReconciledOwnership(_ ownership: RealtimeInputDraftOwnership) {
@@ -298,13 +347,17 @@ final class RealtimeInputDraftSession {
     }
 
     private func applyLatestToCurrentInput() {
-        guard mayWriteCurrentMode,
-              !latestTranscript.isEmpty else {
+        guard !latestTranscript.isEmpty else {
             return
         }
 
         if let active = activeOwnership,
            focusService.targetOwnsSystemKeyboardFocus(active.target) {
+            guard !isMutationBlocked(for: active.target) else { return }
+            guard mayWriteRealtimeDraft(to: active.target) else {
+                discardFocusedOwnership(active, reason: "target Mode is not paste")
+                return
+            }
             apply(latestTranscript, toExisting: active)
             return
         }
@@ -315,10 +368,45 @@ final class RealtimeInputDraftSession {
             )
             return
         }
+        guard !isMutationBlocked(for: target) else { return }
+        guard mayWriteRealtimeDraft(to: target) else { return }
         apply(latestTranscript, to: target)
     }
 
+    private func mayWriteRealtimeDraft(to target: FocusLockService.Target) -> Bool {
+        let targetMode = ModeRuntimeResolver.modeSnapshot(
+            forPasteTargetBundleIdentifier: target.bundleIdentifier
+        )
+        return RealtimeDraftOutputPolicy.allowsInputMutation(
+            forceRawOutput: forceRawOutput,
+            outputMode: targetMode?.outputMode ?? .paste
+        )
+    }
+
+    private func discardFocusedOwnership(
+        _ ownership: RealtimeInputDraftOwnership,
+        reason: String
+    ) {
+        switch focusService.restoreForegroundRealtimeDraft(ownership) {
+        case .applied:
+            ownerships.removeAll { $0.id == ownership.id }
+            if activeOwnershipID == ownership.id {
+                activeOwnershipID = nil
+            }
+            logger.info(
+                "realtime draft removed from focused input session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(ownership.target.processIdentifier, privacy: .public) reason=\(reason, privacy: .public)"
+            )
+        case .unavailableBeforeMutation, .ownershipConflict:
+            // Once mutation is uncertain, preserving the user's visible text is safer
+            // than retrying a deletion or pretending this session no longer owns it.
+            break
+        case .indeterminateAfterMutation:
+            blockFurtherMutation(for: ownership.target)
+        }
+    }
+
     private func apply(_ transcript: String, to target: FocusLockService.Target) {
+        guard !isMutationBlocked(for: target) else { return }
         if let existing = ownership(matching: target) {
             apply(transcript, toExisting: existing)
             return
@@ -348,6 +436,7 @@ final class RealtimeInputDraftSession {
                 "realtime draft fresh insertion unexpectedly conflicted before mutation session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(target.processIdentifier, privacy: .public)"
             )
         case .indeterminateAfterMutation:
+            blockFurtherMutation(for: target)
             logger.error(
                 "realtime draft fresh insertion became indeterminate after one setter session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(target.processIdentifier, privacy: .public)"
             )
@@ -369,8 +458,18 @@ final class RealtimeInputDraftSession {
                 "realtime draft ownership no longer matches; update refused session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(ownership.target.processIdentifier, privacy: .public) priorChars=\(ownership.textRange.insertedText.count, privacy: .public) nextChars=\(transcript.count, privacy: .public)"
             )
         case .indeterminateAfterMutation:
+            blockFurtherMutation(for: ownership.target)
             logger.error(
                 "realtime draft update post-state is indeterminate; no retry session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(ownership.target.processIdentifier, privacy: .public)"
+            )
+        }
+    }
+
+    private func blockFurtherMutation(for target: FocusLockService.Target) {
+        let inserted = mutationBlockedPIDs.insert(target.processIdentifier).inserted
+        if inserted {
+            logger.error(
+                "realtime draft blocked further mutation after indeterminate AX result session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(target.processIdentifier, privacy: .public)"
             )
         }
     }
@@ -396,9 +495,20 @@ final class RealtimeInputDraftSession {
     private func scheduleSafeSameAppCleanup(
         of ownership: RealtimeInputDraftOwnership
     ) {
+        let lease = RealtimeDraftCleanupLease(
+            ownershipID: ownership.id,
+            textRange: ownership.textRange
+        )
         Task { [weak self] in
             guard let self,
-                  self.ownerships.contains(where: { $0.id == ownership.id }),
+                  let currentOwnership = self.ownerships.first(where: {
+                      $0.id == ownership.id
+                  }),
+                  lease.remainsValid(
+                      currentOwnershipID: currentOwnership.id,
+                      currentTextRange: currentOwnership.textRange,
+                      activeOwnershipID: self.activeOwnershipID
+                  ),
                   let deliverySession = await self.focusService
                     .prepareBackgroundDelivery(to: ownership.target) else {
                 return
@@ -409,8 +519,18 @@ final class RealtimeInputDraftSession {
             guard deliverySession.allowsDirectRealtimeDraftMutation else {
                 return
             }
+            guard let currentOwnership = self.ownerships.first(where: {
+                $0.id == ownership.id
+            }),
+            lease.remainsValid(
+                currentOwnershipID: currentOwnership.id,
+                currentTextRange: currentOwnership.textRange,
+                activeOwnershipID: self.activeOwnershipID
+            ) else {
+                return
+            }
             switch self.focusService.restorePreparedRealtimeDraft(
-                ownership,
+                currentOwnership,
                 for: deliverySession
             ) {
             case .applied:
