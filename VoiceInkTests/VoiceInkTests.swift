@@ -1623,20 +1623,62 @@ struct VoiceInkTests {
             ),
             encoding: .utf8
         )
-        let start = try #require(source.range(
+        let insertionStart = try #require(source.range(
             of: "    func insertForegroundRealtimeDraft("
         ))
-        let end = try #require(source.range(
-            of: "    /// Read-only proof that the frozen exact input",
-            range: start.upperBound..<source.endIndex
+        let insertionEnd = try #require(source.range(
+            of: "    /// Replace a mutable hypothesis only while its exact target",
+            range: insertionStart.upperBound..<source.endIndex
         ))
-        let body = source[start.lowerBound..<end.lowerBound]
+        let insertionBody = source[
+            insertionStart.lowerBound..<insertionEnd.lowerBound
+        ]
 
-        #expect(body.contains("kAXSelectedTextAttribute"))
-        #expect(body.contains("kAXSelectedTextRangeAttribute"))
-        #expect(!body.contains(
-            "AXUIElementSetAttributeValue(\n            element,\n            kAXValueAttribute"
+        let preparedStart = try #require(source.range(
+            of: "    func prepareRealtimeDraftReplacement("
         ))
+        let preparedEnd = try #require(source.range(
+            of: "    /// Restore the original selection text only for a direct",
+            range: preparedStart.upperBound..<source.endIndex
+        ))
+        let preparedBody = source[
+            preparedStart.lowerBound..<preparedEnd.lowerBound
+        ]
+
+        let replacementStart = try #require(source.range(
+            of: "    private func replaceForegroundRealtimeDraft("
+        ))
+        let replacementEnd = try #require(source.range(
+            of: "    private func selectedTextRange(",
+            range: replacementStart.upperBound..<source.endIndex
+        ))
+        let replacementBody = source[
+            replacementStart.lowerBound..<replacementEnd.lowerBound
+        ]
+
+        let mutationBodies = [
+            String(insertionBody),
+            String(preparedBody),
+            String(replacementBody)
+        ].joined(separator: "\n")
+        let wholeValueSetter = try NSRegularExpression(
+            pattern: #"AXUIElementSetAttributeValue\s*\(\s*[^,]+,\s*kAXValueAttribute"#
+        )
+        let wholeValueSetterRange = NSRange(
+            mutationBodies.startIndex..<mutationBodies.endIndex,
+            in: mutationBodies
+        )
+
+        #expect(insertionBody.contains("selectedTextRange(from: element)"))
+        #expect(insertionBody.contains("kAXSelectedTextAttribute"))
+        #expect(preparedBody.contains("kAXSelectedTextRangeAttribute"))
+        #expect(preparedBody.contains("kAXSelectedTextAttribute"))
+        #expect(replacementBody.contains("kAXSelectedTextRangeAttribute"))
+        #expect(replacementBody.contains("kAXSelectedTextAttribute"))
+        #expect(wholeValueSetter.firstMatch(
+            in: mutationBodies,
+            range: wholeValueSetterRange
+        ) == nil)
     }
 
     @MainActor
