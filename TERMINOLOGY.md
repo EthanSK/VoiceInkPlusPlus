@@ -25,18 +25,16 @@ When diagnosing the hardware mapping, verify G HUB's active profile and resolved
 
 ## Timing defines the route
 
-Primary always uses base VoiceInk current-input delivery. The table below describes the
-additional routes available while **Exact Saved-Input Delivery** is enabled. When the runtime
-feature flag `VIPPExactInputDeliveryEnabled` is off, no tentative recording-start capture runs and
-Next Track performs no destination action; finished Primary text and Mode behavior still follow the
-current app/input at delivery. While the recorder bar is visible the press is consumed; after the bar
-hides it passes through as media. The second recorder slot remains visible as a warning because no
-exact destination is owned. This is an engine switch, not another timing route or a new meaning for
-either physical button.
+Primary always uses base VoiceInk current-input delivery. The two Next routes below separately use
+exact saved-input delivery whenever their capture/state requirements pass. The historical
+`VIPPExactInputDeliveryEnabled` preference is ignored by current source; it is not an engine switch,
+route, or supported way to change either button's meaning. While the recorder bar is visible a Next
+press is consumed; after the bar hides it passes through as media. The second recorder slot remains
+visible as a warning whenever no exact Next destination is owned.
 
 | State before the press | Control pressed | Result | Destination value |
 | --- | --- | --- | --- |
-| Idle | Primary button | Start a new recording; while exact delivery is enabled, tentatively capture a recording-start candidate only in case Next is pressed | Not yet final |
+| Idle | Primary button | Start a new recording; tentatively capture a recording-start candidate only in case Next is pressed | Not yet final |
 | Recording | Primary button again | **Normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
@@ -45,7 +43,7 @@ either physical button.
 
 If a new recording is active while an older result is transcribing, the active recording determines the button action: primary stops that recording normally; Next stops it into `recordingStart`. Do not silently reinterpret that press as a retarget of an older session.
 
-The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or exact delivery is temporarily disabled. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
+The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or no exact Next target is available. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
 
 ## Non-negotiable distinctions
 
@@ -83,6 +81,26 @@ The recorder's locked app icon is a compact representation of that exact saved i
 ### Recording start is not transcription start
 
 **Recording** is microphone capture before the primary or Next stop. **Transcribing/loading/enhancing** begins after recording stops. “Input at recording start” means the input captured when the microphone recording command began, not the input focused when transcription began.
+
+## Realtime text is not a fourth destination
+
+With supported Soniox V5 realtime transcription, VoiceInk++ can mirror the cumulative transcript
+into the system-focused input while you are still speaking. That is **realtime input streaming** (or
+the **live draft**), not another Primary/Next route and not an early final paste.
+
+- VoiceInk++ owns only the exact selected-text range it inserted for that recording.
+- Moving the caret to another supported input seeds the complete transcript-so-far there and future
+  partials replace only that new owned range.
+- Primary still means the input and Mode current at final delivery.
+- Next while recording still means `recordingStart`.
+- Second-chance Next still means `focusedDuringTranscription`, and immediately seeds the available
+  live draft into that latched input.
+- A safe same-app migration may remove the earlier draft. A cross-app draft may remain rather than
+  risk activating an app or deleting unrelated text.
+
+The Settings label is **Write Realtime Transcript into Input** and its preference key is
+`VIPPRealtimeInputStreamingEnabled`. Turning it off restores ordinary final-paste-only behavior
+without changing any destination route.
 
 ## Historical confusion audit
 

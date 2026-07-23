@@ -4,16 +4,23 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
-**Current runtime state verified 2026-07-22:** signed VoiceInk++ v2.0.247 is installed from commit
-`60d9d6d` with CDHash `781f46d54dc1cd1e41e951a2d834a27c9d66e081` and exact delivery enabled.
-Its fresh Mini bundle named and passed all 39 unit tests through direct `xcrun xctest` after the
-canonical Xcode action built and stalled in TestManager; deep/strict signing and outer Automation
-verify, and `/Applications/VoiceInk.app` remained byte-identical. v2.0.247 adds the exact audited
-ChatGPT-hosted Codex build-5650 tuple, narrows Telegram's pixel identity to the stable avatar/title
-row, and suppresses only the completed Primary modifier chord. Ethan physically accepted the Codex
-`recordingStart` background Next route while VS Code remained frontmost; the distinct Codex second
-chance route, Telegram reruns, and context-menu check remain pending. Do not replace the accepted
-v2.0.245 Telegram evidence or v2.0.243 Primary checkpoint with unit-test inference.
+**Current candidate installed 2026-07-23:** signed VoiceInk++ v2.0.252 is installed from commit
+`2332296` with CDHash `c7e1adde3ef1aeef6ee81ecb10d5ad759a3209b7` and executable SHA-256
+`b74bb77e73930ddef3c7c7a9021b60eb990d38ec3ebf809392484f226e0db2e0`. Its fresh Mac Mini Release
+bundle passed deep/strict signing, retained outer Automation, relaunched under a new verified PID, and
+the official `/Applications/VoiceInk.app` remained byte-identical. The canonical Xcode test action
+rebuilt but stalled in TestManager; direct `xcrun xctest` against that exact built bundle named and
+passed all 48 tests. v2.0.252 adds Soniox V5 realtime owned-range input streaming and removes only the
+currently focused, still-owned draft if trigger-word selection changes final output away from paste.
+Physical validation of live partial replacement, input switching, Primary final reconciliation, both
+Next routes, Cancel, overlap, non-paste cleanup, and final-paste-only fallback remains pending; do not
+promote the new transport from tests alone.
+
+The prior signed v2.0.247 (`60d9d6d`, CDHash
+`781f46d54dc1cd1e41e951a2d834a27c9d66e081`) remains the accepted Codex `recordingStart`
+background Next evidence: Ethan saw the dictated message arrive while VS Code stayed frontmost. Its
+distinct Codex second-chance route, Telegram reruns, and context-menu check remained pending. Do not
+replace the accepted v2.0.245 Telegram evidence or v2.0.243 Primary checkpoint with unit-test inference.
 
 Signed v2.0.243 from reproducible commit `5475ef2` with CDHash
 `5be83c4f545772472a836306d64eded1253f1c63` remains the rollback checkpoint. It reconstructs the
@@ -74,6 +81,33 @@ The same delivery must contain no exact-input preparation/resolution, Telegram i
 Terminal native-session, semantic action, read-back, verification, retry, or exact-delivery fallback
 line. The intended system-focused input must receive and, when the current Mode enables it, submit the
 text. This regression gate is required even when the current task only changes one of the Next routes.
+
+## Realtime owned-range regression gate
+
+Realtime input streaming is a transport optimization layered across the same three routes. It must
+never weaken Primary isolation or exact Next identity. With
+`VIPPRealtimeInputStreamingEnabled=true` and Soniox V5 realtime:
+
+1. A disposable plain text input visibly replaces one cumulative hypothesis in place; it never
+   appends every partial and never sets a complete generic `AXValue`.
+2. Moving from input A to input B during speech seeds the complete transcript-so-far in B. Same-app
+   cleanup may restore A only when direct exact Accessibility revalidation succeeds. Cross-app A may
+   remain and the target app must never activate merely for cleanup.
+3. Primary final delivery reconciles the owned range in whichever input owns system focus then and
+   issues exactly one generic HID auto-send. Its trace includes
+   `paste: realtime Primary current-input range finalized success=true` and contains no app-specific
+   resolver/action line.
+4. Next while recording reconciles only `recordingStart`; second-chance Next immediately seeds and
+   later reconciles only `focusedDuringTranscription`. Both retain their target Mode/auto-send.
+5. Explicit Cancel restores only a currently focused, still-owned range. An unreadable background
+   range remains visible rather than being guessed away.
+6. Two overlapping recordings keep distinct session/range lineage and cannot replace or deliver each
+   other's text.
+7. With realtime input streaming disabled—or on Telegram/rich inputs without safe selected-text
+   mutation—no live range mutation occurs and the established final-delivery trace remains unchanged.
+
+Any indeterminate setter/post-state must block further mutation for that app PID for the rest of that
+recording. Final text is copied to the clipboard and no duplicate paste or Return is attempted.
 
 ## Exact Next-route safety invariant
 

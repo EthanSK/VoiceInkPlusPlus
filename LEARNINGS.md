@@ -25,6 +25,28 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-23T03:23:47Z
+**Trigger:** Ethan required normal Primary behavior to remain base VoiceInk current-input paste and Return so Telegram, Codex, and other hard-coded latch work can never break ordinary dictation.
+**Symptom:** App-specific latch experiments repeatedly regressed ordinary Primary dictation, and stop-time exact capture could make a normal stop depend on stale Accessibility identity even when the current keyboard input was correct.
+**Root cause:** Primary and the two Next routes shared RecordingPasteTarget and exact-delivery fallbacks, so a normal stop could inherit a tentative recording-start target, destination-owned Mode, context classifier, verification, or app-specific sender that Ethan had not invoked.
+**Fix:** Commit 2191492 makes Primary a separate primaryCurrentInput policy with no saved input or destination Mode; Primary stop discards the tentative recording-start capture, resolves the system-focused input and current Mode only at delivery, and issues one ordinary Command-V plus generic auto-send. Commits f1b1260 and 00bae10 harden the structural source guards. App-specific exact delivery is now type-gated to recordingStart and focusedDuringTranscription only.
+**Commit:** 00bae1002d9b71622dc5f415cc04c2a347573a50
+**Guard:** The v2.0.252 Mac Mini test bundle named and passed all 48 tests, including Primary state stripping and source guards that reject capture, app classifiers, semantic Send, verification, retry, or exact fallthrough. Physical v2.0.252 Primary with realtime reconciliation remains pending; every future app-specific Next change must rerun this generic route before and after.
+---
+
+
+---
+**Date:** 2026-07-23T03:22:13Z
+**Trigger:** Ethan asked Soniox realtime to write into the real input as speech arrives, carry the full draft to a newly focused input, preserve Primary versus Next semantics, and improve interruption resilience.
+**Symptom:** Realtime Soniox hypotheses were visible only in the HUD, so text remained transient until final delivery and a cancelled or interrupted recording could lose the in-progress draft.
+**Root cause:** Soniox emits cumulative partials, but safely mirroring them into a mutable input requires per-recording range ownership; naive appends duplicate every hypothesis, whole AXValue replacement risks unrelated or rich content, and delayed callbacks can cross focus or recording lineage.
+**Fix:** Commits e19a123 through 2332296 add one RealtimeInputDraftSession per recording: it replaces only its owned UTF-16 selected-text range, seeds the complete draft after a focus move, cleans an earlier same-app range only when revalidated, preserves cross-app residue, reconciles final Primary or exact Next delivery without duplication, blocks indeterminate mutations, and removes only a currently focused owned draft when trigger-word processing changes away from paste.
+**Commit:** 23322962941517adcd7b8b3c1927a3e65f44e220
+**Guard:** The fresh Mac Mini candidate named and passed all 48 tests after the canonical Xcode action stalled in TestManager. Signed v2.0.252 is installed with verified PID, CDHash, deep/strict signature, Automation entitlement, and unchanged official VoiceInk.app. Physical cumulative replacement, A-to-B migration, both Next routes, Cancel, overlap, toggle-off fallback, and non-paste cleanup remain pending and must not be inferred from tests.
+---
+
+
+---
 **Date:** 2026-07-23T00:37:25Z
 **Trigger:** Ethan asked whether the other voice model was working and required it to be selected only after a real successful test.
 **Symptom:** Soniox real-time initially looked as though it timed out, so every active Mode remained on tuned Deepgram with real-time disabled.

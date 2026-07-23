@@ -5,25 +5,17 @@ exact-input latching. A Primary stop follows whichever keyboard input is current
 happens. Next can instead preserve the recording-start input or select a second-chance input while
 transcription is still loading.
 
-## Delivery engine switch
+## Primary isolation and exact Next delivery
 
-VoiceInk++ temporarily defaults **Exact Saved-Input Delivery** to off while its background Codex
-compatibility is being repaired and physically re-tested. The switch is in **Settings → Pasting**:
+Primary permanently uses base VoiceInk compatibility: the finished text and current Mode follow
+whichever input owns system keyboard focus at delivery. It owns no saved Accessibility input and can
+never enter Telegram, OpenAI, Terminal, or another app-specific exact-delivery path.
 
-- **Off — base VoiceInk compatibility:** the Primary button records normally, the finished text
-  pastes into whichever input owns keyboard focus at delivery, and the current Mode owns
-  post-processing, output, and optional Return. Next Track performs no destination action: it is
-  consumed while the recorder bar is visible and passes through to media only after the bar hides.
-  The latency-sensitive start/stop path performs no saved-input Accessibility capture and no saved
-  app is activated or internally focused. The second destination slot stays visible as a warning
-  so the recorder never pretends that compatibility mode owns an exact app/input.
-- **On — VoiceInk++ latch delivery:** Primary remains the same base current-input route. The two
-  Next-button exact routes below are enabled. The second slot becomes the captured app icon when a
-  Next route proves one exact target; a genuine capture failure remains a visible warning.
-
-The underlying UserDefaults feature flag is `VIPPExactInputDeliveryEnabled`. It is evaluated at each
-delivery/Next-button decision, so the Settings toggle does not require a rebuild. This is a delivery
-engine switch, not a fourth destination route: never merge or reinterpret the three routes below.
+The two Next-button routes separately use exact saved-input delivery whenever their capture/state
+requirements pass. There is no current delivery-engine toggle between those policies. The historical
+`VIPPExactInputDeliveryEnabled` preference is ignored by current source and must not be treated as a
+fourth route. The second destination slot becomes the captured app icon only when a Next route proves
+an exact target; before that, or after a Primary stop, it remains an honest unoutlined warning.
 
 ## Terminology
 
@@ -70,6 +62,29 @@ cancelled. Primary's warning slot, the recording-time preview, a missing target,
 no-caret fallback remain unoutlined. The first/current-focus icon never stays outlined because it can
 change before Primary's eventual delivery or after a Next destination decision.
 
+## Write the transcript into the input while speaking
+
+When **Write Realtime Transcript into Input** is enabled and the recording uses Soniox V5 realtime,
+VoiceInk++ mirrors the cumulative hypothesis into the actual system-focused input as you speak. The
+HUD still shows the same partial transcript, but the input becomes the crash-resilient working copy:
+
+1. VoiceInk++ replaces only the exact UTF-16 selected-text range that this recording inserted. It
+   never reconstructs or sets an entire generic `AXValue`.
+2. Move focus to another supported input and the complete transcript-so-far is seeded there; later
+   hypotheses replace only that new owned range.
+3. A provably safe same-app migration may restore the old selected text. Cross-app residue is left in
+   place rather than activating the old app or risking deletion from the wrong field.
+4. Primary reconciles the final processed text into whichever input owns keyboard focus at delivery,
+   then uses that current Mode's one generic auto-send. It still owns no saved destination.
+5. Next while recording reconciles into `recordingStart`. A second-chance Next immediately seeds and
+   later reconciles `focusedDuringTranscription`. Both keep their exact input plus complete Mode atomic.
+
+The preference key is `VIPPRealtimeInputStreamingEnabled` and defaults on. The feature currently
+requires Soniox V5 realtime, a paste-output Mode, and a normal editable Accessibility input. Telegram
+and rich inputs without safe selected-text mutation skip the live draft and retain their established
+final-delivery behavior. Turning the feature off restores final-paste-only behavior without changing
+any Primary or Next route.
+
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
 transcription phase that starts after recording stops.
@@ -85,6 +100,10 @@ transcription phase that starts after recording stops.
 5. VoiceInk++ pastes into whichever keyboard input is focused when delivery posts Command-V, then
    uses that input app's current Mode for generic auto-send. No Codex, VS Code, Telegram, or other
    app-specific exact resolver runs.
+
+With realtime input streaming supported, step 2 also seeds the complete live draft into VS Code and
+keeps replacing that owned range while you speak. Final delivery reconciles it instead of pasting a
+duplicate; if you move again before final delivery, the current input still decides Primary.
 
 ### Send the transcript back where recording began
 
@@ -183,9 +202,9 @@ Editable Accessibility roles such as text areas, text fields, search fields, and
 saved as exact destinations. Some apps briefly expose only a container such as `AXWebArea` or
 `AXGroup` while a modifier shortcut is being handled. For the recording-start/Next Track route,
 VoiceInk++ then saves the owning application as a fallback. It uses the same app fallback if Electron
-replaces the saved editor's Accessibility wrapper before delivery. Normal stop-time and
-transcription-time retargets still require an exact editable input, so an incidental non-editable
-control cannot silently replace their destination.
+replaces the saved editor's Accessibility wrapper before delivery. A transcription-time
+second-chance retarget still requires an exact editable input, so an incidental non-editable control
+cannot silently replace its destination. Primary performs no stop-time exact capture at all.
 
 For an exact saved input whose app is currently backgrounded, VoiceInk++:
 

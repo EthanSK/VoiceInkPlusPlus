@@ -27,7 +27,7 @@ The modifier-only Primary shortcut must not dismiss a context menu or disturb th
 
 ## Primary isolation is a hard architectural boundary
 
-- Primary/toggle must behave like base VoiceInk whether Exact Saved-Input Delivery is on or off: ordinary system-focused Command-V followed immediately by the current Mode's generic auto-send key, with no app classifier, saved AX wrapper, internal focus, exact insertion, semantic Send, read-back, retry, or verification.
+- Primary/toggle must behave like base VoiceInk regardless of app-specific Next support: ordinary system-focused Command-V followed immediately by the current Mode's generic auto-send key, with no app classifier, saved AX wrapper, internal focus, exact insertion, semantic Send, read-back, retry, or verification.
 - At Primary stop, create only `primaryCurrentInput` with `focusedInput=nil` and no destination-owned Mode. Never capture a stop-time input. A tentative recording-start capture may exist solely because a later **Next while recording** needs it; Primary stop must structurally discard it.
 - Telegram, OpenAI, Terminal/iTerm, Chrome, Notion, and every later app-specific mechanism are legal only when `destination.usesAppSpecificExactDelivery` proves that the physical Next button selected `recordingStart` or `focusedDuringTranscription`.
 - Keep the route boundary in types and regression tests, not only comments. Tests must prove Primary strips accidental exact state, the stop branch contains no capture/Mode lookup, and the delivery body contains only generic system-focused paste/auto-send with no fallthrough into exact delivery.
@@ -35,15 +35,13 @@ The modifier-only Primary shortcut must not dismiss a context menu or disturb th
 
 ## Non-negotiable Next button contract
 
-The runtime feature flag `VIPPExactInputDeliveryEnabled` selects whether the two exact Next routes
-are available. While false, VoiceInk++ deliberately behaves like base VoiceInk: Primary output
-follows only the keyboard-focused input at delivery and the current app's Mode supplies optional
-Return. Next Track performs no destination action, but a visible recorder bar still consumes it;
-media pass-through resumes only after the bar hides.
-The second destination slot remains visible as a warning because no exact input is owned; it must
-not disappear or imply a saved app that compatibility delivery will ignore. This escape hatch is
-not a fourth route and must not delete or reinterpret the route model below. While true, Primary
-remains base-current-input and the two Next routes below enable app-specific exact delivery.
+Primary is permanently isolated as base VoiceInk current-input delivery. The two exact Next routes
+are separately available whenever their capture/state requirements pass; they are not selected by a
+global delivery-engine toggle. The historical `VIPPExactInputDeliveryEnabled` preference is ignored
+by current source and must not be documented or revived as a fourth route. A visible recorder bar
+still consumes Next Track when no route remains eligible, and media pass-through resumes only after
+the bar hides. The second destination slot remains visible as a warning whenever no exact Next target
+is owned; it must not disappear or imply a saved app that VoiceInk++ cannot actually deliver to.
 
 Use **Next button** as the preferred user-facing term. **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases for the same physical control or its macOS event. They do not create additional routes. Use **second chance** only for route 3 below, and never describe it as a toggle.
 
@@ -55,11 +53,11 @@ VoiceInk++ has three distinct one-click destination routes. Do not merge them, r
 
 The canonical second-chance scenario is:
 
-> normal stop → transcription begins → focus a new editable input → press Next Track once → optionally move to another app → finished text pastes into the newly selected input and uses that input app's configured auto-send → VoiceInk++ restores the later workspace when applicable.
+> normal stop → transcription begins → focus a new editable input → press Next Track once → optionally move to another app → finished text pastes into the newly selected input and uses that input app's configured auto-send while the later system workspace stays frontmost.
 
 For the two Next routes, the saved input and its target app's complete Mode are one atomic, per-session decision. Never re-read their formatting, enhancement, output, or auto-send from the globally current Mode: Ethan may already be using another app by then. `RecordingPasteTarget` must continue to carry both values, and `TranscriptionPipeline` must freeze the latest target after transcription/trigger-word selection but before any destination-dependent formatting or enhancement begins. Primary is intentionally opposite: it owns neither exact input nor destination Mode and resolves the current Mode for base delivery. One-shot raw/skip mode remains the intentional exception and must force no auto-send.
 
-The visible recorder/transcription bar is the strict ownership boundary for the Next button. While any mirrored black bar is visible, consume the complete Next Track press even if no session remains eligible, the newest session already latched, delivery crossed its cutoff, or exact delivery is temporarily disabled. Eligible states still perform the three routes above; an ineligible visible-bar press is a no-op that preserves the existing destination. Pass Next Track through to media only after the recorder bar is hidden. This prevents an attempted VoiceInk++ latch from becoming an unrelated Next Song action because of an internal timing race.
+The visible recorder/transcription bar is the strict ownership boundary for the Next button. While any mirrored black bar is visible, consume the complete Next Track press even if no session remains eligible, the newest session already latched, delivery crossed its cutoff, or no exact Next target is available. Eligible states still perform the three routes above; an ineligible visible-bar press is a no-op that preserves the existing destination. Pass Next Track through to media only after the recorder bar is hidden. This prevents an attempted VoiceInk++ latch from becoming an unrelated Next Song action because of an internal timing race.
 
 ## UI contract
 
@@ -67,10 +65,20 @@ The visible recorder/transcription bar is the strict ownership boundary for the 
 - Do not show routine “Recording” text above the waveform; visible text is reserved for real warnings/errors.
 - Mode icon/emoji is left of the waveform.
 - The right side has two separate icons: current focused app first, then the per-session locked destination.
-- Keep both icon slots visible for every active session. When exact delivery is disabled or capture genuinely fails, the second slot shows the warning icon; never hide the slot merely to conceal a missing destination.
+- Keep both icon slots visible for every active session. When no exact Next destination is owned or capture genuinely fails, the second slot shows the warning icon; never hide the slot merely to conceal a missing destination.
 - The locked icon remains visible through transcription and changes immediately after a successful second-chance retarget. Do not replace that visual confirmation with a success toast.
 - Destination actions use the per-session neon confirmation pulse on every mirrored panel: a primary-button normal stop pulses the left/current-focus icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Preserve the non-scaling Reduce Motion variant.
 - The pulse is transient action feedback. Once a **Next** route has frozen a real exact input, the stable right/locked-destination icon stays outlined until that session succeeds, visibly fails, or is cancelled. Primary never owns an exact destination, so after a Primary stop the right slot remains an unoutlined warning unless a successful second-chance Next latch replaces it. A recording-time preview, missing target, and app-only no-caret fallback remain unoutlined until exact-composer promotion succeeds. The live left/current-focus icon is never persistently outlined; it can change after the decision and would misrepresent ownership.
+
+## Realtime input-streaming contract
+
+- `VIPPRealtimeInputStreamingEnabled` controls a separate transport optimization, not a destination route. It defaults on and currently applies only when the frozen recording configuration uses Soniox V5 realtime (`stt-rt-v5`), the session is not an assistant follow-up, and the exact target input's current Mode outputs a paste. Batch/unsupported providers and unsupported inputs keep ordinary final-paste behavior.
+- Mirror cumulative hypotheses into the real system-focused input while preserving the HUD transcript. Each recording owns only the exact UTF-16 selected-text range it inserted, including the user's replaced selection for bounded restoration. Never write an entire generic `AXValue`, infer ownership from matching text elsewhere, or let one recording reuse another recording's range.
+- When keyboard focus moves during speech, seed the complete transcript-so-far into the new exact input and continue updating only that new owned range. Remove the earlier range only when a direct same-app/different-input Accessibility session can revalidate it without activation or internal focus rewriting. Cross-app residue is intentionally preserved: crash/cancel resilience is safer than stealing focus or deleting the wrong text.
+- A Primary stop flushes the newest hypothesis, freezes further partial mutations, then reconciles the final processed text into whichever input owns system keyboard focus at delivery and issues the current Mode's one generic HID auto-send. This last-millisecond exact focus guard does not turn Primary into a saved destination or permit app-specific delivery. If no live range was ever mutated, ordinary base VoiceInk paste remains the fallback; after any uncertain mutation, duplicate fallback is forbidden and the final text must be preserved on the clipboard.
+- Next while recording still selects `recordingStart`. If that exact target already contains this session's live range, final exact delivery replaces only that range before its existing one-shot surface-specific send; otherwise it uses the normal exact insertion path. A second-chance Next immediately seeds the complete draft into `focusedDuringTranscription`, then later reconciles that owned range. Exact input plus complete Mode/auto-send remains atomic for both Next routes.
+- Explicit Cancel may restore only the currently system-focused owned range when its exact pre/post state is provable. It must not activate an app or erase background/cross-app text. Any selection/text mutation whose post-state is indeterminate blocks further mutation for that app PID for the rest of that recording; final delivery must fail closed instead of retrying or appending a duplicate.
+- Telegram realtime mutation is disabled because its exact chat identity cannot be proven synchronously at every partial update. Rich/contenteditable inputs that do not expose safe selected-text mutation are likewise skipped. Their established final Primary/Next behavior remains unchanged.
 
 ## Delivery safety
 
@@ -102,6 +110,14 @@ At minimum, preserve the regression test named `secondChanceRetargetCarriesAutoS
 - `paste retarget: ... destination=focusedDuringTranscription targetCaptured=true`
 - `pipeline: about to DELIVER ... targetAutoSend=enter destination=focusedDuringTranscription`
 - either `paste: background auto-send finished success=true ... verification=verified` for a non-activating exact target or `paste: foreground auto-send finished success=true` for the safe current-input route
+
+For realtime input work, also preserve `realtimeDraftMutationNeverWritesAnEntireAXValue`,
+`realtimeDraftOutputPolicyUsesTheExactTargetMode`,
+`realtimeCleanupLeaseRejectsFocusBackAndNewerHypotheses`, and
+`realtimePrimaryReconciliationCannotEnterNextAppSpecificDelivery`. Physical validation must cover a
+visible cumulative replacement, a mid-speech input switch, Primary reconciliation plus exactly one
+Return, both Next routes, explicit Cancel, no focus theft, overlapping sessions with no range/text
+crossover, and unchanged final-paste behavior with realtime input streaming disabled.
 
 Build only on the Mac Mini. Use Xcode's normal test action as the canonical runner. If TestManager stalls without executing tests, preserve that evidence and run the already-built unit-test bundle directly with `xcrun xctest` plus the app/framework library paths; require named per-test output, not compilation or XCTest's zero-test preamble. Recover and retry the canonical runner when possible, and never enable Developer Mode without Ethan's direction.
 

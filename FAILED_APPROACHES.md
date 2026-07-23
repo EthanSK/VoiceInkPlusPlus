@@ -76,7 +76,24 @@ These are the highest-cost mistakes from the audited session.
     build number, named tests, a signed installed artifact, a new verified PID/CDHash, and a real
     route trace. `/Applications/VoiceInk.app` must remain untouched.
 
-## Current accepted boundary at the end of the audit
+## Current Primary boundary after the 2026-07-23 product decision
+
+The v2.0.236 boundary below is retained as historical live evidence, not the current Primary
+architecture. Ethan subsequently made ordinary Primary delivery permanently match base VoiceInk:
+it owns no saved Accessibility input or destination Mode, and whichever system keyboard input plus
+current Mode exist at final delivery receive one ordinary Command-V and generic auto-send. Commit
+`2191492` implements that separation; `f1b1260` and `00bae10` harden its type and source guards.
+
+This decision specifically supersedes the old `focusedAtStop` continuity/fallback design because
+that design could still enter exact or app-specific delivery after an app switch. Telegram, OpenAI,
+Terminal/iTerm, Chrome, Notion, and every other special resolver are now legal only for the two
+physical **Next** routes (`recordingStart` and `focusedDuringTranscription`). A tentative start input
+exists only so Next-while-recording can use it and must be discarded by Primary stop. The signed
+v2.0.252 candidate contains this architecture and its fresh Mac Mini bundle named and passed all 48
+tests; physical v2.0.252 Primary plus realtime-input reconciliation remains pending and must not be
+inferred from the test result.
+
+## Accepted boundary at the end of the 13–19 July audit (historical)
 
 The installed app at the accepted checkpoint is VoiceInk++ v2.0.236. Commit `fb3ead7` is the
 verified implementation for ordinary uninterrupted Primary delivery:

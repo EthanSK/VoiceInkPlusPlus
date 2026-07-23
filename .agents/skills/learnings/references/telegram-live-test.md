@@ -2,11 +2,12 @@
 
 Use this procedure to distinguish routing failures from Telegram exact-input resolution, insertion, and auto-send failures. Run only against disposable Telegram content.
 
-**Accepted pinned baseline (2026-07-21):** installed v2.0.245 physically passed both
+**Accepted pinned latch baseline (2026-07-21):** installed v2.0.245 physically passed both
 `recordingStart` and `focusedDuringTranscription` in Telegram 12.9 build 282526 Saved Messages while
 Terminal remained frontmost. Both traces used `visualIdentity=true`, verified exact insertion, then
 `route=telegramTargetedHIDReturn verification=verifiedCleared`. This does not replace rerunning the
-procedure after a change and does not prove foreground Primary or wrong-chat rejection.
+procedure after a change and does not prove Primary or wrong-chat rejection. Primary is never
+allowed to use this Telegram-specific path.
 
 **Current candidate (v2.0.247):** the full header digest was proven unstable because Telegram's
 lower status/activity row changes independently. Replay identity now remains exact but hashes only
@@ -35,7 +36,7 @@ candidate is not accepted until both background routes are physically rerun.
    The seed makes the disposable target unmistakable during manual verification. Current Telegram may still expose no readable AX chat anchors; in that case require `visualCaptureArmed=true` and later `visualIdentity=true`. Never accept an empty AX context without the audited visual proof.
 6. Focus the now-empty Saved Messages composer. Do not use a real conversation as a fallback test target.
 
-## Foreground primary-stop scenario
+## Foreground Primary/base-VoiceInk scenario
 
 Keep Telegram and the Saved Messages composer frontmost throughout this scenario:
 
@@ -46,13 +47,17 @@ Keep Telegram and the Saved Messages composer frontmost throughout this scenario
 
 Accept only a trace that proves all of the following:
 
-- the stop route is `destination=focusedAtStop` with `targetCaptured=true`;
-- `pipeline: about to DELIVER` carries `targetAutoSend=enter destination=focusedAtStop`;
-- the exact Telegram input resolves/restores instead of logging `Focused input restore could not uniquely resolve the saved exact input`;
-- insertion succeeds and the foreground auto-send line ends with `success=true`;
+- the stop route is `destination=primaryCurrentInput targetCaptured=false deliveryPolicy=baseCurrentInput`;
+- `pipeline: about to DELIVER` carries the current Mode's key and `destination=primaryCurrentInput`;
+- `paste: primary current-input compatibility selected` includes `appSpecificDelivery=false`;
+- ordinary current-input Command-V posts and generic HID auto-send reports `verification=notRequired`;
+- there are **no** Telegram identity, exact-input preparation/restoration, AX insertion, targeted HID,
+  semantic Send, or exact verification lines for this session;
 - the intended Saved Messages composer is cleared and the message appears there.
 
-`Focused input restore BEGIN` identifies the foreground resolver. `paste: target restore failed; copied transcription to clipboard` means delivery failed before paste even if routing and Mode selection were correct.
+Any `Focused input restore BEGIN`, Telegram visual identity, `prepareBackgroundDelivery`, or
+`paste: target restore failed` line for this session is a route-isolation failure even if the message
+eventually appears. Primary must be unaffected by every Telegram latch experiment.
 
 ## True-background Next-while-recording scenario
 
