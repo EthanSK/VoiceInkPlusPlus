@@ -874,10 +874,14 @@ final class TranscriptionDelivery {
                             .backgroundDeliveryBoundaryMatches(session)
                     }
                 )
-                insertionVerified = posted && await waitForExactBackgroundValue(
-                    expectedValue,
-                    session: session
-                )
+                if posted {
+                    insertionVerified = await waitForExactBackgroundValue(
+                        expectedValue,
+                        session: session
+                    )
+                } else {
+                    insertionVerified = false
+                }
                 if insertionVerified {
                     draftSession.storeReconciledOwnership(updated)
                 }
