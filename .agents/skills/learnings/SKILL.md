@@ -29,6 +29,14 @@ For upstream work, read `UPDATING.md` and treat upstream as a feature source, ne
 
 For a recorder stuck on **Transcribing**, diagnose the resolved provider before touching delivery code or downgrading the app. Read the active fork domain `com.ethansk.VoiceInkPlusPlus`, decode every `modeConfigurationsV2` entry, and inspect both `selectedTranscriptionModelName` and `isRealtimeTranscriptionEnabled`; a Mode override is authoritative over the top-level `CurrentTranscriptionModel`. Do not inspect only the legacy `com.prakashjoshipax.VoiceInk` domain. Correlate the resolved provider with `StreamingTranscriptionService` lines such as `Streaming start requested model=` and the first server/socket error. Before switching providers, run a direct end-to-end transcription against the proposed endpoint using synthetic, non-private speech and require a successful response within the normal latency range. Preserve the installed delivery binary when provider/account evidence explains the failure.
 
+Treat transcription language the same way: every serialized Mode owns `selectedLanguage`, which is
+authoritative over the global `SelectedLanguage` fallback. Inspect or update both the complete
+`modeConfigurationsV2` set and the global value; changing only one can leave some recordings on
+`auto`. `ModeManager` loads the serialized Mode array into process memory at initialization, so an
+external preference-domain edit requires a warned cooperative relaunch before it is authoritative.
+Verify that all non-language Mode fields stayed unchanged, then require the next real streaming trace
+to show the intended resolved language, such as `language=en`.
+
 ## Normalize the two mouse controls before reasoning
 
 - **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts; the same primary button again performs a normal stop through base VoiceInk's delivery-time current input (`primaryCurrentInput`).

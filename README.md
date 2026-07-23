@@ -70,7 +70,7 @@ Ethan's current configuration is:
 - **Realtime input:** **Write Realtime Transcript into Input** enabled
 - **AI provider/model:** OpenAI · gpt-5.5
 - **Fast direct-paste Modes:** AI enhancement off
-- **Language:** Automatic
+- **Language:** English
 - **Paste method:** Default
 - **Audio input:** the best available microphone (Ethan currently uses Digital Mic)
 - **Auto-send:** Return in the Codex app, Claude desktop, ChatGPT, and the terminal/editor hosts used by Codex CLI or Claude Code; deliberately off in Chrome

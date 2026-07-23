@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-23T03:35:02Z
+**Trigger:** Ethan asked to set Soniox transcription to English because automatic language detection sometimes seemed not to work.
+**Symptom:** Soniox V5 occasionally appeared less reliable while every active Mode and the global fallback were still configured for automatic language detection.
+**Root cause:** Each Mode serializes its own selectedLanguage and that value is authoritative over the global SelectedLanguage fallback; all seven active Modes contained auto. ModeManager also caches the decoded Mode array for the life of the process, so changing only a defaults file or only the global value would not reliably affect the next recording.
+**Fix:** Backed up the active com.ethansk.VoiceInkPlusPlus domain, changed only selectedLanguage to en in all seven modeConfigurationsV2 records plus SelectedLanguage=en, proved every non-language Mode field stayed identical, sent the five-second heads-up, and cooperatively relaunched the unchanged signed v2.0.252 app under a new PID.
+**Commit:** runtime configuration only; installed v2.0.252 source 2332296
+**Guard:** Allowlisted verification reports global=en and 7/7 Modes language=en while every Mode remains Soniox stt-async-v5, realtime=true, paste output, and its prior autoSendKey. The next physical streaming trace must resolve language=en; Ethan's positive quality impression is encouraging but not a controlled recognition benchmark.
+---
+
+
+---
 **Date:** 2026-07-23T03:23:47Z
 **Trigger:** Ethan required normal Primary behavior to remain base VoiceInk current-input paste and Return so Telegram, Codex, and other hard-coded latch work can never break ordinary dictation.
 **Symptom:** App-specific latch experiments repeatedly regressed ordinary Primary dictation, and stop-time exact capture could make a normal stop depend on stale Accessibility identity even when the current keyboard input was correct.
