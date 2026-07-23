@@ -396,13 +396,17 @@ class TranscriptionPipeline {
             // it explicitly means paste only, with no Return or other action.
             outputForPasteTarget = pipelineOutput
         } else {
-            // The target selected at stop—or replaced by the second-chance Next Track
-            // press during transcription—owns auto-send. Do not read this from the app
-            // Ethan happens to be using when the network response finally arrives.
+            // Only a physical Next-button route owns destination Mode/auto-send.
+            // Primary is base VoiceInk: whichever input and Mode are current when the
+            // result is delivered decide both paste and Return. Keeping this choice on
+            // RecordingPasteTarget prevents Primary from inheriting exact-delivery
+            // behavior while preserving the two latch routes' atomic destination Mode.
             outputForPasteTarget = OutputRuntimeConfiguration(
                 mode: pipelineOutput.mode,
                 outputMode: pipelineOutput.outputMode,
-                autoSendKey: pasteTargetForDelivery.autoSendKey,
+                autoSendKey: pasteTargetForDelivery.resolvedAutoSendKey(
+                    currentInputKey: pipelineOutput.autoSendKey
+                ),
                 customCommand: pipelineOutput.customCommand
             )
         }

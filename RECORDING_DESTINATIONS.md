@@ -1,8 +1,9 @@
 # Recording destination controls (VoiceInk++)
 
-VoiceInk++ lets the stop action decide which text input receives a recording. This is useful when
-you start dictating in one app, move elsewhere while speaking, and only decide at the end where the
-transcript belongs.
+VoiceInk++ keeps normal dictation as simple as base VoiceInk while the Next button adds optional
+exact-input latching. A Primary stop follows whichever keyboard input is current when delivery
+happens. Next can instead preserve the recording-start input or select a second-chance input while
+transcription is still loading.
 
 ## Delivery engine switch
 
@@ -16,9 +17,9 @@ compatibility is being repaired and physically re-tested. The switch is in **Set
   The latency-sensitive start/stop path performs no saved-input Accessibility capture and no saved
   app is activated or internally focused. The second destination slot stays visible as a warning
   so the recorder never pretends that compatibility mode owns an exact app/input.
-- **On — VoiceInk++ exact delivery:** all three destination routes and their Next-button behavior
-  below are enabled. The second slot becomes the captured app icon when one exact target is proven;
-  a genuine capture failure remains a visible warning.
+- **On — VoiceInk++ latch delivery:** Primary remains the same base current-input route. The two
+  Next-button exact routes below are enabled. The second slot becomes the captured app icon when a
+  Next route proves one exact target; a genuine capture failure remains a visible warning.
 
 The underlying UserDefaults feature flag is `VIPPExactInputDeliveryEnabled`. It is evaluated at each
 delivery/Next-button decision, so the Settings toggle does not require a rebuild. This is a delivery
@@ -37,24 +38,23 @@ tests repeatedly failed on the real destination apps.
 
 | Stop action | Paste destination |
 | --- | --- |
-| Primary/thumb/toggle button again | Normal stop: only the exact text input focused when you stop recording; never the recording-start input |
+| Primary/thumb/toggle button again | Normal stop: base VoiceInk pastes into whichever system keyboard input is focused at delivery and uses that current Mode; it never invokes a saved input |
 | **Next button** while recording | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next button** while the recorder bar is visible but no route is still eligible | VoiceInk++ consumes the press without changing the saved destination; it never advances media |
 | **Next button** after the recorder bar is hidden | Its Next Track event passes through normally to Spotify, Music, and other media apps |
 
 The Mode emoji/symbol sits immediately left of the waveform. Two app icons sit to its right: the
-first is the app focused now; the second is the saved destination owned by that recording. While
-recording, the second icon previews where a Next Track stop will paste. After stopping, it remains
-visible for that session until delivery succeeds or visibly fails. If Next Track retargets a loading
-transcription, that second icon silently changes to the new pending destination; successful retargets
-do not add a redundant text popup. The same destination icon remains on a compact transcription chip
-if a newer recording starts. Hover over either icon to distinguish current focus from the exact
-pending app/input. If Electron/Chromium exposes only an app-level container while the shortcut is
-down, VoiceInk++ saves the owning application. A warning icon and notification appear when neither
-an editable input nor a safe web-app container can be captured. The same second-slot warning remains
-visible while compatibility delivery is selected because that engine intentionally owns no exact
-destination; disabling the feature never collapses the two-icon layout.
+first is the app focused now; the second is the exact destination owned by a Next route. While
+recording, the second icon previews where a Next stop would paste. A Primary stop intentionally owns
+no exact input, so its second slot becomes an unoutlined warning until delivery or until a successful
+second-chance Next press replaces it with a locked app icon. A Next stop or successful second chance
+keeps that exact icon visible for the session until delivery succeeds or visibly fails. The same
+destination icon remains on a compact transcription chip if a newer recording starts. Hover over
+either icon to distinguish current focus from the exact pending app/input. If Electron/Chromium
+exposes only an app-level container while the shortcut is down, VoiceInk++ may save the owning
+application for the recording-time **Next** route only. A warning appears when an exact Next target
+cannot be captured. Disabling exact delivery never collapses the two-icon layout.
 
 The icon for the action just taken confirms the route with a brief neon pulse on every monitor. A
 primary-button normal stop pulses the first/current-focus icon. Next while recording pulses the
@@ -62,13 +62,13 @@ second/locked icon, as does a successful Next second-chance retarget while trans
 A failed retarget or an ordinary pass-through Next Track media press does not pulse. With macOS
 Reduce Motion enabled, the same confirmation uses a light fade without the scale beats.
 
-That flash confirms the action; a persistent cyan outline confirms ownership. As soon as any stop
-route freezes a real exact input, the stable second/locked icon remains outlined while that session
-is transcribing or delivering, including on a compact background chip. The outline follows a
+That flash confirms the action; a persistent cyan outline confirms **exact Next ownership**. As soon
+as a Next route freezes a real exact input, the stable second/locked icon remains outlined while that
+session is transcribing or delivering, including on a compact background chip. The outline follows a
 successful second-chance replacement and clears only when delivery resolves, visibly fails, or is
-cancelled. The recording-time preview, missing target, and app-only no-caret fallback remain
-unoutlined until exact-composer promotion succeeds. The first/current-focus icon never stays
-outlined because it can change after the destination decision.
+cancelled. Primary's warning slot, the recording-time preview, a missing target, and an app-only
+no-caret fallback remain unoutlined. The first/current-focus icon never stays outlined because it can
+change before Primary's eventual delivery or after a Next destination decision.
 
 “Recording start” means the moment the recording command begins, before asynchronous microphone
 setup can allow another app or field to replace the intended input. It does not mean the later
@@ -76,12 +76,15 @@ transcription phase that starts after recording stops.
 
 ## Examples
 
-### Keep the transcript where you finish
+### Let the current input decide, like base VoiceInk
 
 1. Focus an input in Codex and start recording with the normal recording shortcut.
 2. Move to a VS Code editor while speaking.
 3. Stop with the normal recording shortcut.
-4. VoiceInk++ pastes into the VS Code editor because it was focused at stop.
+4. You may keep VS Code focused or move again while transcription runs.
+5. VoiceInk++ pastes into whichever keyboard input is focused when delivery posts Command-V, then
+   uses that input app's current Mode for generic auto-send. No Codex, VS Code, Telegram, or other
+   app-specific exact resolver runs.
 
 ### Send the transcript back where recording began
 
@@ -100,7 +103,7 @@ transcription phase that starts after recording stops.
 
 ### Change your mind while transcription is loading
 
-1. Stop a recording normally and let transcription begin with its stop-time destination saved.
+1. Stop a recording normally and let transcription begin. No exact destination is owned yet.
 2. While it is still transcribing or enhancing, focus a different text input.
 3. Press the **Next button**.
 4. The locked destination icon switches to that app. VoiceInk++ replaces both the exact input and
@@ -114,9 +117,10 @@ Track stops and chooses the recording-start input. After a normal stop has alrea
 transcription, Next Track is a one-click second chance to choose a new input. It replaces the pending
 target once; it does not toggle or release it.
 
-If a primary normal stop cannot capture or later verify its exact stop-time input, VoiceInk++ must
-fail visibly and preserve the transcript safely. It must not silently fall back to the older
-recording-start input; that input is invoked only by Next while recording.
+Primary has no stop-time capture or exact-input verification to fail. If ordinary system-focused
+paste cannot be posted, VoiceInk++ preserves the transcript on the clipboard and reports that generic
+paste failure. It must never fall back to the recording-start input; that input is invoked only by
+Next while recording.
 
 This exact second-chance route was live-confirmed repeatedly on 2026-07-13 after commit `1eabb1b`:
 the trace recorded `focusedDuringTranscription`, `targetAutoSend=enter`, and verified successful
@@ -250,7 +254,7 @@ log show --last 10m --info --style compact \
 
 The important destination values are:
 
-- `focusedAtStop` — normal recording shortcut.
+- `primaryCurrentInput` — normal Primary stop; system keyboard focus and current Mode at delivery.
 - `recordingStart` — Next Track stop.
 - `focusedDuringTranscription` — Next Track retarget while a result is still loading.
 
@@ -258,8 +262,10 @@ The important destination values are:
 
 - `VoiceInk/Shortcuts/ShortcutMonitor.swift` detects and conditionally consumes the system media key.
 - `VoiceInk/Shortcuts/RecordingShortcutManager.swift` selects the stop destination.
-- `VoiceInk/Transcription/Engine/VoiceInkEngine.swift` captures the start or stop input.
+- `VoiceInk/Transcription/Engine/VoiceInkEngine.swift` captures the tentative recording-start input
+  for Next and deliberately creates no saved input for Primary stop.
 - `VoiceInk/Transcription/Engine/RecordingSession.swift` owns the target for that recording.
 - `VoiceInk/Modes/FocusLockService.swift` captures, re-resolves, internally focuses, and verifies exact inputs.
 - `VoiceInk/Paste/CursorPaster.swift` implements bounded targeted Unicode/key events and foreground fallbacks.
-- `VoiceInk/Transcription/Engine/TranscriptionDelivery.swift` selects and verifies background-exact or foreground delivery.
+- `VoiceInk/Transcription/Engine/TranscriptionDelivery.swift` isolates base current-input Primary
+  delivery from app-specific foreground/background exact delivery used only by Next routes.

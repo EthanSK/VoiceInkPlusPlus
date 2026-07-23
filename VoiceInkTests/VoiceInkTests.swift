@@ -424,41 +424,34 @@ struct VoiceInkTests {
         #expect(presentation.accessibilityLabel == "VoiceInk++ version 2.0, build 236")
     }
 
-    @Test func primaryForegroundContinuityRejectsSwitchAwayAndBack() {
-        let continuity = PrimaryForegroundContinuity(
-            activationGeneration: 12,
-            processIdentifier: 345,
-            bundleIdentifier: "com.openai.codex"
+    @MainActor
+    @Test func primaryCurrentInputStructurallyRejectsExactDeliveryState() {
+        let accidentalDestinationMode = ModeConfig(
+            name: "Must be discarded",
+            outputMode: .paste,
+            autoSendKey: .enter
+        )
+        let primary = RecordingPasteTarget(
+            destination: .primaryCurrentInput,
+            focusedInput: nil,
+            mode: accidentalDestinationMode
         )
 
-        #expect(continuity.isUnbroken(
-            currentActivationGeneration: 12,
-            currentProcessIdentifier: 345
-        ))
-        #expect(!continuity.isUnbroken(
-            currentActivationGeneration: 13,
-            currentProcessIdentifier: 345
-        ))
-        #expect(!continuity.isUnbroken(
-            currentActivationGeneration: 12,
-            currentProcessIdentifier: 678
-        ))
+        #expect(RecordingPasteDestination.primaryCurrentInput.usesBaseCurrentInputDelivery)
+        #expect(!RecordingPasteDestination.primaryCurrentInput.usesAppSpecificExactDelivery)
+        #expect(RecordingPasteDestination.recordingStart.usesAppSpecificExactDelivery)
+        #expect(RecordingPasteDestination.focusedDuringTranscription.usesAppSpecificExactDelivery)
+        #expect(primary.focusedInput == nil)
+        #expect(primary.mode == nil)
+        #expect(primary.resolvedAutoSendKey(currentInputKey: .commandEnter) == .commandEnter)
 
-        #expect(RecordingPasteTarget(
-            destination: .focusedAtStop,
-            focusedInput: nil,
-            primaryForegroundContinuity: continuity
-        ).primaryForegroundContinuity == continuity)
-        #expect(RecordingPasteTarget(
-            destination: .recordingStart,
-            focusedInput: nil,
-            primaryForegroundContinuity: continuity
-        ).primaryForegroundContinuity == nil)
-        #expect(RecordingPasteTarget(
+        let latched = RecordingPasteTarget(
             destination: .focusedDuringTranscription,
             focusedInput: nil,
-            primaryForegroundContinuity: continuity
-        ).primaryForegroundContinuity == nil)
+            mode: accidentalDestinationMode
+        )
+        #expect(latched.mode == accidentalDestinationMode)
+        #expect(latched.resolvedAutoSendKey(currentInputKey: .shiftEnter) == .enter)
     }
 
     @MainActor
@@ -1469,8 +1462,87 @@ struct VoiceInkTests {
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
+    @Test func primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let primaryStart = try #require(deliverySource.range(
+            of: "    private func deliverPrimaryToCurrentSystemInput("
+        ))
+        let pasteStart = try #require(deliverySource.range(of: "    private func paste("))
+        let backgroundStart = try #require(deliverySource.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: primaryStart.upperBound..<deliverySource.endIndex
+        ))
+        let pasteBody = deliverySource[pasteStart.lowerBound..<primaryStart.lowerBound]
+        #expect(pasteBody.contains("if target.destination.usesBaseCurrentInputDelivery"))
+        #expect(pasteBody.contains("await deliverPrimaryToCurrentSystemInput("))
+        #expect(pasteBody.contains("target.destination.usesAppSpecificExactDelivery"))
+        let primaryRoute = try #require(pasteBody.range(
+            of: "if target.destination.usesBaseCurrentInputDelivery"
+        ))
+        let exactRoute = try #require(pasteBody.range(
+            of: "target.destination.usesAppSpecificExactDelivery"
+        ))
+        #expect(primaryRoute.lowerBound < exactRoute.lowerBound)
+
+        let primaryBody = deliverySource[
+            primaryStart.lowerBound..<backgroundStart.lowerBound
+        ]
+
+        #expect(primaryBody.contains("startPasteAtCursor(pastedText)"))
+        #expect(primaryBody.contains("method: .cgEvent"))
+        #expect(primaryBody.contains("verification=notRequired"))
+        #expect(!primaryBody.contains("focusedInput"))
+        #expect(!primaryBody.contains("foregroundAutoSendMethod"))
+        #expect(!primaryBody.contains("await performAutoSend("))
+        #expect(!primaryBody.contains("prepareBackgroundDelivery"))
+        #expect(!primaryBody.contains("deliverToBackgroundExactInput"))
+        #expect(!primaryBody.contains("verifyAndRetry"))
+        #expect(!primaryBody.contains("Telegram"))
+        #expect(!primaryBody.contains("pressNearbySubmitButton"))
+        #expect(!primaryBody.contains("foregroundOpenAIVerificationContext"))
+
+        let engineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        let primaryStopStart = try #require(engineSource.range(
+            of: "            case .primaryCurrentInput:"
+        ))
+        let secondChanceStart = try #require(engineSource.range(
+            of: "            case .focusedDuringTranscription:",
+            range: primaryStopStart.upperBound..<engineSource.endIndex
+        ))
+        let primaryStopBody = engineSource[
+            primaryStopStart.lowerBound..<secondChanceStart.lowerBound
+        ]
+        #expect(primaryStopBody.contains("focusedInput: nil"))
+        #expect(!primaryStopBody.contains("captureFocusedInput"))
+        #expect(!primaryStopBody.contains("modeSnapshot"))
+        #expect(!primaryStopBody.contains("Telegram"))
+
+        let pipelineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(pipelineSource.contains(
+            "pasteTargetForDelivery.resolvedAutoSendKey("
+        ))
+    }
+
     @MainActor
-    @Test func foregroundAutoSendUsesImmediateOpenAISystemEventsAndBoundsHIDRetry() throws {
+    @Test func exactForegroundAutoSendUsesSurfaceSpecificHandlingAndBoundsHIDRetry() throws {
         #expect(TranscriptionDelivery.foregroundAutoSendMethod(
             bundleIdentifier: "com.openai.codex",
             autoSendKey: .enter
@@ -1497,19 +1569,6 @@ struct VoiceInkTests {
             ),
             encoding: .utf8
         )
-        let primaryStart = try #require(source.range(
-            of: "    private func deliverToUninterruptedPrimaryCurrentInputIfEligible("
-        ))
-        let backgroundStart = try #require(source.range(
-            of: "    private func deliverToBackgroundExactInput(",
-            range: primaryStart.upperBound..<source.endIndex
-        ))
-        let primaryBody = source[
-            primaryStart.lowerBound..<backgroundStart.lowerBound
-        ]
-        #expect(primaryBody.contains("foregroundAutoSendMethod"))
-        #expect(primaryBody.contains("method: sendMethod"))
-
         let autoSendStart = try #require(source.range(
             of: "    private func performAutoSend("
         ))
@@ -1601,7 +1660,7 @@ struct VoiceInkTests {
     @Test func recorderIconPulseMapsPrimaryAndNextRoutesToSeparateIcons() {
         let session = RecordingSession()
 
-        session.signalDestinationAction(.focusedAtStop)
+        session.signalDestinationAction(.primaryCurrentInput)
         let primaryPulse = session.iconActionPulse
         #expect(primaryPulse?.icon == .currentFocus)
         #expect(session.currentFocusIconActionPulseID == primaryPulse?.id)

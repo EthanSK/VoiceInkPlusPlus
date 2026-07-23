@@ -301,7 +301,7 @@ class RecordingShortcutManager: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     guard let mode = self.recordingMode(for: action) else { return }
-                    self.logger.info("Recording shortcut key-down action=\(String(describing: action), privacy: .public) mode=\(mode.rawValue, privacy: .public) recordingState=\(String(describing: self.engine.recordingState), privacy: .public) route=focusedAtStop")
+                    self.logger.info("Recording shortcut key-down action=\(String(describing: action), privacy: .public) mode=\(mode.rawValue, privacy: .public) recordingState=\(String(describing: self.engine.recordingState), privacy: .public) route=primaryCurrentInput")
                     await self.shortcutModeHandler.handleKeyDown(
                         action: action,
                         eventTime: eventTime,
@@ -604,13 +604,13 @@ final class RecordingShortcutModeHandler {
             if isHandsFreeRecording {
                 isHandsFreeRecording = false
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
                 return
             }
 
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
             return
         }
@@ -766,19 +766,19 @@ final class RecordingShortcutModeHandler {
             if isHandsFreeRecording {
                 isHandsFreeRecording = false
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
                 return
             }
 
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
 
         case .pushToTalk:
             if !isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
         }
     }
@@ -869,14 +869,14 @@ final class RecordingShortcutModeHandler {
         case .pushToTalk:
             if isRecorderVisible() {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
 
         case .hybrid:
             let pressDuration = shortcutPressStartTime.map { eventTime - $0 } ?? 0
             if pressDuration >= hybridPressThreshold && recordingState() == .recording {
                 guard canHandleShortcutAction() else { return }
-                await toggleRecorderPanel(modeId, .focusedAtStop)
+                await toggleRecorderPanel(modeId, .primaryCurrentInput)
             } else {
                 isHandsFreeRecording = true
             }

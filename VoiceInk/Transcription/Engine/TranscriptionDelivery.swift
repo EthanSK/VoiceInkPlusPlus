@@ -483,25 +483,27 @@ final class TranscriptionDelivery {
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
 
-        // PRIMARY-ONLY COMPATIBILITY ROUTE: when no genuine app activation has occurred
-        // since recording began and that same app still owns keyboard focus, behave like
-        // base VoiceInk. Paste at the live caret and immediately issue the ordinary HID
-        // Return. This intentionally does not require stop-time AX capture/identity,
-        // restore focus, semantic Send, background preparation, or read-back. Electron
-        // can transiently expose AXGroup while the correct composer still owns the real
-        // caret; making that AX snapshot a prerequisite broke the normal workflow.
-        //
-        // Any app activation—including switching away and back—rejects this route. The
-        // saved exact focusedAtStop target then handles delivery, while recordingStart
-        // and focusedDuringTranscription never enter this branch at all.
-        if await deliverToUninterruptedPrimaryCurrentInputIfEligible(
-            pastedText,
-            target: target,
-            autoSendKey: autoSendKey
-        ) {
+        // PRIMARY IS ALWAYS BASE VOICEINK. The normal toggle never owns a saved input
+        // and never runs Telegram/OpenAI/Terminal capture, focus, insertion, Send, or
+        // verification code. Ordinary system Cmd-V goes to whichever keyboard input
+        // macOS owns when the command is posted, followed immediately by the current
+        // Mode's generic HID Return. Switching apps before delivery is expected and
+        // changes the destination; only a physical Next press may freeze an exact one.
+        if target.destination.usesBaseCurrentInputDelivery {
+            await deliverPrimaryToCurrentSystemInput(
+                pastedText,
+                autoSendKey: autoSendKey
+            )
             return
         }
 
+        // Structural route boundary: everything below is app-specific exact delivery
+        // and is legal only because the physical Next button selected recordingStart
+        // or focusedDuringTranscription. Primary can never fall through to this code.
+        precondition(
+            target.destination.usesAppSpecificExactDelivery,
+            "Only Next-button routes may enter app-specific exact delivery"
+        )
         guard let capturedInput = target.focusedInput else {
             handleMissingPasteTarget(pastedText, destination: target.destination)
             return
@@ -646,110 +648,61 @@ final class TranscriptionDelivery {
         }
     }
 
-    /// Returns true once the primary compatibility route handled the delivery. False
-    /// means it was ineligible or continuity changed before Cmd-V, so the caller must
-    /// continue through the saved exact-input route without guessing a destination.
-    private func deliverToUninterruptedPrimaryCurrentInputIfEligible(
+    /// Base VoiceInk's current-input route, intentionally free of every app-specific
+    /// saved-input mechanism. The system keyboard focus at each ordinary event decides
+    /// where it goes; there is no exact-wrapper fallback, semantic Send, read-back,
+    /// retry, or app allowlist. This must remain the only Primary delivery path.
+    private func deliverPrimaryToCurrentSystemInput(
         _ pastedText: String,
-        target: RecordingPasteTarget,
         autoSendKey: AutoSendKey
-    ) async -> Bool {
-        guard target.destination == .focusedAtStop,
-              let continuity = target.primaryForegroundContinuity,
-              ActiveWindowService.shared.primaryForegroundContinuityIsUnbroken(
-                continuity
-              ) else {
-            return false
-        }
-
-        vippLog.info("paste: primary current-input compatibility selected targetPid=\(continuity.processIdentifier, privacy: .public) activationGeneration=\(continuity.activationGeneration, privacy: .public) exactCaptureRequired=false")
-        let continuityStillMatches: @MainActor () -> Bool = {
-            ActiveWindowService.shared.primaryForegroundContinuityIsUnbroken(
-                continuity
-            )
-        }
-        let pasteTask = CursorPaster.startPasteAtCursor(
-            pastedText,
-            canPost: continuityStillMatches
-        )
+    ) async {
+        vippLog.info("paste: primary current-input compatibility selected exactCaptureRequired=false appSpecificDelivery=false")
+        let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
         defer { FocusLockService.shared.clearLock() }
 
         let pasteResult = await pasteTask.value
-        vippLog.info("paste: primary current-input command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
+        vippLog.info("paste: primary current-input command completed result=\(String(describing: pasteResult), privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         switch pasteResult {
-        case .actionGuardRefused:
-            // Nothing was pasted. Continue once through focusedAtStop's exact route;
-            // never substitute the recording-start input.
-            vippLog.notice("paste: primary current-input continuity changed before Cmd-V; continuing through focusedAtStop exact route")
-            return false
-        case .commandNotPosted:
+        case .actionGuardRefused, .commandNotPosted:
             _ = ClipboardManager.copyToClipboard(pastedText)
             NotificationManager.shared.showNotification(
                 title: String(localized: "Couldn’t paste into the current input — transcription copied to clipboard"),
                 type: .error
             )
             vippLog.error("paste: primary current-input Cmd-V was not posted; copied transcription to clipboard")
-            return true
+            return
         case .commandPosted:
             break
         }
 
         guard autoSendKey.isEnabled else {
-            vippLog.info("paste: primary current-input delivery finished autoSend=none targetPid=\(continuity.processIdentifier, privacy: .public)")
-            return true
+            vippLog.info("paste: primary current-input delivery finished autoSend=none verification=notRequired")
+            return
         }
 
-        // A single read of the already-focused retained wrapper may arm read-only
-        // verification, but the first Return is never held behind a settling poll or a
-        // semantic-button scan. If Electron has not exposed the pasted text yet, keep
-        // v2.0.236's immediate one-shot behavior and report the post-state as unknown.
-        let verificationContext = foregroundOpenAIVerificationContext(
-            autoSendKey: autoSendKey,
-            target: target.focusedInput,
-            pastedText: pastedText
-        )
-        let sendMethod = Self.foregroundAutoSendMethod(
-            bundleIdentifier: continuity.bundleIdentifier,
-            autoSendKey: autoSendKey
-        )
+        // No delay and no app classification: this is the same generic system-focused
+        // key path for Telegram, Codex, Terminal, and every other current input.
+        let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
         let sendResult = await CursorPaster.performAutoSend(
             autoSendKey,
-            targetPID: continuity.processIdentifier,
-            method: sendMethod,
-            canPost: continuityStillMatches
+            targetPID: currentPID,
+            method: .cgEvent,
+            canPost: { true }
         )
         switch sendResult {
         case .commandPosted:
-            guard let verificationContext else {
-                vippLog.info("paste: primary current-input immediate foreground auto-send issued=true method=\(String(describing: sendMethod), privacy: .public) verification=unavailablePreState key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
-                break
-            }
-            vippLog.info("paste: primary current-input immediate foreground auto-send issued=true method=\(String(describing: sendMethod), privacy: .public) verification=pending key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
-            let outcome = await verifyAndRetryForegroundOpenAIReturn(
-                autoSendKey,
-                context: verificationContext,
-                targetPID: continuity.processIdentifier,
-                canPost: continuityStillMatches
-            )
-            vippLog.info("paste: primary current-input auto-send verification finished outcome=\(String(describing: outcome), privacy: .public) targetPid=\(continuity.processIdentifier, privacy: .public)")
-            if outcome == .failed {
-                showAutoSendFailure(
-                    "Transcription pasted, but Return did not submit it",
-                    detail: "primary current-input OpenAI composer remained readable and non-empty after its bounded Return attempt targetPid=\(continuity.processIdentifier)"
-                )
-            }
+            vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=notRequired key=\(autoSendKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         case .actionGuardRefused:
             showAutoSendFailure(
-                "Transcription pasted, but the current app changed before Return",
-                detail: "primary current-input continuity changed after paste targetPid=\(continuity.processIdentifier)"
+                "Transcription pasted, but Return could not be issued",
+                detail: "base current-input Return was unexpectedly refused"
             )
         case .commandNotPosted:
             showAutoSendFailure(
                 "Transcription pasted, but couldn’t press Return automatically",
-                detail: "primary current-input Return was not posted targetPid=\(continuity.processIdentifier)"
+                detail: "base current-input Return was not posted"
             )
         }
-        return true
     }
 
     private func deliverToBackgroundExactInput(
@@ -1160,7 +1113,8 @@ final class TranscriptionDelivery {
         _ = ClipboardManager.copyToClipboard(pastedText)
         let destinationName = switch destination {
         case .recordingStart: "recording-start"
-        case .focusedAtStop: "stop-time"
+        case .primaryCurrentInput:
+            preconditionFailure("Primary cannot enter background exact delivery")
         case .focusedDuringTranscription: "second-chance"
         }
         NotificationManager.shared.showNotification(
@@ -1376,8 +1330,8 @@ final class TranscriptionDelivery {
         let title = switch destination {
         case .recordingStart:
             String(localized: "Couldn’t focus the recording-start input — transcription copied to clipboard")
-        case .focusedAtStop:
-            String(localized: "Couldn’t focus the stop input — transcription copied to clipboard")
+        case .primaryCurrentInput:
+            preconditionFailure("Primary cannot require a saved paste target")
         case .focusedDuringTranscription:
             String(localized: "Couldn’t focus the retargeted input — transcription copied to clipboard")
         }

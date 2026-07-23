@@ -11,13 +11,13 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Behavioral-intent comments
 
-- Preserve the reason for VoiceInk++'s deliberately unusual behavior in the code beside the branch or safety check that enforces it. In particular, comments must distinguish all three destination routes, explain why input plus Mode/auto-send are atomic per-session state, and document why exact-input identity, non-activating delivery, surface-specific submission, one-shot fallbacks, and fail-closed checks exist.
+- Preserve the reason for VoiceInk++'s deliberately unusual behavior in the code beside the branch or safety check that enforces it. In particular, comments must distinguish all three destination routes, explain why input plus Mode/auto-send are atomic only for the two Next routes while Primary deliberately owns neither, and document why exact-input identity, non-activating delivery, surface-specific submission, one-shot fallbacks, and fail-closed checks exist.
 - Update those comments whenever behavior changes. Do not remove a constraint as "redundant," merge routes, or replace a bounded app-specific path with a generic shortcut unless the adjacent comment and accepted contract prove that simplification safe.
 - Comment intent and invariants, not obvious syntax. `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, `BACKGROUND_DELIVERY_TEST_MATRIX.md`, and `FAILED_APPROACHES.md` are the long-form source of truth; code comments must make the relevant intent visible without requiring a future agent to guess which rule applies.
 
 ## Canonical mouse terminology
 
-Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop into only the exact input focused at stop (`focusedAtStop`). A primary normal stop must never reuse or fall back to `recordingStart`; capture or verification failure must remain visible and safe.
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`). The system keyboard focus and current Mode at delivery decide paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
@@ -25,23 +25,31 @@ Ethan's live G502 X LIGHTSPEED `Desktop: Default` profile was sanity-checked on 
 
 The modifier-only Primary shortcut must not dismiss a context menu or disturb the focused composer merely because VoiceInk++ starts/stops recording. Suppress only the `flagsChanged` event that completes the owned Shift-Control-Option chord and any full-chord repeats. Forward partial modifiers and every release so the foreground app receives a balanced modifier sequence and no modifier can remain logically stuck. Preserve the pure reducer regression test and require one physical open-context-menu check before accepting a release that changes shortcut monitoring.
 
+## Primary isolation is a hard architectural boundary
+
+- Primary/toggle must behave like base VoiceInk whether Exact Saved-Input Delivery is on or off: ordinary system-focused Command-V followed immediately by the current Mode's generic auto-send key, with no app classifier, saved AX wrapper, internal focus, exact insertion, semantic Send, read-back, retry, or verification.
+- At Primary stop, create only `primaryCurrentInput` with `focusedInput=nil` and no destination-owned Mode. Never capture a stop-time input. A tentative recording-start capture may exist solely because a later **Next while recording** needs it; Primary stop must structurally discard it.
+- Telegram, OpenAI, Terminal/iTerm, Chrome, Notion, and every later app-specific mechanism are legal only when `destination.usesAppSpecificExactDelivery` proves that the physical Next button selected `recordingStart` or `focusedDuringTranscription`.
+- Keep the route boundary in types and regression tests, not only comments. Tests must prove Primary strips accidental exact state, the stop branch contains no capture/Mode lookup, and the delivery body contains only generic system-focused paste/auto-send with no fallthrough into exact delivery.
+- When adding or repairing one app's latch behavior, rerun the Primary current-input regression first and after the change. App-specific work is not releasable if Primary can enter that app's exact resolver, even when the latch tests pass.
+
 ## Non-negotiable Next button contract
 
-The runtime feature flag `VIPPExactInputDeliveryEnabled` selects the delivery engine. While false,
-VoiceInk++ deliberately behaves like base VoiceInk: Primary output follows only the keyboard-focused
-input at delivery and the current app's Mode supplies optional Return. Next Track performs no
-destination action, but a visible recorder bar still consumes it; media pass-through resumes only
-after the bar hides.
+The runtime feature flag `VIPPExactInputDeliveryEnabled` selects whether the two exact Next routes
+are available. While false, VoiceInk++ deliberately behaves like base VoiceInk: Primary output
+follows only the keyboard-focused input at delivery and the current app's Mode supplies optional
+Return. Next Track performs no destination action, but a visible recorder bar still consumes it;
+media pass-through resumes only after the bar hides.
 The second destination slot remains visible as a warning because no exact input is owned; it must
 not disappear or imply a saved app that compatibility delivery will ignore. This escape hatch is
-not a fourth route and must not delete or reinterpret the exact engine below. While true, all three
-routes below apply.
+not a fourth route and must not delete or reinterpret the route model below. While true, Primary
+remains base-current-input and the two Next routes below enable app-specific exact delivery.
 
 Use **Next button** as the preferred user-facing term. **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases for the same physical control or its macOS event. They do not create additional routes. Use **second chance** only for route 3 below, and never describe it as a toggle.
 
 VoiceInk++ has three distinct one-click destination routes. Do not merge them, reinterpret them as a toggle, or infer one from another:
 
-1. **Primary button again while recording:** normal stop and save only the exact editable input focused at stop (`focusedAtStop`). Never fall back to the recording-start input.
+1. **Primary button again while recording:** normal stop through base VoiceInk (`primaryCurrentInput`). Do not save an input; paste and generic auto-send follow the system keyboard focus and current Mode at delivery.
 2. **Next Track while recording:** stop recording and save the input captured at recording start (`recordingStart`), with the documented safe application fallback for Electron/Chromium.
 3. **Next Track after a normal stop, while the newest result is still transcribing and before post-processing begins:** this is Ethan's **second chance**. Replace that pending session's destination with the exact editable input focused now (`focusedDuringTranscription`). It does not stop anything, toggle anything, or release the target. Never skip an ineligible newer pending result to retarget an older session.
 
@@ -49,7 +57,7 @@ The canonical second-chance scenario is:
 
 > normal stop → transcription begins → focus a new editable input → press Next Track once → optionally move to another app → finished text pastes into the newly selected input and uses that input app's configured auto-send → VoiceInk++ restores the later workspace when applicable.
 
-The saved input and its target app's complete Mode are one atomic, per-session decision. Never re-read formatting, enhancement, output, or auto-send solely from the globally current Mode: Ethan may already be using another app by then. `RecordingPasteTarget` must continue to carry both values, and `TranscriptionPipeline` must freeze the latest target after transcription/trigger-word selection but before any destination-dependent formatting or enhancement begins. One-shot raw/skip mode remains the intentional exception and must force no auto-send.
+For the two Next routes, the saved input and its target app's complete Mode are one atomic, per-session decision. Never re-read their formatting, enhancement, output, or auto-send from the globally current Mode: Ethan may already be using another app by then. `RecordingPasteTarget` must continue to carry both values, and `TranscriptionPipeline` must freeze the latest target after transcription/trigger-word selection but before any destination-dependent formatting or enhancement begins. Primary is intentionally opposite: it owns neither exact input nor destination Mode and resolves the current Mode for base delivery. One-shot raw/skip mode remains the intentional exception and must force no auto-send.
 
 The visible recorder/transcription bar is the strict ownership boundary for the Next button. While any mirrored black bar is visible, consume the complete Next Track press even if no session remains eligible, the newest session already latched, delivery crossed its cutoff, or exact delivery is temporarily disabled. Eligible states still perform the three routes above; an ineligible visible-bar press is a no-op that preserves the existing destination. Pass Next Track through to media only after the recorder bar is hidden. This prevents an attempted VoiceInk++ latch from becoming an unrelated Next Song action because of an internal timing race.
 
@@ -62,7 +70,7 @@ The visible recorder/transcription bar is the strict ownership boundary for the 
 - Keep both icon slots visible for every active session. When exact delivery is disabled or capture genuinely fails, the second slot shows the warning icon; never hide the slot merely to conceal a missing destination.
 - The locked icon remains visible through transcription and changes immediately after a successful second-chance retarget. Do not replace that visual confirmation with a success toast.
 - Destination actions use the per-session neon confirmation pulse on every mirrored panel: a primary-button normal stop pulses the left/current-focus icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Preserve the non-scaling Reduce Motion variant.
-- The pulse is transient action feedback. Once any stop route has frozen a real exact input, the stable right/locked-destination icon stays outlined until that session succeeds, visibly fails, or is cancelled. A recording-time preview, missing target, and app-only no-caret fallback remain unoutlined until exact-composer promotion succeeds. The live left/current-focus icon is never persistently outlined; it can change after the decision and would misrepresent ownership.
+- The pulse is transient action feedback. Once a **Next** route has frozen a real exact input, the stable right/locked-destination icon stays outlined until that session succeeds, visibly fails, or is cancelled. Primary never owns an exact destination, so after a Primary stop the right slot remains an unoutlined warning unless a successful second-chance Next latch replaces it. A recording-time preview, missing target, and app-only no-caret fallback remain unoutlined until exact-composer promotion succeeds. The live left/current-focus icon is never persistently outlined; it can change after the decision and would misrepresent ownership.
 
 ## Delivery safety
 
@@ -83,7 +91,7 @@ The visible recorder/transcription bar is the strict ownership boundary for the 
 
 Before changing this behavior, read `TERMINOLOGY.md`, `RECORDING_DESTINATIONS.md`, `FAILED_APPROACHES.md`, and the newest relevant entries in `LEARNINGS.md`. The accepted rollback floor is commit `b2aeaa2`, which restores native source exactly to commit `96e494e` and the signed v2.0.206 app. Commit `1eabb1b` (`Fix second-chance transcription retarget auto-send`) remains the accepted behavioral contract for the second-chance route, with `cba45ba` as its earlier retarget foundation. The later toggle experiment `671b4c7` was deliberately reverted by `bed22b7`. The v2.0.207/v2.0.208 delivery rewrite is rejected evidence, not an accepted implementation. `FAILED_APPROACHES.md` records the later v2.0.209–v2.0.236 evidence and must be consulted before reviving any event, Accessibility, focus, verification, or release experiment.
 
-The operational rollback checkpoint is signed v2.0.243 from commit `5475ef2`. Preserve it because Ethan confirmed its normal Primary `focusedAtStop` current-input path works. Do not describe it as a working latch release: the latest Codex `focusedDuringTranscription` run verified insertion and issued one Send action but did not visibly submit, while Telegram `focusedDuringTranscription` and `recordingStart` both failed saved-window resolution before insertion. Branch app-specific experiments from this checkpoint and keep the accepted Primary path structurally untouched.
+The historical operational rollback checkpoint is signed v2.0.243 from commit `5475ef2`. Preserve it because Ethan confirmed its then-current Primary compatibility path worked, but do not copy its `focusedAtStop` continuity/fallback architecture into current source: a later app switch could route Primary into app-specific exact delivery. Do not describe v2.0.243 as a working latch release: the correlated Codex `focusedDuringTranscription` run verified insertion and issued one Send action but did not visibly submit, while Telegram `focusedDuringTranscription` and `recordingStart` both failed saved-window resolution before insertion. Current app-specific experiments must preserve the stronger `primaryCurrentInput` structural boundary.
 
 Signed v2.0.245 from commit `99a596b` is the installed Telegram checkpoint (CDHash `9857ba882d2ff2f9064edcf79f055dd9e7dccdd1`) with exact delivery enabled. Its fresh Mini bundle passed all 30 named unit tests through the direct `xcrun xctest` fallback after TestManager stalled; deep/strict signing, outer Automation, and Screen Recording permission verify. Ethan and the trace accepted both background Next routes in pinned Telegram 12.9/282526 Saved Messages. Foreground Primary and wrong-chat rejection remain physically untested, and v2.0.243 remains the rollback checkpoint for the accepted Primary route.
 
