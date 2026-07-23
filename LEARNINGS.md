@@ -25,6 +25,28 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-23T00:37:25Z
+**Trigger:** Ethan asked whether the other voice model was working and required it to be selected only after a real successful test.
+**Symptom:** Soniox real-time initially looked as though it timed out, so every active Mode remained on tuned Deepgram with real-time disabled.
+**Root cause:** The first standalone probe waited for the WebSocket connection to emit finished after sending Soniox <fin>, but Soniox intentionally keeps that stream open; VoiceInk++ correctly treats the committed final token after <fin> as completion.
+**Fix:** A corrected funded-account probe sent synthetic non-private speech to Soniox stt-rt-v5, received a committed non-empty 69-character transcript in 4.99 seconds, and all seven live Mode records plus CurrentTranscriptionModel were switched to Soniox V5 stt-async-v5 with real-time enabled before launching v2.0.249.
+**Commit:** runtime configuration on installed v2.0.249 source 5c85c78
+**Guard:** After launch, defaults prove 7/7 Mode records select stt-async-v5 with isRealtimeTranscriptionEnabled=true; the app resolves that pair to stt-rt-v5. One real microphone dictation remains the final physical acceptance test.
+---
+
+
+---
+**Date:** 2026-07-23T00:37:25Z
+**Trigger:** Ethan required that while the floating black bar is visible the Next button must never go to the next song.
+**Symptom:** A Next-button press intended for VoiceInk++ could advance media when the black recorder/transcription bar was still visible but the newest session was no longer internally eligible to latch.
+**Root cause:** The event tap tied ownership to exact-route eligibility and the exact-delivery flag instead of the user-visible recorder-panel lifetime, so timing at the delivery cutoff could leak the same physical press to Next Song.
+**Fix:** RecordingShortcutManager now consumes both halves of every Next Track press while any recorder panel is visible; eligible presses still perform their existing route and ineligible presses are no-ops. Build 249 updates the destination contracts and version.
+**Commit:** 5c85c78e41e364f46cbbfffb160ba30dfd0fcb11
+**Guard:** Mac Mini Xcode build plus fresh direct xcrun xctest named and passed all 40 tests, including nextTrackNeverPassesThroughWhileRecorderPanelIsVisible and secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt. Signed v2.0.249 installed with CDHash 51208b063ef424977b1d0aff6a6a1144f24cc6bf; physical G HUB test remains pending.
+---
+
+
+---
 **Date:** 2026-07-21T23:22:09Z
 **Trigger:** Ethan asked whether recording could start without dismissing an open right-click/context menu.
 **Symptom:** Opening a right-click context menu and pressing the modifier-only Primary shortcut dismissed the menu when recording began.

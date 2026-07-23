@@ -52,11 +52,20 @@ Keep these three routes distinct:
 First check the runtime delivery-engine flag `VIPPExactInputDeliveryEnabled`. When it
 is false, VoiceInk++ deliberately uses base VoiceInk compatibility delivery: Primary
 follows the current Mode and keyboard-focused input, no exact input is captured at start
-or stop, and Next Track passes through. Keep the recorder's second destination slot
-visible as a warning in this state; returning a stale target would lie about ownership,
-while hiding the slot would conceal that the Next/exact route is unavailable. The flag
-is an escape hatch around delivery, not a fourth route, and must never delete or merge
-the exact three-route contract.
+or stop, and Next Track performs no destination action. Keep the recorder's second
+destination slot visible as a warning in this state; returning a stale target would lie
+about ownership, while hiding the slot would conceal that the Next/exact route is
+unavailable. The flag is an escape hatch around delivery, not a fourth route, and must
+never delete or merge the exact three-route contract.
+
+Treat the visible recorder/transcription bar as the strict ownership boundary for the
+Next button. While any mirrored black bar is visible, consume the complete Next Track
+press even when no session remains eligible, the newest session already latched,
+delivery crossed its cutoff, or exact delivery is disabled. Eligible states still
+perform the routes above; an ineligible visible-bar press is a no-op that preserves the
+existing destination. Pass Next Track through to media only after the bar is hidden, so
+an attempted VoiceInk++ latch can never become an unrelated Next Song action because of
+an internal timing race.
 
 Preserve the recorder's action feedback mapping on every mirrored panel: a primary normal stop pulses the left/current-focus app icon; Next while recording and a successful second-chance Next latch pulse the right/locked-destination icon. Failed retargets and pass-through media presses do not pulse. Keep the Reduce Motion variant non-scaling.
 
