@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-23T23:36:13Z
+**Trigger:** Ethan reported that Primary sometimes pasted without Return or did not paste when stopping Soniox realtime while still speaking.
+**Symptom:** A very short Soniox V5 realtime Primary recording could stop with finalChars=0, causing a blank paste attempt or no useful paste even though ordinary Primary routing remained correct.
+**Root cause:** StreamingTranscriptionSession treated every successful stopAndGetFinalText return, including empty or whitespace text, as a completed final and therefore bypassed the existing completed-file fallback.
+**Fix:** Build 254 classifies empty realtime finals as incomplete and runs the same audio through the provider batch path before the unchanged base Primary paste plus Mode Return; non-empty realtime finals remain immediate and Next-button delivery code is untouched.
+**Commit:** e1a1108c01a6d1326b35e902bcc1c59390439bf1
+**Guard:** Mac Mini direct xcrun xctest named and passed all 43 tests including emptyRealtimeFinalFallsBackInsteadOfDeliveringBlankText, realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery, Primary isolation, and both Next ownership guards. Signed v2.0.254 is installed with CDHash 834dcfdd83c3ad85e066c8883f2723740736276e; physical empty-final fallback still needs a naturally reproduced short stop.
+---
+
+
+---
 **Date:** 2026-07-23T15:44:12Z
 **Trigger:** Ethan confirmed: Soniox partials stay in the black float and final paste/send happens once on stop.
 **Symptom:** The proposed Soniox real-time design would mirror provisional speech into another app while recording, although the simpler desired behavior is to keep live text in VoiceInk++ and paste only once on stop.
