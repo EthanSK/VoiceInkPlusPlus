@@ -75,6 +75,13 @@ These are the highest-cost mistakes from the audited session.
 12. **Never call a release shipped because source changed or an app compiled.** It must have a new
     build number, named tests, a signed installed artifact, a new verified PID/CDHash, and a real
     route trace. `/Applications/VoiceInk.app` must remain untouched.
+13. **Never infer the active transcription provider from `CurrentTranscriptionModel` or the legacy
+    VoiceInk preference domain alone.** VoiceInk++ uses `com.ethansk.VoiceInkPlusPlus`, and each
+    `modeConfigurationsV2` entry can override the top-level model and real-time setting. On
+    2026-07-22 every active Mode selected Soniox V5 real-time even though the top-level value said
+    tuned Deepgram; Soniox reported exhausted organization balance and the fallback timed out.
+    Decode the active Mode records and correlate the provider's first live server error before
+    changing delivery code, downgrading the binary, or blaming general connectivity.
 
 ## Current accepted boundary at the end of the audit
 
