@@ -1740,6 +1740,58 @@ struct VoiceInkTests {
         ) == nil)
     }
 
+    @Test func realtimeNonPasteDeliveryDiscardsOnlyFocusedOwnedRange() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let draftSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/RealtimeInputDraftSession.swift"
+            ),
+            encoding: .utf8
+        )
+        let cleanupStart = try #require(draftSource.range(
+            of: "    func discardCurrentDraftForNonPasteOutput()"
+        ))
+        let cleanupEnd = try #require(draftSource.range(
+            of: "    func finish()",
+            range: cleanupStart.upperBound..<draftSource.endIndex
+        ))
+        let cleanupBody = draftSource[
+            cleanupStart.lowerBound..<cleanupEnd.lowerBound
+        ]
+
+        #expect(cleanupBody.contains("discardCurrentSystemFocusedDraft"))
+        #expect(cleanupBody.contains("targetOwnsSystemKeyboardFocus"))
+        #expect(cleanupBody.contains("restoreForegroundRealtimeDraft"))
+        #expect(!cleanupBody.contains("prepareBackgroundDelivery"))
+        #expect(!cleanupBody.contains("captureFocusedInput"))
+        #expect(!cleanupBody.contains("AXValue"))
+
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let respondBranch = try #require(deliverySource.range(
+            of: "        if request.output.outputMode == .respond,"
+        ))
+        let pasteStart = try #require(deliverySource.range(
+            of: "        if let text = request.text {",
+            range: respondBranch.upperBound..<deliverySource.endIndex
+        ))
+        let nonPasteBranches = deliverySource[
+            respondBranch.lowerBound..<pasteStart.lowerBound
+        ]
+
+        #expect(nonPasteBranches.components(
+            separatedBy: "discardCurrentDraftForNonPasteOutput()"
+        ).count - 1 == 2)
+        #expect(nonPasteBranches.contains("await deliverResponse"))
+        #expect(nonPasteBranches.contains("await deliverCustomCommand"))
+    }
+
     @MainActor
     @Test func exactForegroundAutoSendUsesSurfaceSpecificHandlingAndBoundsHIDRetry() throws {
         #expect(TranscriptionDelivery.foregroundAutoSendMethod(

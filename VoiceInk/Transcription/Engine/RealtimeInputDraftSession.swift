@@ -304,19 +304,42 @@ final class RealtimeInputDraftSession {
     /// where it is safe: restore only the draft that currently owns real keyboard focus.
     /// Background/app-switch cleanup remains fail-closed and never activates anything.
     func discardCurrentDraftForExplicitCancel() {
+        discardCurrentSystemFocusedDraft(reason: "explicit cancel")
+    }
+
+    /// Trigger-word selection happens after realtime hypotheses may already be visible.
+    /// If the final target Mode becomes Respond or Custom Command, that text is no longer
+    /// a paste preview. Remove only the active range that still owns real system focus;
+    /// a background copy remains as resilience evidence rather than activating an app or
+    /// guessing which reused editor now contains it.
+    func discardCurrentDraftForNonPasteOutput() {
+        discardCurrentSystemFocusedDraft(reason: "final output is not paste")
+    }
+
+    private func discardCurrentSystemFocusedDraft(reason: String) {
         updateTask?.cancel()
         updateTask = nil
         acceptsLiveUpdates = false
         guard let active = activeOwnership,
               focusService.targetOwnsSystemKeyboardFocus(active.target) else {
+            logger.notice(
+                "realtime draft preserved because no active owned range has system focus session=\(self.sessionID.uuidString, privacy: .public) reason=\(reason, privacy: .public)"
+            )
             return
         }
         switch focusService.restoreForegroundRealtimeDraft(active) {
         case .applied:
             ownerships.removeAll { $0.id == active.id }
             activeOwnershipID = nil
-        case .unavailableBeforeMutation, .ownershipConflict, .indeterminateAfterMutation:
-            break
+            logger.info(
+                "realtime draft restored focused owned range session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(active.target.processIdentifier, privacy: .public) reason=\(reason, privacy: .public)"
+            )
+        case .unavailableBeforeMutation, .ownershipConflict:
+            logger.notice(
+                "realtime draft preserved after safe restoration preflight refused session=\(self.sessionID.uuidString, privacy: .public) targetPid=\(active.target.processIdentifier, privacy: .public) reason=\(reason, privacy: .public)"
+            )
+        case .indeterminateAfterMutation:
+            blockFurtherMutation(for: active.target)
         }
     }
 

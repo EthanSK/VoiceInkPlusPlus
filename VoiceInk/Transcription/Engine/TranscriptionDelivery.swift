@@ -365,11 +365,20 @@ final class TranscriptionDelivery {
 
         if request.output.outputMode == .respond,
            request.responseConfig != nil || request.responseError != nil {
+            // A trigger word can choose Respond only after Soniox partials have already
+            // appeared in the input. That live range is not final paste output: restore
+            // it only while its exact input still owns real keyboard focus. Never wake
+            // a background app merely to erase a resilient copy.
+            request.realtimeInputDraftSession?.discardCurrentDraftForNonPasteOutput()
             await deliverResponse(request, actions: actions)
             return
         }
 
         if request.output.outputMode == .customCommand {
+            // Custom Command consumes the transcript outside the editor. Apply the same
+            // focused-only owned-range cleanup as Respond so raw live text does not look
+            // like a completed paste, while background/cross-app residue stays untouched.
+            request.realtimeInputDraftSession?.discardCurrentDraftForNonPasteOutput()
             await deliverCustomCommand(request, actions: actions)
             return
         }
