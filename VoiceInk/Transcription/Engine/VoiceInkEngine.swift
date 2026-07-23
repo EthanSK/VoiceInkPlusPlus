@@ -247,13 +247,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
             return .noFocusedInput
         }
 
+        let targetMode = ModeRuntimeResolver.modeSnapshot(
+            forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
+        )
         let didRetarget = session.retargetPaste(
             to: RecordingPasteTarget(
                 destination: .focusedDuringTranscription,
                 focusedInput: focusedInput,
-                mode: ModeRuntimeResolver.modeSnapshot(
-                    forPasteTargetBundleIdentifier: focusedInput.bundleIdentifier
-                )
+                mode: targetMode
             )
         )
         guard didRetarget else {
@@ -264,6 +265,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // Success is communicated by the published per-session destination icon
         // switching in place. Keep text reserved for failures; a toast here made the
         // compact recorder noisy and duplicated the much clearer icon transition.
+        // A realtime session may already have a cumulative draft. Seed that complete
+        // draft into the newly focused second-chance input now; exact delivery later
+        // replaces the owned range with final processed text instead of appending it.
+        session.realtimeInputDraftSession?.seedSecondChanceTarget(
+            focusedInput,
+            mayWriteTargetMode: (targetMode?.outputMode ?? .paste) == .paste
+        )
         vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
         return .retargeted
     }
@@ -286,6 +294,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// Remove a finished/aborted session from the collection + recompute derived state.
     /// SwiftUI animates the card out (transition on the `sessions` array).
     private func removeSession(_ session: RecordingSession) {
+        session.realtimeInputDraftSession?.finish()
         session.phase = .done
         session.clearContext()
         sessions.removeAll { $0.id == session.id }
@@ -320,6 +329,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // that inline await is exactly what blocked the next start in the old engine.
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
+            // Stop is the ordering boundary for realtime input streaming. Flush the
+            // newest cumulative hypothesis into whichever input owns the system caret
+            // now, then freeze partial mutations. Final delivery reconciles that exact
+            // owned range and performs one Return; non-realtime sessions are no-ops.
+            active.realtimeInputDraftSession?.flushBeforeStop()
+
             switch stopPasteDestination {
             case .recordingStart:
                 let focusedInput = active.recordingStartFocusedInput
@@ -575,6 +590,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             session.transcriptionConfiguration = transcriptionConfiguration
 
+            session.realtimeInputDraftSession = RealtimeInputDraftSession(
+                sessionID: session.id,
+                isEnabled: RealtimeInputDraftFeature.isEnabled(
+                    for: transcriptionConfiguration,
+                    useCase: session.useCase
+                )
+            )
+
             if self.serviceRegistry.shouldUseRealtimeTranscription(for: transcriptionConfiguration) {
                 let streamingSession = self.serviceRegistry.createSession(
                     for: transcriptionConfiguration,
@@ -586,6 +609,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 return
                             }
                             session.partialTranscript = partial
+                            let currentOutput = ModeRuntimeResolver.outputConfiguration()
+                            session.realtimeInputDraftSession?.receive(
+                                partial,
+                                mayWriteCurrentMode:
+                                    session.skipPostProcessing
+                                    || currentOutput.outputMode == .paste
+                            )
                             // Mirror to the engine's derived partial only while this is the
                             // active recording session (it always is here, but be explicit).
                             if self.activeRecordingSession?.id == session.id {
@@ -790,6 +820,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 )
             },
             session: job.transcriptionSession,
+            realtimeInputDraftSession: session.realtimeInputDraftSession,
             triggerWordModeSelection: { [weak self, weak session] text in
                 guard let selection = self?.selectTriggerWordModeIfNeeded(for: text) else {
                     return nil
@@ -926,6 +957,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // Pipeline finished (delivered, failed, or canceled). Capture the result, release
         // shared model resources, drop the poison key, and remove the session from the stack.
         session.transcript = transcription.text
+        session.realtimeInputDraftSession?.finish()
         canceledPipelineTranscriptionIDs.remove(transcriptionID)
         session.transcriptionSession = nil
 
@@ -999,6 +1031,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         vippLog.info("cancelSession: \(session.id.uuidString, privacy: .public) phase=\(String(describing: session.phase), privacy: .public) liveState=\(String(describing: session.liveRecordingState), privacy: .public)")
 
         session.shouldCancel = true
+        session.realtimeInputDraftSession?.discardCurrentDraftForExplicitCancel()
         session.transcriptionSession?.cancel()
 
         switch session.phase {

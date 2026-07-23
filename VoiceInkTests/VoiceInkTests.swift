@@ -455,6 +455,47 @@ struct VoiceInkTests {
         #expect(latched.resolvedAutoSendKey(currentInputKey: .shiftEnter) == AutoSendKey.enter)
     }
 
+    @Test func realtimeDraftRangeReplacesOnlyItsMutableHypothesis() {
+        let initial = "before selected after"
+        let range = RealtimeDraftTextRange(
+            location: 7,
+            insertedText: "selected",
+            originalText: ""
+        )
+
+        #expect(range.ownedSubstringMatches(in: initial))
+        #expect(range.replacingOwnedText(
+            in: initial,
+            with: "mutable hypothesis"
+        ) == "before mutable hypothesis after")
+
+        let updated = range.replacingInsertedText(with: "mutable hypothesis")
+        #expect(updated.location == 7)
+        #expect(updated.nsRange.length == "mutable hypothesis".utf16.count)
+        #expect(updated.ownedSubstringMatches(
+            in: "before mutable hypothesis after"
+        ))
+    }
+
+    @Test func realtimeDraftRangeUsesUTF16AndRejectsStaleOrRepeatedText() {
+        let value = "🙂 prefix live suffix live"
+        let location = ("🙂 prefix " as NSString).length
+        let range = RealtimeDraftTextRange(
+            location: location,
+            insertedText: "live",
+            originalText: ""
+        )
+
+        #expect(range.ownedSubstringMatches(in: value))
+        #expect(range.replacingOwnedText(
+            in: value,
+            with: "new"
+        ) == "🙂 prefix new suffix live")
+        #expect(!range.ownedSubstringMatches(
+            in: "🙂 prefix changed suffix live"
+        ))
+    }
+
     @MainActor
     @Test func backgroundAutoSendSeparatesUnreadableFromReadableNoOp() {
         #expect(TranscriptionDelivery.classifyBackgroundAutoSendVerification(
@@ -1539,6 +1580,62 @@ struct VoiceInkTests {
         )
         #expect(pipelineSource.contains(
             "pasteTargetForDelivery.resolvedAutoSendKey("
+        ))
+    }
+
+    @Test func realtimePrimaryReconciliationCannotEnterNextAppSpecificDelivery() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let realtimeStart = try #require(source.range(
+            of: "    private func deliverRealtimePrimaryToCurrentSystemInput("
+        ))
+        let baseStart = try #require(source.range(
+            of: "    private func deliverPrimaryToCurrentSystemInput("
+        ))
+        let realtimeBody = source[
+            realtimeStart.lowerBound..<baseStart.lowerBound
+        ]
+
+        #expect(realtimeBody.contains("draftSession.finalizePrimary"))
+        #expect(realtimeBody.contains("method: .cgEvent"))
+        #expect(realtimeBody.contains("targetOwnsSystemKeyboardFocus"))
+        #expect(!realtimeBody.contains("prepareBackgroundDelivery"))
+        #expect(!realtimeBody.contains("deliverToBackgroundExactInput"))
+        #expect(!realtimeBody.contains("pressNearbySubmitButton"))
+        #expect(!realtimeBody.contains("telegramTargetedHIDReturn"))
+        #expect(!realtimeBody.contains("foregroundAutoSendMethod"))
+    }
+
+    @Test func realtimeDraftMutationNeverWritesAnEntireAXValue() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Modes/FocusLockService.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(
+            of: "    func insertForegroundRealtimeDraft("
+        ))
+        let end = try #require(source.range(
+            of: "    /// Read-only proof that the frozen exact input",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = source[start.lowerBound..<end.lowerBound]
+
+        #expect(body.contains("kAXSelectedTextAttribute"))
+        #expect(body.contains("kAXSelectedTextRangeAttribute"))
+        #expect(!body.contains(
+            "AXUIElementSetAttributeValue(\n            element,\n            kAXValueAttribute"
         ))
     }
 

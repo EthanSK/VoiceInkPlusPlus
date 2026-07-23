@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
+    @AppStorage(RealtimeInputDraftFeature.userDefaultsKey) private var realtimeInputStreamingEnabled = true
     @State private var showResetOnboardingAlert = false
     @State private var hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
     @State private var cancelRecordingShortcutRecorderResetID = 0
@@ -141,6 +142,13 @@ struct SettingsView: View {
             }
 
             Section("Pasting") {
+                Toggle(isOn: $realtimeInputStreamingEnabled) {
+                    HStack(spacing: 4) {
+                        Text("Write Realtime Transcript into Input")
+                        InfoTip("With a supported realtime model (currently Soniox V5), VoiceInk++ updates only the exact text range it inserted in the focused input while you speak. Changing focus seeds the complete draft into the new input; final delivery reconciles that range before Return so it is never pasted twice.")
+                    }
+                }
+
                 ExpandableSettingsRow(
                     isExpanded: $isRestoreClipboardExpanded,
                     isEnabled: $restoreClipboardAfterPaste,

@@ -232,6 +232,13 @@ final class FocusLockService: ObservableObject {
             mode == .telegramRetainedExactInput
                 && telegramVisualIdentity == nil
         }
+        /// Live-draft migration may erase a prior range only in the same foreground
+        /// application while a different exact input owns the real system caret. This
+        /// direct mode performs no synthetic activation and no app-internal focus
+        /// rewrite; cross-app prepared sessions deliberately retain the old draft.
+        var allowsDirectRealtimeDraftMutation: Bool {
+            mode == .directExactElement
+        }
         var requiresTelegramVisualRevalidation: Bool {
             mode == .telegramRetainedExactInput
                 && telegramVisualIdentity != nil
@@ -1297,6 +1304,114 @@ final class FocusLockService: ObservableObject {
             : .failed(result.rawValue)
     }
 
+    /// Reconcile one realtime-owned range inside an already prepared exact-input
+    /// session. This is not generic background AXValue replacement: the current value
+    /// must still contain the exact prior hypothesis at the exact UTF-16 range, then we
+    /// select only that range. Prepared Electron sessions use one bounded targeted-
+    /// Unicode replacement; direct/Telegram sessions may use AXSelectedText when the
+    /// attribute is proven settable. No caller may append the final transcript after a
+    /// conflict because that would duplicate the realtime draft.
+    func prepareRealtimeDraftReplacement(
+        _ replacement: String,
+        ownership: RealtimeInputDraftOwnership,
+        for session: BackgroundDeliverySession
+    ) -> PreparedRealtimeDraftReplacement {
+        guard !replacement.isEmpty,
+              targetsReferToSameExactInput(ownership.target, session.target),
+              backgroundSessionRemainsPrepared(session),
+              let currentValue = stringAttribute(
+                kAXValueAttribute,
+                from: session.element
+              ) else {
+            return .unavailableBeforeMutation
+        }
+        guard ownership.textRange.ownedSubstringMatches(in: currentValue),
+              let expectedValue = ownership.textRange.replacingOwnedText(
+                in: currentValue,
+                with: replacement
+              ) else {
+            return .ownershipConflict
+        }
+
+        let updated = RealtimeInputDraftOwnership(
+            id: ownership.id,
+            target: ownership.target,
+            textRange: ownership.textRange.replacingInsertedText(
+                with: replacement
+            )
+        )
+        if expectedValue == currentValue {
+            return .applied(updated)
+        }
+
+        guard isAttributeSettable(
+            kAXSelectedTextRangeAttribute,
+            on: session.element
+        ),
+        backgroundSessionRemainsPrepared(session),
+        setSelectedTextRange(
+            ownership.textRange.nsRange,
+            on: session.element
+        ),
+        backgroundSessionRemainsPrepared(session),
+        stringAttribute(kAXValueAttribute, from: session.element) == currentValue else {
+            return .unavailableBeforeMutation
+        }
+
+        if session.usesPreparedTargetedInput {
+            return .selectedForTargetedUnicode(
+                ownership: updated,
+                expectedValue: expectedValue
+            )
+        }
+
+        guard isAttributeSettable(
+            kAXSelectedTextAttribute,
+            on: session.element
+        ),
+        backgroundSessionRemainsPrepared(session) else {
+            return .unavailableBeforeMutation
+        }
+        _ = AXUIElementSetAttributeValue(
+            session.element,
+            kAXSelectedTextAttribute as CFString,
+            replacement as CFString
+        )
+        let postValue = backgroundInputText(for: session)
+        if postValue == expectedValue {
+            return .applied(updated)
+        }
+        return .indeterminateAfterMutation
+    }
+
+    /// Restore the original selection text only for a direct same-app/different-input
+    /// session. Cross-app cleanup is intentionally unavailable: keeping a partial draft
+    /// is safer than synthesizing activation merely to erase it.
+    func restorePreparedRealtimeDraft(
+        _ ownership: RealtimeInputDraftOwnership,
+        for session: BackgroundDeliverySession
+    ) -> RealtimeDraftMutationResult {
+        guard session.allowsDirectRealtimeDraftMutation else {
+            return .unavailableBeforeMutation
+        }
+        switch prepareRealtimeDraftReplacement(
+            ownership.textRange.originalText,
+            ownership: ownership,
+            for: session
+        ) {
+        case .applied(let updated):
+            return .applied(updated)
+        case .selectedForTargetedUnicode:
+            return .unavailableBeforeMutation
+        case .unavailableBeforeMutation:
+            return .unavailableBeforeMutation
+        case .ownershipConflict:
+            return .ownershipConflict
+        case .indeterminateAfterMutation:
+            return .indeterminateAfterMutation
+        }
+    }
+
     func backgroundDeliveryBoundaryMatches(
         _ session: BackgroundDeliverySession
     ) -> Bool {
@@ -1539,6 +1654,111 @@ final class FocusLockService: ObservableObject {
         return FocusedInputTextSnapshot(
             text: text,
             placeholder: stringAttribute(kAXPlaceholderValueAttribute, from: element)
+        )
+    }
+
+    /// Compare replay-safe exact inputs, not app icons or PIDs. A renderer wrapper may
+    /// be replaced while the logical input survives, so both targets are resolved
+    /// through their saved window/context identities before pointer comparison. Telegram
+    /// with no readable chat identity intentionally fails this synchronous comparison;
+    /// realtime live mutation stays disabled there instead of guessing from a reused
+    /// parentless editor wrapper.
+    func targetsReferToSameExactInput(_ lhs: Target, _ rhs: Target) -> Bool {
+        guard lhs.hasExactInput,
+              rhs.hasExactInput,
+              lhs.pid == rhs.pid,
+              lhs.bundleIdentifier == rhs.bundleIdentifier,
+              !Self.isTelegram(bundleIdentifier: lhs.bundleIdentifier),
+              let left = resolvedExactElement(for: lhs),
+              let right = resolvedExactElement(for: rhs) else {
+            return false
+        }
+        return CFEqual(left, right)
+    }
+
+    /// Insert the first cumulative realtime hypothesis into the currently focused exact
+    /// input. The mutation replaces only the user's current selection via AXSelectedText;
+    /// it never writes the whole AXValue. The before/after full strings are retained only
+    /// in memory for immediate proof and never logged.
+    func insertForegroundRealtimeDraft(
+        _ text: String,
+        into target: Target
+    ) -> RealtimeDraftMutationResult {
+        guard !text.isEmpty,
+              !Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
+              targetOwnsSystemKeyboardFocus(target),
+              let element = resolvedExactElement(for: target),
+              let currentValue = stringAttribute(
+                kAXValueAttribute,
+                from: element
+              ),
+              let selectedRange = selectedTextRange(from: element),
+              isAttributeSettable(kAXSelectedTextAttribute, on: element) else {
+            return .unavailableBeforeMutation
+        }
+
+        let current = currentValue as NSString
+        guard selectedRange.location >= 0,
+              selectedRange.length >= 0,
+              NSMaxRange(selectedRange) <= current.length else {
+            return .unavailableBeforeMutation
+        }
+        let originalText = current.substring(with: selectedRange)
+        let expectedValue = current.replacingCharacters(
+            in: selectedRange,
+            with: text
+        )
+        guard targetOwnsSystemKeyboardFocus(target),
+              selectedTextRange(from: element) == selectedRange,
+              stringAttribute(kAXValueAttribute, from: element) == currentValue else {
+            return .unavailableBeforeMutation
+        }
+
+        _ = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        )
+        let ownership = RealtimeInputDraftOwnership(
+            target: target,
+            textRange: RealtimeDraftTextRange(
+                location: selectedRange.location,
+                insertedText: text,
+                originalText: originalText
+            )
+        )
+        if stringAttribute(kAXValueAttribute, from: element) == expectedValue {
+            return .applied(ownership)
+        }
+        return .indeterminateAfterMutation
+    }
+
+    /// Replace a mutable hypothesis only while its exact target still owns system
+    /// keyboard focus and the owned range still contains the prior hypothesis. Selecting
+    /// that range before AXSelectedText is the only focus-adjacent mutation; every
+    /// boundary is re-read immediately and no failure is retried.
+    func replaceForegroundRealtimeDraft(
+        _ replacement: String,
+        ownership: RealtimeInputDraftOwnership
+    ) -> RealtimeDraftMutationResult {
+        guard !replacement.isEmpty,
+              targetOwnsSystemKeyboardFocus(ownership.target),
+              let element = resolvedExactElement(for: ownership.target) else {
+            return .unavailableBeforeMutation
+        }
+        return replaceForegroundRealtimeDraft(
+            replacement,
+            ownership: ownership,
+            element: element
+        )
+    }
+
+    func restoreForegroundRealtimeDraft(
+        _ ownership: RealtimeInputDraftOwnership
+    ) -> RealtimeDraftMutationResult {
+        replaceForegroundRealtimeDraft(
+            ownership.textRange.originalText,
+            ownership: ownership
         )
     }
 
@@ -2744,6 +2964,102 @@ final class FocusLockService: ObservableObject {
             return nil
         }
         return focused.element
+    }
+
+    private func replaceForegroundRealtimeDraft(
+        _ replacement: String,
+        ownership: RealtimeInputDraftOwnership,
+        element: AXUIElement
+    ) -> RealtimeDraftMutationResult {
+        guard let currentValue = stringAttribute(
+            kAXValueAttribute,
+            from: element
+        ) else {
+            return .unavailableBeforeMutation
+        }
+        guard ownership.textRange.ownedSubstringMatches(in: currentValue),
+              let expectedValue = ownership.textRange.replacingOwnedText(
+                in: currentValue,
+                with: replacement
+              ) else {
+            return .ownershipConflict
+        }
+        let updated = RealtimeInputDraftOwnership(
+            id: ownership.id,
+            target: ownership.target,
+            textRange: ownership.textRange.replacingInsertedText(
+                with: replacement
+            )
+        )
+        if expectedValue == currentValue {
+            return .applied(updated)
+        }
+        guard isAttributeSettable(kAXSelectedTextRangeAttribute, on: element),
+              isAttributeSettable(kAXSelectedTextAttribute, on: element),
+              targetOwnsSystemKeyboardFocus(ownership.target),
+              setSelectedTextRange(
+                ownership.textRange.nsRange,
+                on: element
+              ),
+              targetOwnsSystemKeyboardFocus(ownership.target),
+              stringAttribute(kAXValueAttribute, from: element) == currentValue else {
+            return .unavailableBeforeMutation
+        }
+
+        _ = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            replacement as CFString
+        )
+        if stringAttribute(kAXValueAttribute, from: element) == expectedValue {
+            return .applied(updated)
+        }
+        return .indeterminateAfterMutation
+    }
+
+    private func selectedTextRange(from element: AXUIElement) -> NSRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+        let value,
+        CFGetTypeID(value) == AXValueGetTypeID() else {
+            return nil
+        }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else {
+            return nil
+        }
+        return NSRange(location: range.location, length: range.length)
+    }
+
+    private func setSelectedTextRange(
+        _ range: NSRange,
+        on element: AXUIElement
+    ) -> Bool {
+        var cfRange = CFRange(location: range.location, length: range.length)
+        guard let value = AXValueCreate(.cfRange, &cfRange) else {
+            return false
+        }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
+    }
+
+    private func isAttributeSettable(
+        _ attribute: String,
+        on element: AXUIElement
+    ) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element,
+            attribute as CFString,
+            &settable
+        ) == .success && settable.boolValue
     }
 
     private func resolvedExactElement(for target: Target) -> AXUIElement? {

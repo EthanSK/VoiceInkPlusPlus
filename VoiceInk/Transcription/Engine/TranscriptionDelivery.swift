@@ -274,6 +274,10 @@ final class TranscriptionDelivery {
         let responseError: String?
         let isAssistantFollowUp: Bool
         let pasteTarget: RecordingPasteTarget
+        /// Realtime input ownership is orthogonal to route ownership. Primary still has
+        /// no saved destination; this ledger merely proves which selected-text range is
+        /// already present so final delivery can replace it instead of pasting twice.
+        var realtimeInputDraftSession: RealtimeInputDraftSession? = nil
         // VIPP (skip-mode-processing feature): when true, THIS delivery must paste the RAW
         // transcript and run NO mode post-processing — no custom-command/script
         // (deliverCustomCommand), no `.respond` (deliverResponse). The pipeline already
@@ -322,7 +326,13 @@ final class TranscriptionDelivery {
                     autoSendKey: .none,
                     customCommand: nil
                 )
-                await paste(text, target: request.pasteTarget, output: rawOutput, actions: actions)
+                await paste(
+                    text,
+                    target: request.pasteTarget,
+                    output: rawOutput,
+                    realtimeInputDraftSession: request.realtimeInputDraftSession,
+                    actions: actions
+                )
             } else {
                 FocusLockService.shared.clearLock()
                 await actions.dismiss()
@@ -365,7 +375,13 @@ final class TranscriptionDelivery {
         }
 
         if let text = request.text {
-            await paste(text, target: request.pasteTarget, output: request.output, actions: actions)
+            await paste(
+                text,
+                target: request.pasteTarget,
+                output: request.output,
+                realtimeInputDraftSession: request.realtimeInputDraftSession,
+                actions: actions
+            )
         } else {
             await actions.dismiss()
         }
@@ -471,6 +487,7 @@ final class TranscriptionDelivery {
         _ text: String,
         target: RecordingPasteTarget,
         output: OutputRuntimeConfiguration,
+        realtimeInputDraftSession targetRealtimeDraftSession: RealtimeInputDraftSession?,
         actions: Actions
     ) async {
         let textToPaste = deliverableText(from: text)
@@ -490,6 +507,14 @@ final class TranscriptionDelivery {
         // Mode's generic HID Return. Switching apps before delivery is expected and
         // changes the destination; only a physical Next press may freeze an exact one.
         if target.destination.usesBaseCurrentInputDelivery {
+            if let realtimeInputDraftSession = targetRealtimeDraftSession,
+               await deliverRealtimePrimaryToCurrentSystemInput(
+                    pastedText,
+                    autoSendKey: autoSendKey,
+                    draftSession: realtimeInputDraftSession
+               ) {
+                return
+            }
             await deliverPrimaryToCurrentSystemInput(
                 pastedText,
                 autoSendKey: autoSendKey
@@ -539,7 +564,8 @@ final class TranscriptionDelivery {
                 pastedText,
                 target: target,
                 focusedInput: deliveryInput,
-                autoSendKey: autoSendKey
+                autoSendKey: autoSendKey,
+                realtimeInputDraftSession: targetRealtimeDraftSession
             )
             return
         }
@@ -553,43 +579,68 @@ final class TranscriptionDelivery {
             return
         }
 
-        vippLog.info("paste: foreground exact input verified; scheduling guarded Cmd-V targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
-        let pasteTask = CursorPaster.startPasteAtCursor(
-            pastedText,
-            canPost: {
-                FocusLockService.shared.targetOwnsSystemKeyboardFocus(deliveryInput)
-            }
-        )
-        vippLog.info("paste: foreground guarded delivery scheduled targetPid=\(targetPID, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public)")
         // Delivery is FIFO-serialized by TranscriptionPipeline. Keep paste verification,
         // fallback, auto-send, and lock cleanup in this awaited call; an unstructured
         // Task here would let the queue remove this session and start the next one while
         // clipboard/focus state from this delivery was still live.
         defer { FocusLockService.shared.clearLock() }
 
-        let pasteResult = await pasteTask.value
-        vippLog.info("paste: command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(targetPID, privacy: .public)")
-        if pasteResult == .actionGuardRefused {
-            // Ethan switched to another app or another input in this same app
-            // during clipboard settlement. Nothing was pasted, so continue exactly
-            // once through the non-activating exact route. Its preparation chooses
-            // direct AXSelectedText for the same-app/different-input case.
-            await deliverToBackgroundExactInput(
+        if let draftSession = targetRealtimeDraftSession,
+           let ownership = draftSession.ownership(matching: deliveryInput) {
+            // The transcript is already present in this exact input. Replace only the
+            // range owned by this recording with the final processed text; ordinary
+            // Cmd-V would append a duplicate. A conflict fails closed and preserves the
+            // final transcript on the clipboard.
+            switch FocusLockService.shared.replaceForegroundRealtimeDraft(
                 pastedText,
-                target: target,
-                focusedInput: deliveryInput,
-                autoSendKey: autoSendKey
+                ownership: ownership
+            ) {
+            case .applied(let updated):
+                draftSession.storeReconciledOwnership(updated)
+                vippLog.info("paste: foreground realtime draft reconciled success=true targetPid=\(targetPID, privacy: .public) chars=\(pastedText.count, privacy: .public) duplicatePasteAvoided=true")
+            case .unavailableBeforeMutation, .ownershipConflict, .indeterminateAfterMutation:
+                _ = ClipboardManager.copyToClipboard(pastedText)
+                NotificationManager.shared.showNotification(
+                    title: String(localized: "Couldn’t safely finalize the realtime draft — final transcription copied to clipboard"),
+                    type: .error
+                )
+                vippLog.error("paste: foreground realtime draft reconciliation failed; copied final transcription and skipped duplicate paste/Return targetPid=\(targetPID, privacy: .public)")
+                return
+            }
+        } else {
+            vippLog.info("paste: foreground exact input verified; scheduling guarded Cmd-V targetPid=\(targetPID, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            let pasteTask = CursorPaster.startPasteAtCursor(
+                pastedText,
+                canPost: {
+                    FocusLockService.shared.targetOwnsSystemKeyboardFocus(deliveryInput)
+                }
             )
-            return
-        }
-        guard pasteResult.didPostPasteCommand else {
-            _ = ClipboardManager.copyToClipboard(pastedText)
-            NotificationManager.shared.showNotification(
-                title: String(localized: "Couldn’t send the paste to the saved input — transcription copied to clipboard"),
-                type: .error
-            )
-            vippLog.error("paste: command was not posted; copied transcription to clipboard and skipped auto-send")
-            return
+            vippLog.info("paste: foreground guarded delivery scheduled targetPid=\(targetPID, privacy: .public) autoSend=\(autoSendKey.rawValue, privacy: .public)")
+            let pasteResult = await pasteTask.value
+            vippLog.info("paste: command completed result=\(String(describing: pasteResult), privacy: .public) targetPid=\(targetPID, privacy: .public)")
+            if pasteResult == .actionGuardRefused {
+                // Ethan switched to another app or another input in this same app
+                // during clipboard settlement. Nothing was pasted, so continue exactly
+                // once through the non-activating exact route. Its preparation chooses
+                // direct AXSelectedText for the same-app/different-input case.
+                await deliverToBackgroundExactInput(
+                    pastedText,
+                    target: target,
+                    focusedInput: deliveryInput,
+                    autoSendKey: autoSendKey,
+                    realtimeInputDraftSession: targetRealtimeDraftSession
+                )
+                return
+            }
+            guard pasteResult.didPostPasteCommand else {
+                _ = ClipboardManager.copyToClipboard(pastedText)
+                NotificationManager.shared.showNotification(
+                    title: String(localized: "Couldn’t send the paste to the saved input — transcription copied to clipboard"),
+                    type: .error
+                )
+                vippLog.error("paste: command was not posted; copied transcription to clipboard and skipped auto-send")
+                return
+            }
         }
 
         if autoSendKey.isEnabled {
@@ -645,6 +696,65 @@ final class TranscriptionDelivery {
             case .verified, .indeterminate:
                 break
             }
+        }
+    }
+
+    /// Realtime Primary is still delivery-time current-input policy. The only difference
+    /// is that the transcript may already occupy one exact selected-text range. Reconcile
+    /// that range (or seed the complete final text into the input focused right now), then
+    /// issue the same one generic HID auto-send with an exact last-millisecond focus guard.
+    /// No saved destination, app classifier, background preparation, semantic Send,
+    /// activation, read-back retry, or target-owned Mode is introduced here.
+    private func deliverRealtimePrimaryToCurrentSystemInput(
+        _ pastedText: String,
+        autoSendKey: AutoSendKey,
+        draftSession: RealtimeInputDraftSession
+    ) async -> Bool {
+        switch draftSession.finalizePrimary(with: pastedText) {
+        case .notApplicable:
+            return false
+        case .unsafeToFallback:
+            defer { FocusLockService.shared.clearLock() }
+            _ = ClipboardManager.copyToClipboard(pastedText)
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Couldn’t safely finalize the realtime draft — final transcription copied to clipboard"),
+                type: .error
+            )
+            vippLog.error("paste: realtime Primary finalization refused duplicate fallback; copied final transcription and skipped Return")
+            return true
+        case .reconciled(let currentTarget):
+            defer { FocusLockService.shared.clearLock() }
+            vippLog.info("paste: realtime Primary current-input range finalized success=true targetPid=\(currentTarget.processIdentifier, privacy: .public) chars=\(pastedText.count, privacy: .public) duplicatePasteAvoided=true appSpecificDelivery=false")
+            guard autoSendKey.isEnabled else {
+                vippLog.info("paste: realtime Primary delivery finished autoSend=none verification=notRequired")
+                return true
+            }
+
+            let sendResult = await CursorPaster.performAutoSend(
+                autoSendKey,
+                targetPID: currentTarget.processIdentifier,
+                method: .cgEvent,
+                canPost: {
+                    FocusLockService.shared.targetOwnsSystemKeyboardFocus(
+                        currentTarget
+                    )
+                }
+            )
+            switch sendResult {
+            case .commandPosted:
+                vippLog.info("paste: realtime Primary immediate HID auto-send issued=true verification=notRequired key=\(autoSendKey.rawValue, privacy: .public) targetPid=\(currentTarget.processIdentifier, privacy: .public)")
+            case .actionGuardRefused:
+                showAutoSendFailure(
+                    "Realtime transcription was finalized, but the input changed before Return",
+                    detail: "realtime Primary exact focus guard refused Return targetPid=\(currentTarget.processIdentifier)"
+                )
+            case .commandNotPosted:
+                showAutoSendFailure(
+                    "Realtime transcription was finalized, but couldn’t press Return automatically",
+                    detail: "realtime Primary Return was not posted targetPid=\(currentTarget.processIdentifier)"
+                )
+            }
+            return true
         }
     }
 
@@ -709,7 +819,8 @@ final class TranscriptionDelivery {
         _ pastedText: String,
         target: RecordingPasteTarget,
         focusedInput: FocusLockService.Target,
-        autoSendKey: AutoSendKey
+        autoSendKey: AutoSendKey,
+        realtimeInputDraftSession: RealtimeInputDraftSession?
     ) async {
         defer { FocusLockService.shared.clearLock() }
         guard let session = await FocusLockService.shared.prepareBackgroundDelivery(
@@ -736,75 +847,119 @@ final class TranscriptionDelivery {
         }
 
         vippLog.info("paste: background exact focus verified targetPid=\(session.processIdentifier, privacy: .public) preparationFrontmostPid=\(session.frontmostProcessIdentifierAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public) destination=\(String(describing: target.destination), privacy: .public)")
-        let textEventsPosted: Bool
-        if session.usesPreparedTargetedInput {
-            textEventsPosted = await CursorPaster.typeTextIntoPreparedTargetedProcess(
+        let insertionVerified: Bool
+        if let draftSession = realtimeInputDraftSession,
+           let ownership = draftSession.ownership(matching: focusedInput) {
+            // The exact background target already contains an earlier realtime
+            // hypothesis. Select and replace only that owned range; falling through to
+            // ordinary insertion would append the full final transcript a second time.
+            switch FocusLockService.shared.prepareRealtimeDraftReplacement(
                 pastedText,
-                pid: session.processIdentifier,
-                canPost: {
-                    FocusLockService.shared
-                        .backgroundDeliveryFastBoundaryMatches(session)
-                },
-                canRevalidateContext: {
-                    FocusLockService.shared
-                        .backgroundDeliveryBoundaryMatches(session)
+                ownership: ownership,
+                for: session
+            ) {
+            case .applied(let updated):
+                draftSession.storeReconciledOwnership(updated)
+                insertionVerified = true
+            case .selectedForTargetedUnicode(let updated, let expectedValue):
+                let posted = await CursorPaster.typeTextIntoPreparedTargetedProcess(
+                    pastedText,
+                    pid: session.processIdentifier,
+                    canPost: {
+                        FocusLockService.shared
+                            .backgroundDeliveryFastBoundaryMatches(session)
+                    },
+                    canRevalidateContext: {
+                        FocusLockService.shared
+                            .backgroundDeliveryBoundaryMatches(session)
+                    }
+                )
+                insertionVerified = posted && await waitForExactBackgroundValue(
+                    expectedValue,
+                    session: session
+                )
+                if insertionVerified {
+                    draftSession.storeReconciledOwnership(updated)
                 }
-            )
-        } else {
-            // Telegram's parentless composer exposes no AX chat title. Its audited
-            // visual header digest is therefore re-sampled at the irreversible text
-            // boundary, after all earlier readback and immediately before the one
-            // AXSelectedText attempt. A mismatch must fail without mutation.
-            guard await FocusLockService.shared
-                .revalidateTelegramVisualIdentityIfRequired(for: session) else {
+            case .unavailableBeforeMutation, .ownershipConflict, .indeterminateAfterMutation:
                 handleBackgroundPasteFailure(
                     pastedText,
                     destination: target.destination,
-                    detail: "saved Telegram chat identity changed before insertion"
+                    detail: "owned realtime draft could not be reconciled without duplicate insertion"
                 )
                 return
             }
-            let fullBoundaryMatches = {
-                FocusLockService.shared.backgroundDeliveryBoundaryMatches(
-                    session
-                )
-            }
-            textEventsPosted = await Self
-                .executeAccessibilityFirstBackgroundInsertion(
-                    allowsTargetedUnicodeFallback:
-                        session.allowsTargetedUnicodeFallback,
-                    attemptAccessibility: {
-                        FocusLockService.shared.insertTextUsingAccessibility(
-                            pastedText,
-                            for: session
-                        )
+            vippLog.info("paste: background realtime draft reconciled success=\(insertionVerified, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) chars=\(pastedText.count, privacy: .public) duplicatePasteAvoided=true")
+        } else {
+            let textEventsPosted: Bool
+            if session.usesPreparedTargetedInput {
+                textEventsPosted = await CursorPaster.typeTextIntoPreparedTargetedProcess(
+                    pastedText,
+                    pid: session.processIdentifier,
+                    canPost: {
+                        FocusLockService.shared
+                            .backgroundDeliveryFastBoundaryMatches(session)
                     },
-                    fullBoundaryMatches: fullBoundaryMatches,
-                    onUnicodeFallback: {
-                        vippLog.notice("paste: Telegram AXSelectedText unavailable before mutation; using one bounded Unicode insertion with full chat revalidation before every chunk targetPid=\(session.processIdentifier, privacy: .public)")
-                    },
-                    onAccessibilityError: { error in
-                        vippLog.error("paste: exact AXSelectedText returned an error after its one allowed attempt; verifying without retry AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
-                    },
-                    targetedUnicode: { canPost in
-                        await CursorPaster.typeTextIntoPreparedTargetedProcess(
-                            pastedText,
-                            pid: session.processIdentifier,
-                            canPost: canPost,
-                            canRevalidateContext: fullBoundaryMatches
-                        )
+                    canRevalidateContext: {
+                        FocusLockService.shared
+                            .backgroundDeliveryBoundaryMatches(session)
                     }
                 )
-        }
-        let insertionVerified: Bool
-        if textEventsPosted {
-            insertionVerified = await waitForBackgroundInsertion(
-                pastedText,
-                previousText: textBeforeInsertion,
-                session: session
-            )
-        } else {
-            insertionVerified = false
+            } else {
+                // Telegram's parentless composer exposes no AX chat title. Its audited
+                // visual header digest is therefore re-sampled at the irreversible text
+                // boundary, after all earlier readback and immediately before the one
+                // AXSelectedText attempt. A mismatch must fail without mutation.
+                guard await FocusLockService.shared
+                    .revalidateTelegramVisualIdentityIfRequired(for: session) else {
+                    handleBackgroundPasteFailure(
+                        pastedText,
+                        destination: target.destination,
+                        detail: "saved Telegram chat identity changed before insertion"
+                    )
+                    return
+                }
+                let fullBoundaryMatches = {
+                    FocusLockService.shared.backgroundDeliveryBoundaryMatches(
+                        session
+                    )
+                }
+                textEventsPosted = await Self
+                    .executeAccessibilityFirstBackgroundInsertion(
+                        allowsTargetedUnicodeFallback:
+                            session.allowsTargetedUnicodeFallback,
+                        attemptAccessibility: {
+                            FocusLockService.shared.insertTextUsingAccessibility(
+                                pastedText,
+                                for: session
+                            )
+                        },
+                        fullBoundaryMatches: fullBoundaryMatches,
+                        onUnicodeFallback: {
+                            vippLog.notice("paste: Telegram AXSelectedText unavailable before mutation; using one bounded Unicode insertion with full chat revalidation before every chunk targetPid=\(session.processIdentifier, privacy: .public)")
+                        },
+                        onAccessibilityError: { error in
+                            vippLog.error("paste: exact AXSelectedText returned an error after its one allowed attempt; verifying without retry AXError=\(error, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public)")
+                        },
+                        targetedUnicode: { canPost in
+                            await CursorPaster.typeTextIntoPreparedTargetedProcess(
+                                pastedText,
+                                pid: session.processIdentifier,
+                                canPost: canPost,
+                                canRevalidateContext: fullBoundaryMatches
+                            )
+                        }
+                    )
+            }
+            if textEventsPosted {
+                insertionVerified = await waitForBackgroundInsertion(
+                    pastedText,
+                    previousText: textBeforeInsertion,
+                    session: session
+                )
+            } else {
+                insertionVerified = false
+            }
         }
         guard insertionVerified,
               FocusLockService.shared.backgroundDeliveryBoundaryMatches(session) else {
@@ -1057,6 +1212,26 @@ final class TranscriptionDelivery {
             return false
         }
         return currentText != previousText && currentText.contains(verificationText)
+    }
+
+    /// Realtime reconciliation is stricter than ordinary append verification. The
+    /// complete composer value must equal the one value predicted by replacing the
+    /// owned UTF-16 range; merely finding the transcript elsewhere could accept a
+    /// duplicate occurrence or an unrelated pre-existing phrase.
+    private func waitForExactBackgroundValue(
+        _ expectedValue: String,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if FocusLockService.shared.backgroundInputText(for: session)
+                == expectedValue {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return FocusLockService.shared.backgroundInputText(for: session)
+            == expectedValue
     }
 
     private func waitForBackgroundValueChange(

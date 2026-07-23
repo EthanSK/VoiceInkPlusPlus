@@ -236,6 +236,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
 
     // Streaming/file transcription session prepared at record-start, used by the pipeline.
     var transcriptionSession: TranscriptionSession?
+    // Realtime Soniox may mirror cumulative hypotheses into the real focused input.
+    // This is an ephemeral owned text-range ledger, not a Primary paste destination:
+    // `RecordingPasteTarget` remains nil/current-input for Primary, while either Next
+    // route can reconcile a matching owned draft through its existing exact target.
+    var realtimeInputDraftSession: RealtimeInputDraftSession?
     // Mode-resolved transcription engine settings captured at record-start (so the pipeline
     // uses the config that was active WHEN this recording started, not whatever is active now).
     var transcriptionConfiguration: TranscriptionRuntimeConfiguration?

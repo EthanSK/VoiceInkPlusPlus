@@ -58,6 +58,10 @@ class TranscriptionPipeline {
         jobIdentity: TranscriptionJobIdentity,
         formattingConfiguration resolveFormattingConfiguration: @escaping () -> TranscriptionFormattingConfiguration,
         session: TranscriptionSession?,
+        // A realtime-only, per-recording owned-range ledger. It is kept separate from
+        // RecordingPasteTarget so Primary still owns no saved destination; delivery may
+        // reconcile a live draft in the current input or either existing Next target.
+        realtimeInputDraftSession: RealtimeInputDraftSession? = nil,
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
@@ -421,6 +425,7 @@ class TranscriptionPipeline {
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
                 pasteTarget: pasteTargetForDelivery, // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
+                realtimeInputDraftSession: realtimeInputDraftSession,
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).
