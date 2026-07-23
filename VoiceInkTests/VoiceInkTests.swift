@@ -428,6 +428,7 @@ struct VoiceInkTests {
     @Test func primaryCurrentInputStructurallyRejectsExactDeliveryState() {
         let accidentalDestinationMode = ModeConfig(
             name: "Must be discarded",
+            isAIEnhancementEnabled: false,
             outputMode: .paste,
             autoSendKey: .enter
         )
@@ -443,7 +444,7 @@ struct VoiceInkTests {
         #expect(RecordingPasteDestination.focusedDuringTranscription.usesAppSpecificExactDelivery)
         #expect(primary.focusedInput == nil)
         #expect(primary.mode == nil)
-        #expect(primary.resolvedAutoSendKey(currentInputKey: .commandEnter) == .commandEnter)
+        #expect(primary.resolvedAutoSendKey(currentInputKey: .commandEnter) == AutoSendKey.commandEnter)
 
         let latched = RecordingPasteTarget(
             destination: .focusedDuringTranscription,
@@ -451,7 +452,7 @@ struct VoiceInkTests {
             mode: accidentalDestinationMode
         )
         #expect(latched.mode == accidentalDestinationMode)
-        #expect(latched.resolvedAutoSendKey(currentInputKey: .shiftEnter) == .enter)
+        #expect(latched.resolvedAutoSendKey(currentInputKey: .shiftEnter) == AutoSendKey.enter)
     }
 
     @MainActor
