@@ -28,12 +28,16 @@ The fork's important behavioral patches are:
   focused element DOES follow into the panel, so we read its owning pid → bundle id. Safe/additive:
   for ordinary windows the AX-focused app == frontmost app. Falls back when AX is untrusted, exposes
   no focused element, or the focus is VoiceInk's own (also non-activating) recorder panel.
-- **Per-recording destination control — choose the start or stop input at the end.** The normal
-  recording shortcut stops into the exact input focused at stop. The macOS Next Track media key is
-  intercepted only while actively recording and stops into the exact Accessibility input captured
-  at recording start. When Electron/Chromium exposes only `AXWebArea` during the shortcut, it falls
-  back to the recording-start application; outside recording Next Track continues to control media
-  normally. Each
+- **Per-recording destination control — keep Primary simple and make Next exact.** The normal
+  recording shortcut is base VoiceInk: after a Primary stop, final delivery follows whichever system
+  keyboard input and Mode are current at that moment (`primaryCurrentInput`) and never enters an
+  app-specific exact-input resolver. The macOS Next Track media key stops into the exact Accessibility
+  input captured at recording start (`recordingStart`), or supplies the one-click
+  `focusedDuringTranscription` second chance after a normal stop. When Electron/Chromium exposes only
+  `AXWebArea` during the shortcut, the recording-start Next route may fall back to the owning
+  application. The black recorder/transcription bar owns Next Track for its whole visible lifetime:
+  eligible presses perform their route, late/ineligible presses are safe no-ops, and only after the
+  bar hides does Next Track return to media. Each
   `RecordingSession` owns its immutable start input and resolved paste target, preventing concurrent
   background transcriptions from mixing destinations. While the newest transcription is still
   running and before destination-dependent post-processing begins, Next Track can replace its target
@@ -44,10 +48,16 @@ The fork's important behavioral patches are:
   route: while the newest result is loading it atomically replaces both the pending exact input and
   that target app's auto-send key, so moving to another app before delivery cannot remove Return.
   This is never a toggle and must not be confused with Next Track while recording, which stops into
-  the recording-start input. A normal primary-button stop must never reuse or fall back to that
-  recording-start input if stop-time capture or verification fails. See the canonical
+  the recording-start input. A normal Primary stop never owns an exact input and must never reuse or
+  fall back to that recording-start input. See the canonical
   [Mouse terminology](TERMINOLOGY.md) and [Recording Destination Controls](RECORDING_DESTINATIONS.md)
   for user examples, setup, failure behavior, logs, and the implementation map.
+- **Real-time transcription is recorder-HUD-only.** Soniox or another streaming provider may update
+  only `RecordingSession.partialTranscript` for the mirrored black recorder bar. Never port or add a
+  destination-side provisional draft, mutable input range, migration, or cleanup. On stop, the
+  provider finalizes once and the existing Primary or Next route performs one final paste plus its
+  configured auto-send. The superseded `e19a123`–`2332296` draft experiment is negative evidence in
+  `FAILED_APPROACHES.md`, not an upstream feature to resurrect.
 - **Exact non-activating delivery.** When a session owns an exact input in a background app,
   VoiceInk++ uniquely re-resolves its window/editor, opens one internal activation-state session when
   needed, and verifies immediate keyboard-focus safety plus exact insertion. The same route handles a

@@ -748,6 +748,26 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Recording and transcription concurrency failures
 
+### Streaming provisional text into destination-app ranges
+
+- **State:** SUPERSEDED by Ethan's corrected HUD-only real-time contract; never physically accepted.
+- **Attempt:** Commits `e19a123`, `459efb3`, and `2332296` added
+  `RealtimeInputDraftSession`, destination-owned draft ranges, live partial insertion/migration, and
+  cleanup so Soniox text could appear inside another app while Ethan was still speaking.
+- **Why it is rejected:** It creates a second mutable transcript inside a destination app, adds
+  focus/range/edit races to every streaming callback, and forces stop/destination changes to migrate
+  or remove provisional text before final delivery. Ethan explicitly corrected the earlier request:
+  partials belong only in VoiceInk++'s black recorder HUD, and stop performs one final paste plus
+  auto-send through the already-selected Primary or Next route. The draft commits were not installed
+  and physically accepted before that correction.
+- **Resolution:** Branch from the pre-experiment lineage, publish streaming partials only through
+  `RecordingSession.partialTranscript`, and keep exactly one `TranscriptionPipeline` final delivery.
+  Preserve `realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery`.
+- **Do not retry:** Do not restore the draft file, feature flag, destination ranges, migration, or
+  cleanup under another name. Reconsider only if Ethan explicitly reverses the HUD-only product
+  decision and a new proposal first proves disposable-app editing, route changes, cancellation,
+  overlapping recordings, and final-delivery deduplication without touching his active workspace.
+
 ### Treating the retained queue tail as every in-flight job
 
 - **State:** REJECTED.

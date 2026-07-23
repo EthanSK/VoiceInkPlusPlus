@@ -27,11 +27,11 @@ Improve this skill as part of using it. Whenever use, debugging, feature work, d
 
 For upstream work, read `UPDATING.md` and treat upstream as a feature source, never a branch to merge wholesale. Audit in a disposable clone/worktree, obtain Ethan's approval for one user-visible feature, and manually port only that feature while preserving VoiceInk++'s destination, delivery, vocabulary, identity, and release guards.
 
-For a recorder stuck on **Transcribing**, diagnose the resolved provider before touching delivery code or downgrading the app. Read the active fork domain `com.ethansk.VoiceInkPlusPlus`, decode every `modeConfigurationsV2` entry, and inspect both `selectedTranscriptionModelName` and `isRealtimeTranscriptionEnabled`; a Mode override is authoritative over the top-level `CurrentTranscriptionModel`. Do not inspect only the legacy `com.prakashjoshipax.VoiceInk` domain. Correlate the resolved provider with `StreamingTranscriptionService` lines such as `Streaming start requested model=` and the first server/socket error. Before switching providers, run a direct end-to-end transcription against the proposed endpoint using synthetic, non-private speech and require a successful response within the normal latency range. Preserve the installed delivery binary when provider/account evidence explains the failure.
+For a recorder stuck on **Transcribing**, diagnose the resolved provider before touching delivery code or downgrading the app. Read the active fork domain `com.ethansk.VoiceInkPlusPlus`, decode every `modeConfigurationsV2` entry, and inspect `selectedTranscriptionModelName`, `isRealtimeTranscriptionEnabled`, and `selectedLanguage`; Mode overrides are authoritative over top-level model/language values and are frozen per recording by `ModeRuntimeResolver`. Do not inspect only the legacy `com.prakashjoshipax.VoiceInk` domain. Correlate the resolved provider with `StreamingTranscriptionService` lines such as `Streaming start requested model=` and the first server/socket error. Before switching providers, run a direct end-to-end transcription against the proposed endpoint using synthetic, non-private speech and require a successful response within the normal latency range. Preserve the installed delivery binary when provider/account evidence explains the failure.
 
 ## Normalize the two mouse controls before reasoning
 
-- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts; the same primary button again performs a normal stop into only `focusedAtStop`.
+- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts; the same primary button again performs a base VoiceInk normal stop into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`). It owns no exact input or destination Mode.
 - **Next button** is the preferred name for the separate forward/secondary control. **Forward button**, macOS **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases.
 - Unqualified **toggle** means the primary button's start/stop lifecycle and corresponding shortcut mode. Never reinterpret it as a Next-button destination toggle. Commit `671b4c7` tried that and was deliberately reverted by `bed22b7`.
 - **Second chance** names only the post-primary-stop, still-transcribing retarget route. **Latch** means preserve/replace one session's destination; it never means toggle the destination off.
@@ -47,9 +47,16 @@ Keep these three routes distinct:
 
 | Action | Destination |
 | --- | --- |
-| Primary button again while recording | Normal stop into only the exact editable input focused at stop (`focusedAtStop`); never fall back to `recordingStart` |
+| Primary button again while recording | Base VoiceInk normal stop into the system keyboard input focused at final delivery (`primaryCurrentInput`); never capture, reuse, or fall back to `recordingStart` |
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still transcribing and before post-processing | Second chance: replace that newest pending session's input and complete Mode atomically (`focusedDuringTranscription`) |
+
+Keep real-time provider partials inside the black recorder HUD. The streaming callback may update only
+the active session's `partialTranscript`; it must never create or maintain provisional text ranges in
+another app. Stop finalizes once and the existing Primary or Next route performs one final delivery.
+Before any real-time transcription change, search `FAILED_APPROACHES.md` for the superseded
+`RealtimeInputDraftSession` experiment and preserve
+`realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery`.
 
 First check the runtime delivery-engine flag `VIPPExactInputDeliveryEnabled`. When it
 is false, VoiceInk++ deliberately uses base VoiceInk compatibility delivery: Primary
@@ -110,5 +117,12 @@ Keep each field concise but specific enough to prevent rediscovery. Name the sym
    ```
 
 4. Review the inserted entry, then commit the learning separately so it names the reachable implementation commit.
-5. If the finding changes reusable workflow, terminology, safety, or validation, update this skill during the same task. Retest changed scripts and run `quick_validate.py` before finishing.
+5. If the finding changes reusable workflow, terminology, safety, or validation, update this skill during the same task. Retest changed scripts, then validate with:
+
+   ```sh
+   /usr/bin/python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" \
+     .agents/skills/learnings
+   ```
+
+   `quick_validate.py` belongs to the system `skill-creator`; it is not duplicated inside this repository skill.
 6. If no durable verified lesson emerged, do not add noise.

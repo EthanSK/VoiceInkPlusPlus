@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-23T15:44:12Z
+**Trigger:** Ethan confirmed: Soniox partials stay in the black float and final paste/send happens once on stop.
+**Symptom:** The proposed Soniox real-time design would mirror provisional speech into another app while recording, although the simpler desired behavior is to keep live text in VoiceInk++ and paste only once on stop.
+**Root cause:** An earlier dictated request was interpreted as destination-side live drafting; Ethan later explicitly corrected it before that e19a123-through-2332296 experiment was physically accepted.
+**Fix:** Build 253 stays on the pre-draft lineage, documents HUD-only partials, adds intent comments, and guards that partial callbacks update recorder state while TranscriptionPipeline performs one final delivery. The exact committed source was built/tested on the Mac Mini, bundle-preserving transferred, signed with the stable local identity plus Automation entitlement, and installed as VoiceInk++ v2.0.253.
+**Commit:** e802c9c
+**Guard:** A fresh direct xcrun xctest run named and passed all 42 tests, including realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery, Primary isolation, Next ownership, and secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt. Installed v2.0.253 has CDHash d23da19ac75cc36b4cb4f7cd845a957779135def, passes deep/strict signing, retains Automation=true, contains no RealtimeInputDraftSession symbol, and left /Applications/VoiceInk.app byte-identical. Physical Soniox HUD/final delivery and both Next routes remain pending and must not be inferred from tests.
+---
+
+
+---
 **Date:** 2026-07-23T00:37:25Z
 **Trigger:** Ethan asked whether the other voice model was working and required it to be selected only after a real successful test.
 **Symptom:** Soniox real-time initially looked as though it timed out, so every active Mode remained on tuned Deepgram with real-time disabled.

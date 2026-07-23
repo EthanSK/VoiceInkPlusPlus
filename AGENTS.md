@@ -33,6 +33,13 @@ The modifier-only Primary shortcut must not dismiss a context menu or disturb th
 - Keep the route boundary in types and regression tests, not only comments. Tests must prove Primary strips accidental exact state, the stop branch contains no capture/Mode lookup, and the delivery body contains only generic system-focused paste/auto-send with no fallthrough into exact delivery.
 - When adding or repairing one app's latch behavior, rerun the Primary current-input regression first and after the change. App-specific work is not releasable if Primary can enter that app's exact resolver, even when the latch tests pass.
 
+## Real-time transcription is HUD-only
+
+- Streaming providers such as Soniox may publish partial words only into the active recording session's `partialTranscript`, which the mirrored black recorder HUD renders. Never write, migrate, replace, or remove provisional text in another app while recording.
+- Stop finalizes the provider result, then `TranscriptionPipeline` performs exactly one final delivery through the route selected by the physical button: Primary uses `primaryCurrentInput`; Next while recording uses `recordingStart`; Primary then Next while loading uses `focusedDuringTranscription`.
+- Do not reintroduce `RealtimeInputDraftSession`, destination-owned draft ranges, live destination cleanup, or a runtime setting that revives them. The `e19a123`–`2332296` experiment was never physically accepted and Ethan explicitly superseded it with HUD-only partials.
+- Preserve and run `realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery` together with the Primary and both Next-route guards. Real-time provider latency must not reinterpret destination ownership or add another delivery route.
+
 ## Non-negotiable Next button contract
 
 The runtime feature flag `VIPPExactInputDeliveryEnabled` selects whether the two exact Next routes
