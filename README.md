@@ -25,7 +25,7 @@ Most dictation tools bind a recording to wherever you happen to be when the resu
 
 | What you do | Where the transcript goes |
 | --- | --- |
-| Press the primary button again to stop normally | The exact editable input focused when you stop; never the recording-start input |
+| Press the primary button again to stop normally | Whichever system keyboard input is focused when final delivery happens; never the recording-start input |
 | Press the **Next button** while recording | The input captured when recording started |
 | Stop normally, then press the **Next button** while transcription is loading | A second chance: replace the pending destination with the exact input focused now |
 
@@ -48,21 +48,24 @@ In **Logitech G HUB**:
 - Map one side button to your normal VoiceInk++ toggle shortcut.
 - Map a second side button—your **Next button**—to the standard macOS **Next Track** media action.
 
-VoiceInk++ intercepts that Next Track event only while it can stop or retarget a recording. When idle, the media key continues to work normally.
+VoiceInk++ owns that Next Track event for as long as the black recorder/transcription bar is visible.
+An eligible press stops or retargets; a late/ineligible press is a safe no-op. Once the bar hides, the
+media key continues to work normally.
 
 ### 2. Copy the fast VoiceInk++ stack
 
 Ethan's current configuration is:
 
-- **Transcription:** Deepgram Nova-3 Tuned (Local Proxy)
+- **Transcription:** Soniox V5 with real-time transcription
+- **Live transcript:** shown only in VoiceInk++'s black recorder bar; never written provisionally into another app
 - **AI provider/model:** OpenAI · gpt-5.5
 - **Fast direct-paste Modes:** AI enhancement off
-- **Language:** Automatic
+- **Language:** English
 - **Paste method:** Default
 - **Audio input:** the best available microphone (Ethan currently uses Digital Mic)
 - **Auto-send:** Return in the Codex app, Claude desktop, ChatGPT, and the terminal/editor hosts used by Codex CLI or Claude Code; deliberately off in Chrome
 
-Ethan's local Deepgram proxy is personal infrastructure and is not included in this repository. Use your own compatible Deepgram setup or another supported transcription model, and provide your own provider credentials. Copy the pattern—especially the safe per-app auto-send choices—rather than blindly enabling Return everywhere.
+Soniox needs your own provider credentials and funded account. Keep Deepgram or another supported model configured as a fallback. Copy the pattern—especially HUD-only partials and the safe per-app auto-send choices—rather than blindly enabling Return everywhere.
 
 ### 3. Learn the two-button rhythm
 

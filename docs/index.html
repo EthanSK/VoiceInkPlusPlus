@@ -139,7 +139,7 @@
           <details class="detail-drawer">
             <summary>Why this mouse and mapping?</summary>
             <div>
-              <p>G HUB is the configuration app; G502 X LIGHTSPEED is the mouse. Assign your existing VoiceInk++ shortcut to one button and the standard media action <em>Next Track</em> to your <strong>Next button</strong>. VoiceInk++ only intercepts that event when it has a destination job to do, so the button still controls media while idle.</p>
+              <p>G HUB is the configuration app; G502 X LIGHTSPEED is the mouse. Assign your existing VoiceInk++ shortcut to one button and the standard media action <em>Next Track</em> to your <strong>Next button</strong>. VoiceInk++ owns that event while its black bar is visible—an eligible press performs the destination action and a late press is a safe no-op—then returns it to media once the bar hides.</p>
             </div>
           </details>
         </article>
@@ -147,14 +147,15 @@
         <article class="setup-card setup-stack reveal">
           <div class="step-index"><span>02</span> Configure</div>
           <div class="stack-display" role="group" aria-label="Ethan's VoiceInk++ settings">
-            <div><small>TRANSCRIBE</small><strong>Deepgram Nova‑3 Tuned</strong><span>Local proxy</span></div>
+            <div><small>TRANSCRIBE</small><strong>Soniox V5</strong><span>Realtime · English</span></div>
             <div><small>AI MODEL</small><strong>OpenAI · gpt‑5.5</strong><span>Ready when a Mode needs it</span></div>
             <div><small>DELIVERY</small><strong>Direct paste</strong><span>Per-app auto-send</span></div>
           </div>
           <h3>Copy the fast path, then make it yours.</h3>
-          <p>Start with Ethan's low-friction defaults: automatic language detection, direct paste, and an app-specific Mode that presses Return in agent/chat apps but deliberately does <em>not</em> auto-send in Chrome.</p>
+          <p>Start with Ethan's low-friction defaults: Soniox V5 realtime in English, live partials shown only in the black VoiceInk++ bar, one final direct paste on stop, and an app-specific Mode that presses Return in agent/chat apps but deliberately does <em>not</em> auto-send in Chrome.</p>
           <ul class="chips" aria-label="Additional settings">
-            <li>Language · Auto</li>
+            <li>Language · English</li>
+            <li>Realtime partials · HUD only</li>
             <li>Paste · Default</li>
             <li>Enhancement · Off for direct modes</li>
             <li>Mic · Your best input</li>
@@ -162,7 +163,7 @@
           <details class="detail-drawer">
             <summary>Important provider details</summary>
             <div>
-              <p>Ethan's “Deepgram Nova‑3 Tuned (Local Proxy)” endpoint is personal infrastructure and is not bundled with this repository. Use your own compatible Deepgram setup or another supported transcription model, and supply your own provider credentials. His current modes keep OpenAI gpt‑5.5 selected but leave enhancement off for the quickest direct-paste loop.</p>
+              <p>Soniox requires your own provider credentials and funded account. Keep Deepgram or another supported model available as a fallback. Ethan's current modes keep OpenAI gpt‑5.5 selected but leave enhancement off for the quickest direct-paste loop.</p>
             </div>
           </details>
         </article>

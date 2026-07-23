@@ -1463,6 +1463,79 @@ struct VoiceInkTests {
         #expect(!pasteBody.contains("Task { @MainActor in"))
     }
 
+    @Test func realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let draftWriter = repositoryRoot.appendingPathComponent(
+            "VoiceInk/Transcription/Engine/RealtimeInputDraftSession.swift"
+        )
+        #expect(!FileManager.default.fileExists(atPath: draftWriter.path))
+
+        let engineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(engineSource.contains("session.partialTranscript = partial"))
+        #expect(!engineSource.contains("realtimeInputDraft"))
+        let partialCallbackStart = try #require(engineSource.range(
+            of: "onPartialTranscript: {"
+        ))
+        let partialCallbackEnd = try #require(engineSource.range(
+            of: "session.transcriptionSession = streamingSession",
+            range: partialCallbackStart.upperBound..<engineSource.endIndex
+        ))
+        let partialCallback = String(
+            engineSource[partialCallbackStart.lowerBound..<partialCallbackEnd.lowerBound]
+        )
+        #expect(!partialCallback.contains("delivery.deliver"))
+        #expect(!partialCallback.contains("CursorPaster"))
+        #expect(!partialCallback.contains("FocusLockService"))
+        #expect(!partialCallback.contains("AXSelectedText"))
+
+        let miniRecorderSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Views/Recorder/MiniRecorderView.swift"
+            ),
+            encoding: .utf8
+        )
+        let notchRecorderSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Views/Recorder/NotchRecorderView.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(miniRecorderSource.contains(
+            "LiveTranscriptView(text: stateProvider.partialTranscript)"
+        ))
+        #expect(notchRecorderSource.contains(
+            "LiveTranscriptView(text: stateProvider.partialTranscript)"
+        ))
+
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(!deliverySource.contains("realtimeInputDraft"))
+
+        let pipelineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(pipelineSource.components(
+            separatedBy: "await delivery.deliver("
+        ).count - 1 == 1)
+        #expect(pipelineSource.contains(
+            "text: finalText"
+        ))
+    }
+
     @Test func primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

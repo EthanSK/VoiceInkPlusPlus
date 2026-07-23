@@ -5,6 +5,18 @@ exact-input latching. A Primary stop follows whichever keyboard input is current
 happens. Next can instead preserve the recording-start input or select a second-chance input while
 transcription is still loading.
 
+## Real-time transcription stays in the recorder
+
+When a provider such as Soniox streams partial words during recording, VoiceInk++ displays those
+partials only in the black recorder bar. It never writes, migrates, or removes provisional text in
+another app while Ethan is speaking. On stop, the provider finalizes the transcript and the existing
+Primary or Next route performs one final paste plus that route's configured auto-send. This keeps
+real-time latency without creating a second mutable draft inside the destination app.
+
+The two Next-button latch routes are unchanged by real-time transcription: Next while recording
+still owns `recordingStart`, and the post-Primary second chance still owns
+`focusedDuringTranscription`.
+
 ## Delivery engine switch
 
 VoiceInk++ temporarily defaults **Exact Saved-Input Delivery** to off while its background Codex

@@ -92,6 +92,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
     @Published var recordingState: RecordingState = .idle
 
     // Live partial of the ACTIVE recording session (only the recording session streams partials).
+    // REALTIME CONTRACT: this is recorder-HUD presentation state, never a provisional draft in
+    // another app. Destination mutation happens exactly once with the provider's final text through
+    // TranscriptionPipeline after stop; do not add paste, range ownership, or draft cleanup here.
     @Published var partialTranscript: String = ""
 
     var pasteDestinationIndicatorTarget: FocusLockService.Target? {
@@ -585,6 +588,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                   session.liveRecordingState == .recording else {
                                 return
                             }
+                            // Streaming callbacks only repaint the black recorder HUD. Writing
+                            // partials into a destination creates a second mutable draft, races
+                            // Ethan's edits/focus, and duplicates the single final delivery below.
                             session.partialTranscript = partial
                             // Mirror to the engine's derived partial only while this is the
                             // active recording session (it always is here, but be explicit).
