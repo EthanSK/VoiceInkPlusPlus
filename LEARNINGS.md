@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-23T23:47:35Z
+**Trigger:** Ethan reported that Soniox realtime Primary pasted without Return and sometimes appeared not to paste after the HUD-only release.
+**Symptom:** Post-install v2.0.254 traces in Codex issued the ordinary Primary Cmd-V plus immediate HID Return, while otherwise identical Chrome Primary traces pasted non-empty finals and ended with `targetAutoSend=none` / `autoSend=none`.
+**Root cause:** Primary was correctly isolated from exact/latch delivery, but the saved Chrome Mode still had `autoSendKey=none` under the historical “TOO DANGEROUS” preference. Realtime finalization and destination routing cannot manufacture Return when the resolved current-app Mode explicitly disables it.
+**Fix:** Configuration-only: after Ethan explicitly superseded that safety preference, the Chrome Mode was changed to `autoSendKey=enter` and VoiceInk++ v2.0.254 was restarted. All seven saved Modes now use Soniox V5 realtime, English, paste output, and Enter; Next-button code and the signed binary are unchanged.
+**Commit:** configuration-only; installed implementation `e1a1108` unchanged
+**Guard:** Diagnose these paths independently: `finalChars=0` requires completed-file fallback; non-empty `primaryCurrentInput` plus `targetAutoSend=none` requires checking the resolved Mode; non-empty `targetAutoSend=enter` must log the immediate HID auto-send. Never “fix” either case by sending Primary through app-specific exact delivery.
+---
+
+---
 **Date:** 2026-07-23T23:36:13Z
 **Trigger:** Ethan reported that Primary sometimes pasted without Return or did not paste when stopping Soniox realtime while still speaking.
 **Symptom:** A very short Soniox V5 realtime Primary recording could stop with finalChars=0, causing a blank paste attempt or no useful paste even though ordinary Primary routing remained correct.
