@@ -29,7 +29,9 @@ The modifier-only Primary shortcut must not dismiss a context menu or disturb th
 
 The runtime feature flag `VIPPExactInputDeliveryEnabled` selects the delivery engine. While false,
 VoiceInk++ deliberately behaves like base VoiceInk: Primary output follows only the keyboard-focused
-input at delivery, the current app's Mode supplies optional Return, and Next Track passes through.
+input at delivery and the current app's Mode supplies optional Return. Next Track performs no
+destination action, but a visible recorder bar still consumes it; media pass-through resumes only
+after the bar hides.
 The second destination slot remains visible as a warning because no exact input is owned; it must
 not disappear or imply a saved app that compatibility delivery will ignore. This escape hatch is
 not a fourth route and must not delete or reinterpret the exact engine below. While true, all three
@@ -48,6 +50,8 @@ The canonical second-chance scenario is:
 > normal stop → transcription begins → focus a new editable input → press Next Track once → optionally move to another app → finished text pastes into the newly selected input and uses that input app's configured auto-send → VoiceInk++ restores the later workspace when applicable.
 
 The saved input and its target app's complete Mode are one atomic, per-session decision. Never re-read formatting, enhancement, output, or auto-send solely from the globally current Mode: Ethan may already be using another app by then. `RecordingPasteTarget` must continue to carry both values, and `TranscriptionPipeline` must freeze the latest target after transcription/trigger-word selection but before any destination-dependent formatting or enhancement begins. One-shot raw/skip mode remains the intentional exception and must force no auto-send.
+
+The visible recorder/transcription bar is the strict ownership boundary for the Next button. While any mirrored black bar is visible, consume the complete Next Track press even if no session remains eligible, the newest session already latched, delivery crossed its cutoff, or exact delivery is temporarily disabled. Eligible states still perform the three routes above; an ineligible visible-bar press is a no-op that preserves the existing destination. Pass Next Track through to media only after the recorder bar is hidden. This prevents an attempted VoiceInk++ latch from becoming an unrelated Next Song action because of an internal timing race.
 
 ## UI contract
 

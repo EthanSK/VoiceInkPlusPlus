@@ -29,8 +29,9 @@ The table below applies while **Exact Saved-Input Delivery** is enabled. When th
 runtime feature flag `VIPPExactInputDeliveryEnabled` is off, VoiceInk++ intentionally
 uses base VoiceInk compatibility behavior instead: only the Primary button controls
 recording, no saved-input capture runs at start or stop, finished text and Mode behavior
-follow the current app/input, and Next Track passes through as media. The second recorder
-slot remains visible as a warning because compatibility mode owns no exact destination.
+follow the current app/input, and Next Track performs no destination action. While the recorder
+bar is visible the press is still consumed; after the bar hides it passes through as media. The
+second recorder slot remains visible as a warning because compatibility mode owns no exact destination.
 This is an engine switch, not another timing route or a new meaning for either physical button.
 
 | State before the press | Control pressed | Result | Destination value |
@@ -39,9 +40,12 @@ This is an engine switch, not another timing route or a new meaning for either p
 | Recording | Primary button again | **Normal stop** | Exact editable input focused at that stop (`focusedAtStop`) |
 | Recording | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
-| No active recording and no eligible normal-stop result still loading | Next button | Pass the Next Track event through to media normally | No VoiceInk++ destination action |
+| Recorder bar visible, but no session remains eligible for a destination change | Next button | Consume the press as a VoiceInk++ no-op; never advance media while the bar is visible | Existing destination remains unchanged |
+| Recorder bar hidden, with no active recording or eligible normal-stop result | Next button | Pass the Next Track event through to media normally | No VoiceInk++ destination action |
 
 If a new recording is active while an older result is transcribing, the active recording determines the button action: primary stops that recording normally; Next stops it into `recordingStart`. Do not silently reinterpret that press as a retarget of an older session.
+
+The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or exact delivery is temporarily disabled. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
 
 ## Non-negotiable distinctions
 

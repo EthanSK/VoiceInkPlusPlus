@@ -719,6 +719,18 @@ struct VoiceInkTests {
         ) == nil)
     }
 
+    @MainActor
+    @Test func nextTrackNeverPassesThroughWhileRecorderPanelIsVisible() {
+        #expect(RecordingShortcutManager
+            .shouldConsumeNextTrackWithoutEligibleRoute(
+                isRecorderPanelVisible: true
+            ))
+        #expect(!RecordingShortcutManager
+            .shouldConsumeNextTrackWithoutEligibleRoute(
+                isRecorderPanelVisible: false
+            ))
+    }
+
     @Test func telegramVisualIdentityPinsTupleCropAndStableDigest() {
         let tuple = TelegramWindowVisualIdentity.ApplicationTuple(
             applicationBundleName: "Telegram.app",

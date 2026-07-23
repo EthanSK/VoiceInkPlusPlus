@@ -217,6 +217,20 @@ No row may be promoted merely because a later build reused part of it.
 - **Do not retry:** Do not add an on/off destination state. “Latch,” “retarget,” and “second chance”
   do not mean toggle.
 
+### Passing Next Track through while the recorder bar is still visible
+
+- **State:** REJECTED.
+- **Attempt:** Pass Next Track to media as soon as no session remains eligible for a destination
+  change, even though a recorder/transcription bar is still visibly active.
+- **Observed result:** A press Ethan intended as a latch could become Next Song because delivery
+  crossed its internal cutoff or a session had already consumed its one latch. The visible bar still
+  told him that the physical control belonged to VoiceInk++.
+- **Resolution:** The visible recorder bar is now the strict ownership boundary. Eligible presses
+  perform their normal route; ineligible visible-bar presses are consumed no-ops. Media pass-through
+  resumes only after the bar is hidden.
+- **Do not retry:** Do not make internal eligibility or the exact-delivery feature flag leak a
+  visible-bar Next press to Music, Spotify, or another media app.
+
 ### Merging recording-start and second-chance routes
 
 - **State:** REJECTED as a mental model; accepted fix at `1eabb1b`.

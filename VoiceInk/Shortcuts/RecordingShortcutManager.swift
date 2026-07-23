@@ -352,12 +352,33 @@ class RecordingShortcutManager: ObservableObject {
                         self.logger.info("Next Track key-down consumed route=focusedDuringTranscription result=noFocusedInput targetUnchanged=true")
                         return true
                     case .noPendingTranscription:
+                        if Self.shouldConsumeNextTrackWithoutEligibleRoute(
+                            isRecorderPanelVisible:
+                                self.recorderUIManager.isRecorderPanelVisible
+                        ) {
+                            // The visible recorder bar is the user-facing ownership
+                            // boundary. A session may already have latched or crossed
+                            // its delivery cutoff, but leaking this physical press to
+                            // Music would turn an attempted VoiceInk++ action into an
+                            // unrelated Next Song action.
+                            self.logger.info("Next Track key-down consumed because the recorder panel is visible, but no session remains eligible for a destination change")
+                            return true
+                        }
                         self.logger.info("Next Track key-down passed through because no recording or retargetable transcription is active")
                         return false
                     }
                 }
             }
         )
+    }
+
+    static func shouldConsumeNextTrackWithoutEligibleRoute(
+        isRecorderPanelVisible: Bool
+    ) -> Bool {
+        // An ineligible press is intentionally a consumed no-op until the black
+        // recorder/transcription bar closes. Internal timing must never decide
+        // whether Ethan's latch attempt unexpectedly advances media.
+        isRecorderPanelVisible
     }
 
     private func recordingMode(for action: ShortcutAction) -> Mode? {

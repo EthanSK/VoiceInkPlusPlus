@@ -11,10 +11,11 @@ compatibility is being repaired and physically re-tested. The switch is in **Set
 
 - **Off — base VoiceInk compatibility:** the Primary button records normally, the finished text
   pastes into whichever input owns keyboard focus at delivery, and the current Mode owns
-  post-processing, output, and optional Return. The Next Track media key passes through. The
-  latency-sensitive start/stop path performs no saved-input Accessibility capture and no saved app
-  is activated or internally focused. The second destination slot stays visible as a warning so
-  the recorder never pretends that compatibility mode owns an exact app/input.
+  post-processing, output, and optional Return. Next Track performs no destination action: it is
+  consumed while the recorder bar is visible and passes through to media only after the bar hides.
+  The latency-sensitive start/stop path performs no saved-input Accessibility capture and no saved
+  app is activated or internally focused. The second destination slot stays visible as a warning
+  so the recorder never pretends that compatibility mode owns an exact app/input.
 - **On — VoiceInk++ exact delivery:** all three destination routes and their Next-button behavior
   below are enabled. The second slot becomes the captured app icon when one exact target is proven;
   a genuine capture failure remains a visible warning.
@@ -39,7 +40,8 @@ tests repeatedly failed on the real destination apps.
 | Primary/thumb/toggle button again | Normal stop: only the exact text input focused when you stop recording; never the recording-start input |
 | **Next button** while recording | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
-| **Next button** with no recording or retargetable transcription | Its Next Track event passes through normally to Spotify, Music, and other media apps |
+| **Next button** while the recorder bar is visible but no route is still eligible | VoiceInk++ consumes the press without changing the saved destination; it never advances media |
+| **Next button** after the recorder bar is hidden | Its Next Track event passes through normally to Spotify, Music, and other media apps |
 
 The Mode emoji/symbol sits immediately left of the waveform. Two app icons sit to its right: the
 first is the app focused now; the second is the saved destination owned by that recording. While
@@ -93,7 +95,7 @@ transcription phase that starts after recording stops.
 
 ### Keep normal media controls outside recording
 
-1. With VoiceInk++ idle and no transcription still loading, press the **Next button**.
+1. Wait until VoiceInk++ is idle and the recorder/transcription bar has closed, then press the **Next button**.
 2. VoiceInk++ does not consume the key, so the current media app advances normally.
 
 ### Change your mind while transcription is loading
@@ -122,9 +124,10 @@ OpenAI composer submission after Ethan moved between apps. Treat that commit and
 `AGENTS.md` contract as the regression baseline.
 
 The change is accepted until delivery resolves its target immediately before paste. After that
-cutoff, or when no pending transcription exists, Next Track passes through to the media system. If
-no editable text input is focused, VoiceInk++ consumes the intentional retarget press, keeps the
-existing destination, and asks you to focus an input and try again.
+cutoff, or when no pending transcription exists, a visible recorder bar still owns and consumes
+Next Track as a no-op. The key passes through to the media system only after the bar is hidden. If
+no editable text input is focused during an eligible retarget, VoiceInk++ consumes the intentional
+press, keeps the existing destination, and asks you to focus an input and try again.
 
 ## Mouse setup
 
@@ -133,8 +136,9 @@ event through its existing vendor software, such as Logitech G HUB. No VoiceInk-
 macro and no Karabiner configuration are required.
 
 Keep the ordinary mouse button assigned to the existing VoiceInk++ recording shortcut. Assign the
-alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button while recording or while a
-pending transcription can still be retargeted.
+alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button for the entire time
+any recorder/transcription bar is visible; eligible recording and transcription states perform
+their normal destination action, while an ineligible visible-bar press is consumed as a safe no-op.
 
 Ethan's verified G502 X LIGHTSPEED setup uses an upper side thumb control with a `speech to text`
 Shift-Control-Option macro for the primary button and a different control explicitly labeled **Next Track**
@@ -156,10 +160,12 @@ The current and locked recorder icons show the host application for CLI agents b
 ## How Next Track is consumed
 
 VoiceInk++ installs a macOS `CGEvent` tap at the head of the session event stream and watches the
-system-defined `NX_KEYTYPE_NEXT` event. For a special VoiceInk++ action, its event-tap callback
+system-defined `NX_KEYTYPE_NEXT` event. While the recorder bar is visible, its event-tap callback
 returns no event for both key-down and key-up, so Spotify and other media apps never receive that
-press. When no special action is available, the callback returns the original event unchanged and
-macOS routes it to the normal media destination. The behavior is global and is not Spotify-specific.
+press. An eligible state performs the recording-start or second-chance action; an ineligible state
+consumes the press as a no-op. Only after the bar is hidden does the callback return an otherwise
+unowned event unchanged so macOS can route it to the normal media destination. The behavior is
+global and is not Spotify-specific.
 
 ## Accessibility and safe failure behavior
 
