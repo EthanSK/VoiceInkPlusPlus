@@ -27,6 +27,8 @@ Improve this skill as part of using it. Whenever use, debugging, feature work, d
 
 For upstream work, read `UPDATING.md` and treat upstream as a feature source, never a branch to merge wholesale. Audit in a disposable clone/worktree, obtain Ethan's approval for one user-visible feature, and manually port only that feature while preserving VoiceInk++'s destination, delivery, vocabulary, identity, and release guards.
 
+For a recorder stuck on **Transcribing**, diagnose the resolved provider before touching delivery code or downgrading the app. Read the active fork domain `com.ethansk.VoiceInkPlusPlus`, decode every `modeConfigurationsV2` entry, and inspect both `selectedTranscriptionModelName` and `isRealtimeTranscriptionEnabled`; a Mode override is authoritative over the top-level `CurrentTranscriptionModel`. Do not inspect only the legacy `com.prakashjoshipax.VoiceInk` domain. Correlate the resolved provider with `StreamingTranscriptionService` lines such as `Streaming start requested model=` and the first server/socket error. Before switching providers, run a direct end-to-end transcription against the proposed endpoint using synthetic, non-private speech and require a successful response within the normal latency range. Preserve the installed delivery binary when provider/account evidence explains the failure.
+
 ## Normalize the two mouse controls before reasoning
 
 - **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts; the same primary button again performs a normal stop through base VoiceInk's delivery-time current input (`primaryCurrentInput`).

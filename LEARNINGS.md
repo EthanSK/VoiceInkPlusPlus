@@ -69,6 +69,17 @@ Each entry looks like:
 
 
 ---
+**Date:** 2026-07-22T00:33:19Z
+**Trigger:** Ethan reported Transcribing was stuck and urgently requested rollback, suspecting the newly selected model.
+**Symptom:** VoiceInk++ stayed on Transcribing for minutes after otherwise working v2.0.248 delivery changes.
+**Root cause:** The active com.ethansk.VoiceInkPlusPlus modeConfigurationsV2 entries all overrode CurrentTranscriptionModel with Soniox V5 (stt-async-v5) and real-time enabled. Soniox accepted the WebSocket, then returned 'Organization balance exhausted'; the socket disconnected and batch fallback waited for its network timeout. Inspecting the legacy com.prakashjoshipax.VoiceInk preference domain falsely suggested tuned Deepgram was active.
+**Fix:** Operational configuration rollback only: after a five-second heads-up and cooperative quit, set all seven VoiceInk++ modes plus CurrentTranscriptionModel to deepgram-nova-3-tuned-(local-proxy), set real-time false for every mode, live-tested the local proxy with synthetic speech (HTTP 200 in 1.57s), then relaunched the unchanged signed v2.0.248 app.
+**Commit:** configuration-only; installed implementation 6ea179f unchanged
+**Guard:** For a stuck Transcribing report, inspect the active bundle domain com.ethansk.VoiceInkPlusPlus and decode every modeConfigurationsV2 selectedTranscriptionModelName/isRealtimeTranscriptionEnabled before changing code or downgrading the binary. Correlate StreamingTranscriptionService's 'Streaming start requested model=' and server error; CurrentTranscriptionModel alone is not authoritative when a Mode override exists. Switch providers only after a direct live endpoint transcription succeeds.
+---
+
+
+---
 **Date:** 2026-07-21T23:22:09Z
 **Trigger:** Ethan asked whether recording could start without dismissing an open right-click/context menu.
 **Symptom:** Opening a right-click context menu and pressing the modifier-only Primary shortcut dismissed the menu when recording began.
