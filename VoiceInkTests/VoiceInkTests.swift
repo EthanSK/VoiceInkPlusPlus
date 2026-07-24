@@ -1604,6 +1604,9 @@ struct VoiceInkTests {
         ]
 
         #expect(primaryBody.contains("startPasteAtCursor(pastedText)"))
+        #expect(primaryBody.contains(
+            "Self.primaryCurrentInputSettleNanoseconds"
+        ))
         #expect(primaryBody.contains("method: .cgEvent"))
         #expect(primaryBody.contains("verification=notRequired"))
         #expect(!primaryBody.contains("focusedInput"))
@@ -1615,6 +1618,9 @@ struct VoiceInkTests {
         #expect(!primaryBody.contains("telegramTargetedHIDReturn"))
         #expect(!primaryBody.contains("pressNearbySubmitButton"))
         #expect(!primaryBody.contains("foregroundOpenAIVerificationContext"))
+        #expect(deliverySource.contains(
+            "primaryCurrentInputSettleNanoseconds: UInt64 = 100_000_000"
+        ))
 
         let engineSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent(

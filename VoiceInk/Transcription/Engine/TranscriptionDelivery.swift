@@ -4,6 +4,11 @@ import os
 
 @MainActor
 final class TranscriptionDelivery {
+    // Upstream VoiceInk waits 500 ms after Cmd-V before generic auto-send. Primary
+    // keeps the same base current-input architecture, but uses a shorter settle so
+    // Electron has time to consume the paste without adding the old half-second lag.
+    private static let primaryCurrentInputSettleNanoseconds: UInt64 = 100_000_000
+
     enum BackgroundAutoSendVerification: Equatable {
         case verifiedCleared
         case unchanged
@@ -679,8 +684,13 @@ final class TranscriptionDelivery {
             return
         }
 
-        // No delay and no app classification: this is the same generic system-focused
-        // key path for Telegram, Codex, Terminal, and every other current input.
+        // Keep this generic and current-input-driven: no app classifier, saved AX
+        // wrapper, semantic Send, or verification. Upstream VoiceInk waits 500 ms
+        // here; 100 ms is the smallest bounded compromise after live traces showed
+        // that an immediate Return could overtake Cmd-V in a lagging Electron input.
+        try? await Task.sleep(
+            nanoseconds: Self.primaryCurrentInputSettleNanoseconds
+        )
         let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
         let sendResult = await CursorPaster.performAutoSend(
             autoSendKey,
@@ -690,7 +700,7 @@ final class TranscriptionDelivery {
         )
         switch sendResult {
         case .commandPosted:
-            vippLog.info("paste: primary current-input immediate HID auto-send issued=true verification=notRequired key=\(autoSendKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            vippLog.info("paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=100 key=\(autoSendKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         case .actionGuardRefused:
             showAutoSendFailure(
                 "Transcription pasted, but Return could not be issued",
