@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T01:08:55Z
+**Trigger:** Ethan reported v2.0.255 was not reliably pressing Enter in Codex, suggested a small delay, then physically confirmed v2.0.257: 'Okay, it's working.'
+**Symptom:** VoiceInk++ v2.0.255 could paste into the current Codex composer but ordinary Primary Return was intermittent or absent.
+**Root cause:** The base current-input route had no intentional post-paste settle: live v255 timing could put Return only about 31 ms behind Command-V, while upstream VoiceInk deliberately allows 500 ms for the destination to consume the paste.
+**Fix:** Commit bd6beae keeps Primary structurally isolated and generic, but adds one bounded 100 ms wait between confirmed Command-V posting and the Mode's ordinary HID auto-send; v2.0.257 was built, signed, installed, and Ethan confirmed that normal Primary paste plus Return worked.
+**Commit:** bd6beae
+**Guard:** Mac Mini direct xcrun xctest named and passed all 45 tests. Installed v2.0.257 CDHash 9664c70e1c4af3939da269b445ebda2f04bb4b0a produced two consecutive primaryCurrentInput traces with targetCaptured=false, appSpecificDelivery=false, commandPosted, and settleMs=100 before Ethan said it was working. This accepts only foreground Primary in Codex; it does not accept either Next route.
+---
+
+
+---
 **Date:** 2026-07-24T00:23:43Z
 **Trigger:** Ethan requested stripping VoiceInk++ of payments, Pro purchase prompts, and related commercial notifications.
 **Symptom:** VoiceInk++ still contained upstream Pro purchase, trial, license-validation, affiliate-promotion, and remote promotional-announcement surfaces that are irrelevant to Ethan's personal fork.
