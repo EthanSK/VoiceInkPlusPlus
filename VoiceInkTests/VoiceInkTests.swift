@@ -945,6 +945,15 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func exactNextDeliveryToleratesTransientSystemFocusReadUnavailability() {
+        #expect(FocusLockService.systemFocusReadRetryAttempts == 9)
+        #expect(
+            FocusLockService.systemFocusReadRetryIntervalNanoseconds
+                * UInt64(FocusLockService.systemFocusReadRetryAttempts - 1)
+                == 200_000_000
+        )
+    }
+
     @Test func cooperativeQuitIsBlockedWhileAnySessionIsInFlight() {
         #expect(AppDelegate.shouldBlockTermination(hasInFlightSessions: true))
         #expect(!AppDelegate.shouldBlockTermination(hasInFlightSessions: false))

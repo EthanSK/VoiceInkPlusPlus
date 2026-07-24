@@ -414,6 +414,12 @@ final class FocusLockService: ObservableObject {
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
     private static let semanticSendNodeBudget = 1_600
     private static let semanticSendSearchSeconds = 0.35
+    // A media-key transition and a busy WindowServer can temporarily make the
+    // system-wide focused element unreadable. This is read-only retry time, not a
+    // delivery delay: the first successful read returns immediately, while a lagging
+    // Mac gets a bounded 200 ms window before exact Next delivery still fails closed.
+    static let systemFocusReadRetryAttempts = 9
+    static let systemFocusReadRetryIntervalNanoseconds: UInt64 = 25_000_000
     private static let telegramBundleIdentifiers: Set<String> = [
         "ru.keepcoder.Telegram"
     ]
@@ -607,7 +613,10 @@ final class FocusLockService: ObservableObject {
             logger.error("Background exact-input preparation could not read the frontmost application pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return nil
         }
-        guard let element = resolvedExactElement(for: target),
+        guard let element = resolvedExactElement(
+                  for: target,
+                  diagnosticContext: "backgroundPreparation"
+              ),
               let window = liveWindow(for: target, resolvedElement: element) else {
             // Telegram removes the saved window's children from its background AX
             // tree. Strict resolution therefore cannot run until one bounded internal
@@ -2732,14 +2741,20 @@ final class FocusLockService: ObservableObject {
     /// an app, rewrites focus, or retries any irreversible delivery action.
     private func systemFocusedElementWithBoundedRetry()
         async -> (element: AXUIElement, pid: pid_t)? {
-        let attempts = 3
-        for attempt in 0..<attempts {
+        let started = ProcessInfo.processInfo.systemUptime
+        for attempt in 0..<Self.systemFocusReadRetryAttempts {
             if let focused = systemFocusedElement() {
+                if attempt > 0 {
+                    logger.info("System keyboard focus read recovered after transient unavailability attempt=\(attempt + 1, privacy: .public) elapsedMillis=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), privacy: .public)")
+                }
                 return focused
             }
-            guard attempt + 1 < attempts else { break }
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            guard attempt + 1 < Self.systemFocusReadRetryAttempts else { break }
+            try? await Task.sleep(
+                nanoseconds: Self.systemFocusReadRetryIntervalNanoseconds
+            )
         }
+        logger.notice("System keyboard focus read remained unavailable after bounded retry attempts=\(Self.systemFocusReadRetryAttempts, privacy: .public) elapsedMillis=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), privacy: .public)")
         return nil
     }
 
@@ -2758,8 +2773,12 @@ final class FocusLockService: ObservableObject {
         return focused.element
     }
 
-    private func resolvedExactElement(for target: Target) -> AXUIElement? {
+    private func resolvedExactElement(
+        for target: Target,
+        diagnosticContext: String? = nil
+    ) -> AXUIElement? {
         let savedWindow = liveWindow(for: target, resolvedElement: nil)
+        var observedContextAnchorCount: Int?
         let directContextMatches = target.identity.map { identity in
             if Self.isTelegram(bundleIdentifier: target.bundleIdentifier),
                identity.contextAnchors.isEmpty {
@@ -2774,6 +2793,7 @@ final class FocusLockService: ObservableObject {
                     bundleIdentifier: target.bundleIdentifier
                 ) ? target.element : nil
             )
+            observedContextAnchorCount = currentContext.count
             if Self.isTelegram(bundleIdentifier: target.bundleIdentifier) {
                 return Self.telegramContextFingerprintMatches(
                     captured: identity.contextAnchors,
@@ -2786,8 +2806,7 @@ final class FocusLockService: ObservableObject {
             )
         } ?? true
 
-        if let element = target.element,
-           directContextMatches {
+        if let element = target.element {
             let role = stringAttribute(kAXRoleAttribute, from: element)
             let subrole = stringAttribute(kAXSubroleAttribute, from: element)
             let belongsToSavedWindow = savedWindow.map { savedWindow in
@@ -2804,10 +2823,15 @@ final class FocusLockService: ObservableObject {
                     exactStructureMatches(element, identity: identity, in: $0)
                 }
             } == true
-            if belongsToSavedWindow,
+            let editable = isEditableInput(role: role, subrole: subrole)
+            if directContextMatches,
+               belongsToSavedWindow,
                telegramStructureMatches,
-               isEditableInput(role: role, subrole: subrole) {
+               editable {
                 return element
+            }
+            if let diagnosticContext {
+                logger.notice("Exact input direct wrapper rejected context=\(diagnosticContext, privacy: .public) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) savedWindowReadable=\(savedWindow != nil, privacy: .public) roleReadable=\(role != nil, privacy: .public) editable=\(editable, privacy: .public) belongsToSavedWindow=\(belongsToSavedWindow, privacy: .public) contextMatches=\(directContextMatches, privacy: .public) capturedAnchors=\(target.identity?.contextAnchors.count ?? 0, privacy: .public) observedAnchors=\(observedContextAnchorCount ?? -1, privacy: .public) telegramStructureMatches=\(telegramStructureMatches, privacy: .public)")
             }
         }
 
@@ -2818,6 +2842,9 @@ final class FocusLockService: ObservableObject {
                   in: window,
                   bundleIdentifier: target.bundleIdentifier
               ) else {
+            if let diagnosticContext {
+                logger.notice("Exact input recovery unavailable context=\(diagnosticContext, privacy: .public) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) identityPresent=\(target.identity != nil, privacy: .public) savedWindowReadable=\(savedWindow != nil, privacy: .public) stableIdentifier=\(target.identity?.identifier != nil, privacy: .public) domIdentifier=\(target.identity?.domIdentifier != nil, privacy: .public) capturedAnchors=\(target.identity?.contextAnchors.count ?? 0, privacy: .public)")
+            }
             return nil
         }
 
@@ -2839,7 +2866,12 @@ final class FocusLockService: ObservableObject {
                 nonEmptyStringAttribute("AXDOMIdentifier", from: $0) == domIdentifier
             }
         }
-        guard !candidates.isEmpty else { return nil }
+        guard !candidates.isEmpty else {
+            if let diagnosticContext {
+                logger.notice("Exact input recovery found no editable structural candidate context=\(diagnosticContext, privacy: .public) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+            }
+            return nil
+        }
         if candidates.count == 1 { return candidates[0] }
 
         let pathMatches = candidates.filter {
@@ -2874,7 +2906,13 @@ final class FocusLockService: ObservableObject {
                 expected == nil || nonEmptyStringAttribute(attribute, from: candidate) == expected
             }
         }
-        return labelMatches.count == 1 ? labelMatches[0] : nil
+        if labelMatches.count == 1 {
+            return labelMatches[0]
+        }
+        if let diagnosticContext {
+            logger.notice("Exact input recovery remained ambiguous context=\(diagnosticContext, privacy: .public) pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) structuralCandidates=\(candidates.count, privacy: .public) labelCandidates=\(labelMatches.count, privacy: .public)")
+        }
+        return nil
     }
 
     private func exactStructureMatches(
