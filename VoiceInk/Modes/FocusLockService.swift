@@ -471,6 +471,17 @@ final class FocusLockService: ObservableObject {
             shortVersion: "26.721.30844",
             build: "5813",
             chromium: "150.0.7871.128"
+        ),
+        // A live v258 trace against ChatGPT 26.721.31836 build 5828 proved
+        // recordingStart still resolved and inserted into the exact background
+        // Codex composer, whose current tree exposed one unlabelled candidate.
+        // Tuple membership is only the first gate: the existing enabled, pressable,
+        // same-window, composer-adjacent, Send-versus-Stop, one-shot, and final
+        // boundary checks must all re-pass before the irreversible AXPress.
+        (
+            shortVersion: "26.721.31836",
+            build: "5828",
+            chromium: "150.0.7871.128"
         )
     ]
 
