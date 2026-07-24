@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T18:43:35Z
+**Trigger:** Ethan requested a daily update check, default on, with a disable switch and a notification saying there is a VoiceInk update.
+**Symptom:** VoiceInk++ needed a default-on daily upstream update alert that remains review-only and can be disabled in Settings.
+**Root cause:** Sparkle installation is deliberately inactive in the commercial-free local fork, and wholesale upstream merges are unsafe because VoiceInk++ diverges in destination, delivery, provider, and UI contracts.
+**Fix:** Commit 87165bd replaces the unused Sparkle controller with a 24-hour GitHub latest-release check, deduplicated native notification plus in-app fallback, and a Daily VoiceInk Update Checks Settings toggle; checks never install, merge, or replace either app.
+**Commit:** 87165bdc31532cfe4e0d35278eef7a849c361ce2
+**Guard:** Fresh Mini candidate passed 52 named direct xcrun xctest tests after the canonical TestManager stall. Signed v2.0.261 is installed with CDHash c0e19e79f02e81bb168f90013d220fd5b454bb1a, deep/strict signing and Automation=true. Launch wrote VIPPLastDailyUpdateCheck; upstream returned v2.0 and VIPPLastNotifiedUpstreamRelease remained absent, proving no false alert. Exact delivery stayed enabled and /Applications/VoiceInk.app was untouched.
+---
+
+
+---
 **Date:** 2026-07-24T17:48:57Z
 **Trigger:** Ethan: remember this version. It also works for Telegram.
 **Symptom:** VoiceInk++ needed a durable working checkpoint after repeated Codex and Telegram latch regressions.
