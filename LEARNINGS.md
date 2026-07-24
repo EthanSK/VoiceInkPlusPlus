@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T17:48:57Z
+**Trigger:** Ethan: remember this version. It also works for Telegram.
+**Symptom:** VoiceInk++ needed a durable working checkpoint after repeated Codex and Telegram latch regressions.
+**Root cause:** Signed v2.0.259 preserves the pinned Telegram 12.9/282526 exact-chat identity and one-shot targeted-HID-Return route while adding only the independent ChatGPT build-5828 audit.
+**Fix:** No additional runtime change: preserve v2.0.259 commit 049efc7 as the accepted Codex-and-Telegram recordingStart checkpoint.
+**Commit:** 049efc7133bf96530ebbff0a965e48e86bb4fbaf
+**Guard:** Ethan confirmed Telegram worked. The correlated v2.0.259 trace captured the exact Telegram composer and privacy-bounded visual identity, selected recordingStart, revalidated matching chat identity while OBS remained frontmost, verified background insertion, issued one telegramTargetedHIDReturn, and verified composer clear with success=true verification=verifiedCleared. This proves Telegram recordingStart only; focusedDuringTranscription and wrong-chat rejection remain separate.
+---
+
+
+---
 **Date:** 2026-07-24T17:45:18Z
 **Trigger:** Ethan reported Codex Next-button latch pasted but no longer sent at all on v2.0.258.
 **Symptom:** v2.0.258 inserted a recordingStart transcript into the exact background ChatGPT-hosted Codex composer but never submitted it.
