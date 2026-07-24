@@ -192,10 +192,15 @@ struct SettingsView: View {
 
                 LaunchAtLogin.Toggle("Launch at Login")
 
-                Toggle("Auto-check Updates", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { updaterViewModel.automaticallyChecksForUpdates },
                     set: { updaterViewModel.setAutomaticallyChecksForUpdates($0) }
-                ))
+                )) {
+                    HStack(spacing: 4) {
+                        Text("Daily VoiceInk Update Checks")
+                        InfoTip("Checks the official VoiceInk GitHub releases once a day and notifies you when there is something new to review. VoiceInk++ never installs or merges upstream updates automatically.")
+                    }
+                }
 
                 HStack {
                     Button("Check for Updates") {

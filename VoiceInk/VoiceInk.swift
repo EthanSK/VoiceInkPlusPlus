@@ -1,10 +1,10 @@
 import SwiftUI
 import SwiftData
-import Sparkle
 import AppKit
 import OSLog
 import AppIntents
 import FluidAudio
+import UserNotifications
 
 @main
 struct VoiceInkApp: App {
@@ -403,31 +403,315 @@ struct VoiceInkApp: App {
     }
 }
 
-class UpdaterViewModel: ObservableObject {
-    private let updaterController: SPUStandardUpdaterController
+struct VoiceInkUpstreamRelease: Decodable, Equatable {
+    let tagName: String
+    let name: String?
+    let htmlURL: URL
 
-    @Published var canCheckForUpdates = false
-    @Published var automaticallyChecksForUpdates = false
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case name
+        case htmlURL = "html_url"
+    }
+}
 
-    init() {
-        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+enum VoiceInkUpdatePolicy {
+    static let automaticCheckInterval: TimeInterval = 24 * 60 * 60
 
-        automaticallyChecksForUpdates = updaterController.updater.automaticallyChecksForUpdates
+    static func isAutomaticCheckDue(lastCheck: Date?, now: Date) -> Bool {
+        guard let lastCheck else { return true }
+        return now.timeIntervalSince(lastCheck) >= automaticCheckInterval
+    }
 
-        updaterController.updater.publisher(for: \.canCheckForUpdates)
-            .assign(to: &$canCheckForUpdates)
+    static func isNewerRelease(_ releaseTag: String, than integratedUpstreamTag: String) -> Bool {
+        normalizedVersion(releaseTag).compare(
+            normalizedVersion(integratedUpstreamTag),
+            options: .numeric
+        ) == .orderedDescending
+    }
 
-        updaterController.updater.publisher(for: \.automaticallyChecksForUpdates)
-            .assign(to: &$automaticallyChecksForUpdates)
+    static func shouldNotify(
+        releaseTag: String,
+        integratedUpstreamTag: String,
+        lastNotifiedTag: String?,
+        checksEnabled: Bool
+    ) -> Bool {
+        checksEnabled
+            && releaseTag != lastNotifiedTag
+            && isNewerRelease(releaseTag, than: integratedUpstreamTag)
+    }
+
+    private static func normalizedVersion(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first, first == "v" || first == "V" else {
+            return trimmed
+        }
+        return String(trimmed.dropFirst())
+    }
+}
+
+private final class VoiceInkUpdateNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    private static let releaseURLKey = "voiceInkUpstreamReleaseURL"
+
+    static func content(for release: VoiceInkUpstreamRelease) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "There’s a VoiceInk update"
+        let candidateName = release.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = candidateName.flatMap { $0.isEmpty ? nil : $0 } ?? release.tagName
+        content.body = "\(displayName) is available upstream. Open it to review for VoiceInk++."
+        content.sound = .default
+        content.userInfo = [releaseURLKey: release.htmlURL.absoluteString]
+        return content
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        defer { completionHandler() }
+        guard
+            let value = response.notification.request.content.userInfo[Self.releaseURLKey] as? String,
+            let url = URL(string: value)
+        else {
+            return
+        }
+        DispatchQueue.main.async {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+@MainActor
+final class UpdaterViewModel: ObservableObject {
+    static let automaticChecksKey = "VIPPDailyUpdateChecksEnabled"
+    static let lastAutomaticCheckKey = "VIPPLastDailyUpdateCheck"
+    static let lastNotifiedReleaseKey = "VIPPLastNotifiedUpstreamRelease"
+
+    // VoiceInk++ deliberately reviews and manually ports upstream changes. This is the
+    // newest official VoiceInk release already represented by the fork, not VoiceInk++'s
+    // independent build number. A newer tag produces a notification only—never an
+    // automatic Sparkle install, source merge, or replacement of the running fork.
+    static let integratedUpstreamReleaseTag = "v2.0"
+    static let latestReleaseURL = URL(
+        string: "https://api.github.com/repos/Beingpax/VoiceInk/releases/latest"
+    )!
+
+    @Published private(set) var canCheckForUpdates = true
+    @Published private(set) var automaticallyChecksForUpdates: Bool
+
+    private let defaults: UserDefaults
+    private let notificationCenter: UNUserNotificationCenter
+    private let notificationDelegate = VoiceInkUpdateNotificationDelegate()
+    private let logger = Logger(
+        subsystem: "com.ethansk.VoiceInkPlusPlus",
+        category: "UpdateCheck"
+    )
+    private var automaticCheckTimer: Timer?
+    private var checkTask: Task<Void, Never>?
+
+    init(
+        defaults: UserDefaults = .standard,
+        notificationCenter: UNUserNotificationCenter = .current()
+    ) {
+        self.defaults = defaults
+        self.notificationCenter = notificationCenter
+        automaticallyChecksForUpdates = defaults.bool(forKey: Self.automaticChecksKey)
+        notificationCenter.delegate = notificationDelegate
+
+        if automaticallyChecksForUpdates {
+            requestNotificationAuthorization()
+        }
+        scheduleNextAutomaticCheck()
     }
 
     func setAutomaticallyChecksForUpdates(_ value: Bool) {
-        updaterController.updater.automaticallyChecksForUpdates = value
+        automaticallyChecksForUpdates = value
+        defaults.set(value, forKey: Self.automaticChecksKey)
+
+        if value {
+            requestNotificationAuthorization()
+            scheduleNextAutomaticCheck()
+        } else {
+            automaticCheckTimer?.invalidate()
+            automaticCheckTimer = nil
+            checkTask?.cancel()
+            checkTask = nil
+            canCheckForUpdates = true
+        }
     }
 
     func checkForUpdates() {
-        // This is for manual checks - will show UI
-        updaterController.checkForUpdates(nil)
+        performCheck(reason: .manual)
+    }
+
+    private enum CheckReason {
+        case automatic
+        case manual
+    }
+
+    private func scheduleNextAutomaticCheck() {
+        automaticCheckTimer?.invalidate()
+        automaticCheckTimer = nil
+        guard automaticallyChecksForUpdates else { return }
+
+        let now = Date()
+        let lastCheck = defaults.object(forKey: Self.lastAutomaticCheckKey) as? Date
+        guard !VoiceInkUpdatePolicy.isAutomaticCheckDue(lastCheck: lastCheck, now: now) else {
+            performCheck(reason: .automatic)
+            return
+        }
+
+        let nextCheck = lastCheck!.addingTimeInterval(
+            VoiceInkUpdatePolicy.automaticCheckInterval
+        )
+        let timer = Timer(fire: nextCheck, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.performCheck(reason: .automatic)
+            }
+        }
+        automaticCheckTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func performCheck(reason: CheckReason) {
+        guard canCheckForUpdates else { return }
+        if reason == .automatic {
+            guard automaticallyChecksForUpdates else { return }
+        }
+        if automaticallyChecksForUpdates {
+            // A successful manual check is still a real check; count it toward the daily
+            // cadence so opening Settings cannot cause a duplicate request moments later.
+            defaults.set(Date(), forKey: Self.lastAutomaticCheckKey)
+        }
+
+        canCheckForUpdates = false
+        checkTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                canCheckForUpdates = true
+                checkTask = nil
+                scheduleNextAutomaticCheck()
+            }
+
+            do {
+                let release = try await Self.fetchLatestRelease()
+                let isNewer = VoiceInkUpdatePolicy.isNewerRelease(
+                    release.tagName,
+                    than: Self.integratedUpstreamReleaseTag
+                )
+
+                switch reason {
+                case .automatic:
+                    guard VoiceInkUpdatePolicy.shouldNotify(
+                        releaseTag: release.tagName,
+                        integratedUpstreamTag: Self.integratedUpstreamReleaseTag,
+                        lastNotifiedTag: defaults.string(
+                            forKey: Self.lastNotifiedReleaseKey
+                        ),
+                        checksEnabled: automaticallyChecksForUpdates
+                    ) else {
+                        logger.info(
+                            "Daily upstream update check completed updateAvailable=\(isNewer, privacy: .public)"
+                        )
+                        return
+                    }
+                    await notifyAboutUpdate(release)
+                    defaults.set(release.tagName, forKey: Self.lastNotifiedReleaseKey)
+
+                case .manual:
+                    if isNewer {
+                        showInAppUpdateNotification(release)
+                    } else {
+                        NotificationManager.shared.showNotification(
+                            title: String(localized: "VoiceInk is up to date"),
+                            type: .success
+                        )
+                    }
+                }
+            } catch is CancellationError {
+                logger.info("Upstream update check cancelled")
+            } catch {
+                logger.error("Upstream update check failed")
+                if reason == .manual {
+                    NotificationManager.shared.showNotification(
+                        title: String(localized: "Couldn’t check for VoiceInk updates"),
+                        type: .warning
+                    )
+                }
+            }
+        }
+    }
+
+    private static func fetchLatestRelease() async throws -> VoiceInkUpstreamRelease {
+        var request = URLRequest(
+            url: latestReleaseURL,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 15
+        )
+        request.setValue(
+            "application/vnd.github+json",
+            forHTTPHeaderField: "Accept"
+        )
+        request.setValue("VoiceInkPlusPlus", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard
+            let response = response as? HTTPURLResponse,
+            (200..<300).contains(response.statusCode)
+        else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(VoiceInkUpstreamRelease.self, from: data)
+    }
+
+    private func requestNotificationAuthorization() {
+        notificationCenter.requestAuthorization(options: [.alert, .sound]) { [logger] _, error in
+            if error != nil {
+                logger.error("Update notification authorization request failed")
+            }
+        }
+    }
+
+    private func notifyAboutUpdate(_ release: VoiceInkUpstreamRelease) async {
+        let settings = await notificationCenter.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+            let request = UNNotificationRequest(
+                identifier: "voiceink-upstream-update-\(release.tagName)",
+                content: VoiceInkUpdateNotificationDelegate.content(for: release),
+                trigger: nil
+            )
+            do {
+                try await notificationCenter.add(request)
+            } catch {
+                logger.error("Native update notification delivery failed")
+                showInAppUpdateNotification(release)
+            }
+        case .notDetermined, .denied:
+            showInAppUpdateNotification(release)
+        @unknown default:
+            showInAppUpdateNotification(release)
+        }
+    }
+
+    private func showInAppUpdateNotification(_ release: VoiceInkUpstreamRelease) {
+        NotificationManager.shared.showNotification(
+            title: String(localized: "There’s a VoiceInk update"),
+            type: .info,
+            duration: 12,
+            actionButton: (String(localized: "View Release"), {
+                NSWorkspace.shared.open(release.htmlURL)
+            })
+        )
     }
 }
 

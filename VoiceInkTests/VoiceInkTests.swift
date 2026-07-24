@@ -2074,4 +2074,89 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func dailyUpdatePolicyIsDefaultOnBoundedAndNotificationOnly() throws {
+        let defaultsSource = try repositorySource("VoiceInk/AppDefaults.swift")
+        let appSource = try repositorySource("VoiceInk/VoiceInk.swift")
+        let settingsSource = try repositorySource(
+            "VoiceInk/Views/Settings/SettingsView.swift"
+        )
+
+        #expect(defaultsSource.contains(
+            "\"VIPPDailyUpdateChecksEnabled\": true"
+        ))
+        #expect(
+            VoiceInkUpdatePolicy.automaticCheckInterval == 24 * 60 * 60
+        )
+        #expect(VoiceInkUpdatePolicy.isAutomaticCheckDue(
+            lastCheck: nil,
+            now: Date(timeIntervalSince1970: 100_000)
+        ))
+        #expect(!VoiceInkUpdatePolicy.isAutomaticCheckDue(
+            lastCheck: Date(timeIntervalSince1970: 100_000),
+            now: Date(timeIntervalSince1970: 100_000 + 86_399)
+        ))
+        #expect(VoiceInkUpdatePolicy.isAutomaticCheckDue(
+            lastCheck: Date(timeIntervalSince1970: 100_000),
+            now: Date(timeIntervalSince1970: 100_000 + 86_400)
+        ))
+
+        #expect(appSource.contains(
+            "https://api.github.com/repos/Beingpax/VoiceInk/releases/latest"
+        ))
+        #expect(appSource.contains("There’s a VoiceInk update"))
+        #expect(!appSource.contains("SPUStandardUpdaterController"))
+        #expect(!appSource.contains("updaterController.checkForUpdates"))
+        #expect(settingsSource.contains("Daily VoiceInk Update Checks"))
+        #expect(settingsSource.contains(
+            "never installs or merges upstream updates automatically"
+        ))
+    }
+
+    @Test func dailyUpdateNotificationDeduplicatesNewUpstreamReleases() {
+        #expect(VoiceInkUpdatePolicy.isNewerRelease(
+            "v2.0.1",
+            than: "v2.0"
+        ))
+        #expect(VoiceInkUpdatePolicy.isNewerRelease(
+            "V2.1",
+            than: "2.0.9"
+        ))
+        #expect(!VoiceInkUpdatePolicy.isNewerRelease(
+            "v2.0",
+            than: "2.0"
+        ))
+        #expect(!VoiceInkUpdatePolicy.isNewerRelease(
+            "v1.99",
+            than: "v2.0"
+        ))
+        #expect(VoiceInkUpdatePolicy.shouldNotify(
+            releaseTag: "v2.1",
+            integratedUpstreamTag: "v2.0",
+            lastNotifiedTag: nil,
+            checksEnabled: true
+        ))
+        #expect(!VoiceInkUpdatePolicy.shouldNotify(
+            releaseTag: "v2.1",
+            integratedUpstreamTag: "v2.0",
+            lastNotifiedTag: "v2.1",
+            checksEnabled: true
+        ))
+        #expect(!VoiceInkUpdatePolicy.shouldNotify(
+            releaseTag: "v2.1",
+            integratedUpstreamTag: "v2.0",
+            lastNotifiedTag: nil,
+            checksEnabled: false
+        ))
+    }
+
+    private func repositorySource(_ relativePath: String) throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repositoryRoot.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
+
 }

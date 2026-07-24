@@ -84,7 +84,9 @@ Ethan uses a Logitech G502 X LIGHTSPEED with Logitech G HUB, but any programmabl
 The ad-hoc local configuration intentionally omits capabilities that require Ethan's Apple signing setup:
 
 - No iCloud dictionary sync
-- No automatic update channel; pull the latest source and rebuild instead
+- No automatic install channel; VoiceInk++ can check the official VoiceInk GitHub releases once
+  per day and notify you when a newer upstream release is available to review, but it never installs
+  or merges that release. Pull reviewed VoiceInk++ source and rebuild instead.
 
 Transcription providers may require your own API credentials. Ethan's personal Deepgram local proxy is not part of this repository.
 

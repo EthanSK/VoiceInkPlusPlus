@@ -6,6 +6,7 @@ enum AppDefaults {
             // Onboarding & General
             "hasCompletedOnboardingV2": false,
             "hasPreparedOnboardingV2": false,
+            "VIPPDailyUpdateChecksEnabled": true,
 
             // Clipboard
             "restoreClipboardAfterPaste": true,
