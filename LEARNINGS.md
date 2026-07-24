@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T00:23:43Z
+**Trigger:** Ethan requested stripping VoiceInk++ of payments, Pro purchase prompts, and related commercial notifications.
+**Symptom:** VoiceInk++ still contained upstream Pro purchase, trial, license-validation, affiliate-promotion, and remote promotional-announcement surfaces that are irrelevant to Ethan's personal fork.
+**Root cause:** The fork inherited VoiceInk's commercial distribution layer and onboarding license gate even though VoiceInk++ is independently configured and has no need to sell or validate Pro access.
+**Fix:** Removed the commercial managers, views, onboarding gate, transcript trial-expiry injection, affiliate and upgrade promotions, remote announcement runtime, commercial localizations, and Polar dependency; preserved functional errors, recorder feedback, macOS notifications, and Sparkle updates; migrated legacy onboarding stage license to trust.
+**Commit:** 3590c3648d6bcbbf12dc86e3ee2afed79b47e193
+**Guard:** CommercialFreeDistributionTests scans project membership and source for forbidden commercial runtime symbols; README and UPDATING document the commercial-free distribution contract. Exact signed v2.0.255 passed 45 named xctest tests, deep/strict signature validation, Automation entitlement inspection, and bundle-string audit before install.
+---
+
+
+---
 **Date:** 2026-07-23T23:47:35Z
 **Trigger:** Ethan reported that Soniox realtime Primary pasted without Return and sometimes appeared not to paste after the HUD-only release.
 **Symptom:** Post-install v2.0.254 traces in Codex issued the ordinary Primary Cmd-V plus immediate HID Return, while otherwise identical Chrome Primary traces pasted non-empty finals and ended with `targetAutoSend=none` / `autoSend=none`.
