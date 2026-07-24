@@ -220,6 +220,10 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     @Published var pasteTarget: RecordingPasteTarget // Published so the icon remains visible after stop and immediately follows a Next Track retarget while transcription is still loading.
     @Published private(set) var iconActionPulse: RecorderIconActionPulse?
     private(set) var acceptsPasteRetargeting = true
+    private var pasteTargetEnrichment: (
+        captured: FocusLockService.Target,
+        task: Task<FocusLockService.Target, Never>
+    )?
     private var triggerWordModeOverride: ModeConfig?
 
     /// Next-button destinations own post-processing atomically. Primary is deliberately
@@ -322,6 +326,10 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
 
     func retargetPaste(to target: RecordingPasteTarget) -> Bool {
         guard acceptsPasteRetargeting else { return false }
+        // A recording-start Terminal lookup belongs only to that older decision.
+        // Cancel and detach it before second chance replaces the target so its late
+        // window/TTY result can never overwrite the newly focused input.
+        discardPasteTargetEnrichment()
         pasteTarget = target
         // This method is the successful second-chance latch boundary. Emit only
         // after the target was accepted; a failed/no-input Next press must keep
@@ -340,13 +348,97 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
         triggerWordModeOverride = mode
     }
 
-    func resolvePasteTargetForDelivery() -> RecordingPasteTarget {
+    func beginPasteTargetEnrichment(
+        captured: FocusLockService.Target,
+        task: Task<FocusLockService.Target, Never>
+    ) {
+        guard acceptsPasteRetargeting,
+              pasteTarget.focusedInput.map({
+                  FocusLockService.shared.representsSameCaptureDecision(
+                      $0,
+                      captured
+                  )
+              }) == true else {
+            task.cancel()
+            return
+        }
+        pasteTargetEnrichment = (captured, task)
+
+        // Update the recording preview as soon as the bounded lookup settles. Delivery
+        // also awaits this same task, closing the very-fast Next-stop race without
+        // delaying microphone startup or starting a second identity lookup.
+        Task { @MainActor [weak self] in
+            let completed = await task.value
+            self?.applyPasteTargetEnrichment(
+                captured: captured,
+                completed: completed
+            )
+        }
+    }
+
+    private func applyPasteTargetEnrichment(
+        captured: FocusLockService.Target,
+        completed: FocusLockService.Target
+    ) {
+        guard acceptsPasteRetargeting,
+              pasteTarget.focusedInput.map({
+                  FocusLockService.shared.representsSameCaptureDecision(
+                      $0,
+                      captured
+                  )
+              }) == true else {
+            return
+        }
+        if phase == .recording,
+           pasteTarget.destination == .recordingStart {
+            recordingStartFocusedInput = completed
+        }
+        pasteTarget = RecordingPasteTarget(
+            destination: pasteTarget.destination,
+            focusedInput: completed,
+            mode: pasteTarget.mode
+        )
+        if pasteTargetEnrichment.map({
+            FocusLockService.shared.representsSameCaptureDecision(
+                $0.captured,
+                captured
+            )
+        }) == true {
+            pasteTargetEnrichment = nil
+        }
+    }
+
+    func discardPasteTargetEnrichment() {
+        pasteTargetEnrichment?.task.cancel()
+        pasteTargetEnrichment = nil
+    }
+
+    func resolvePasteTargetForDelivery() async -> RecordingPasteTarget {
+        // The task began at the physical input decision and is hard-bounded by the
+        // AppleScript runner. Await only that existing task before freezing delivery;
+        // never recapture whichever Terminal tab or app is focused now.
+        while let pending = pasteTargetEnrichment {
+            let completed = await pending.task.value
+            applyPasteTargetEnrichment(
+                captured: pending.captured,
+                completed: completed
+            )
+            if pasteTargetEnrichment.map({
+                FocusLockService.shared.representsSameCaptureDecision(
+                    $0.captured,
+                    pending.captured
+                )
+            }) == true {
+                pasteTargetEnrichment = nil
+            }
+        }
         acceptsPasteRetargeting = false // Delivery resolves exactly once; a later media-key press must pass through rather than falsely claiming it changed an already-issued paste.
         return pasteTarget
     }
 
     // Cancel + tear down this session's background context capture. Safe to call multiple times.
     func clearContext() {
+        discardPasteTargetEnrichment()
         contextTasks.forEach { $0.cancel() }
         contextTasks.removeAll()
         contextStore = nil

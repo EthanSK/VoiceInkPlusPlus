@@ -1768,7 +1768,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt() {
+    @Test func secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt() async {
         let session = RecordingSession()
         let destinationMode = ModeConfig(
             name: "Codex destination",
@@ -1788,7 +1788,7 @@ struct VoiceInkTests {
         #expect(acceptedPulse?.icon == .lockedDestination)
         #expect(session.lockedDestinationIconActionPulseID == acceptedPulse?.id)
         #expect(session.currentFocusIconActionPulseID == nil)
-        let resolvedTarget = session.resolvePasteTargetForDelivery()
+        let resolvedTarget = await session.resolvePasteTargetForDelivery()
         #expect(resolvedTarget.destination == .focusedDuringTranscription)
         #expect(resolvedTarget.autoSendKey == .enter)
         #expect(resolvedTarget.mode == destinationMode)
@@ -1797,6 +1797,206 @@ struct VoiceInkTests {
         #expect(!session.retargetPaste(to: RecordingPasteTarget(destination: .recordingStart, focusedInput: nil)))
         #expect(session.pasteTarget.destination == .focusedDuringTranscription)
         #expect(session.iconActionPulse == acceptedPulse)
+    }
+
+    @MainActor
+    @Test func terminalAutomationIdentityRequiresExactWindowAndTTYPair() {
+        let capturedContents =
+            "stable Claude Code output line long enough\n$ ready\n"
+        let encodedCapture =
+            "8123\n/dev/ttys004\n2\n\(capturedContents.count)\n"
+            + capturedContents + "\n"
+        #expect(
+            FocusLockService.terminalCaptureScriptResult(encodedCapture)
+                == FocusLockService.TerminalCaptureScriptResult(
+                    windowID: 8123,
+                    sessionIdentity: "/dev/ttys004",
+                    siblingSessionCount: 2,
+                    contents: capturedContents
+                )
+        )
+        #expect(FocusLockService.terminalCaptureScriptResult(
+            "not-a-window\n/dev/ttys004\n2\n\(capturedContents.count)\n"
+                + capturedContents
+        ) == nil)
+        #expect(FocusLockService.terminalCaptureScriptResult(
+            "8123\n/dev/ttys004\n0\n\(capturedContents.count)\n"
+                + capturedContents
+        ) == nil)
+
+        let anchors = FocusLockService.terminalContentAnchors(
+            """
+            stable Claude Code output line long enough
+            another distinctive terminal line for identity
+            """
+        )
+        #expect(FocusLockService.terminalDecisionFingerprintMatches(
+            captured: anchors,
+            native: anchors
+                + ["new terminal output line after the recording began"],
+            siblingSessionCount: 2
+        ))
+        #expect(!FocusLockService.terminalDecisionFingerprintMatches(
+            captured: anchors,
+            native: ["different terminal session content entirely"],
+            siblingSessionCount: 2
+        ))
+        #expect(FocusLockService.terminalDecisionFingerprintMatches(
+            captured: [],
+            native: [],
+            siblingSessionCount: 1
+        ))
+        #expect(!FocusLockService.terminalDecisionFingerprintMatches(
+            captured: [],
+            native: [],
+            siblingSessionCount: 2
+        ))
+
+        let before = "$ ready "
+        let after = "$ ready become jarvis\n"
+        let encodedDelivery =
+            "8123\n/dev/ttys004\n\(before.count)\n\(after.count)\n"
+            + before + after + "\n"
+        #expect(
+            FocusLockService.terminalNativeScriptResult(encodedDelivery)
+                == FocusLockService.TerminalNativeScriptResult(
+                    windowID: 8123,
+                    sessionIdentity: "/dev/ttys004",
+                    previousContents: before,
+                    currentContents: after
+                )
+        )
+        #expect(FocusLockService.terminalNativeScriptResult(
+            "8124\n/dev/ttys999\n4\n9999\nshort"
+        ) == nil)
+    }
+
+    @MainActor
+    @Test func nativeTerminalDeliveryRequiresNewTextAndPromptTransition() {
+        #expect(TranscriptionDelivery.classifyNativeTerminalDelivery(
+            from: "$ ready ",
+            to: "$ ready become jarvis\nresponse",
+            insertedText: "become jarvis"
+        ) == .verified)
+        #expect(TranscriptionDelivery.classifyNativeTerminalDelivery(
+            from: "$ ready ",
+            to: "$ ready become jarvis",
+            insertedText: "become jarvis"
+        ) == .modifiedWithoutSubmit)
+        #expect(TranscriptionDelivery.classifyNativeTerminalDelivery(
+            from: "$ ready ",
+            to: "$ ready ",
+            insertedText: "become jarvis"
+        ) == .unchanged)
+        #expect(TranscriptionDelivery.classifyNativeTerminalDelivery(
+            from: "old become jarvis\n$ ready ",
+            to: "repainted Claude TUI without a shared buffer boundary",
+            insertedText: "become jarvis"
+        ) == .unreadable)
+        #expect(FocusLockService.terminalTextIsSafeForSingleNativeOperation(
+            "become jarvis"
+        ))
+        #expect(!FocusLockService.terminalTextIsSafeForSingleNativeOperation(
+            "first command\nsecond command"
+        ))
+    }
+
+    @MainActor
+    @Test func terminalAppleScriptTransportIsAtomicBoundedAndNextOnly() throws {
+        let plain = FocusLockService.appleScriptLiteral("plain")
+        let controls = FocusLockService.appleScriptLiteral("a\nb\r\tc")
+        let quotesAndSlash = FocusLockService.appleScriptLiteral(
+            "say \"hi\" \\ now"
+        )
+        #expect(plain == "\"plain\"")
+        #expect(
+            controls
+                == "\"a\" & (ASCII character 10) & \"b\" & (ASCII character 13) & (ASCII character 9) & \"c\""
+        )
+        #expect(quotesAndSlash == "\"say \\\"hi\\\" \\\\ now\"")
+
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let focusSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Modes/FocusLockService.swift"
+            ),
+            encoding: .utf8
+        )
+        let nativeStart = try #require(focusSource.range(
+            of: "    func performTerminalTextDelivery("
+        ))
+        let nativeEnd = try #require(focusSource.range(
+            of: "    func backgroundDeliveryBoundaryMatches(",
+            range: nativeStart.upperBound..<focusSource.endIndex
+        ))
+        let nativeBody = focusSource[
+            nativeStart.lowerBound..<nativeEnd.lowerBound
+        ]
+        #expect(nativeBody.components(separatedBy: "do script").count - 1 == 1)
+        #expect(nativeBody.contains("autoSendKey == .enter"))
+        #expect(nativeBody.contains("terminalAutomationTarget"))
+        #expect(!nativeBody.contains("typeTextIntoPreparedTargetedProcess"))
+        #expect(!nativeBody.contains("performAutoSend"))
+
+        let deliverySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+            ),
+            encoding: .utf8
+        )
+        let exactStart = try #require(deliverySource.range(
+            of: "    private func deliverToBackgroundExactInput("
+        ))
+        let exactEnd = try #require(deliverySource.range(
+            of: "    private func deliverToNativeTerminalSession(",
+            range: exactStart.upperBound..<deliverySource.endIndex
+        ))
+        let exactPrefix = deliverySource[
+            exactStart.lowerBound..<exactEnd.lowerBound
+        ]
+        let terminalBranch = try #require(exactPrefix.range(
+            of: "requiresNativeTerminalSessionBinding"
+        ))
+        let genericRead = try #require(exactPrefix.range(
+            of: "backgroundInputText("
+        ))
+        #expect(terminalBranch.lowerBound < genericRead.lowerBound)
+
+        let primaryStart = try #require(deliverySource.range(
+            of: "    private func deliverPrimaryToCurrentSystemInput("
+        ))
+        let primaryEnd = try #require(deliverySource.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: primaryStart.upperBound..<deliverySource.endIndex
+        ))
+        let primaryBody = deliverySource[
+            primaryStart.lowerBound..<primaryEnd.lowerBound
+        ]
+        #expect(!primaryBody.contains("Terminal"))
+        #expect(!primaryBody.contains("AppleScript"))
+        #expect(!primaryBody.contains("terminalNativeAtomic"))
+
+        let runnerSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Services/BoundedAppleScriptRunner.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(runnerSource.contains("process.arguments = [\"-\"]"))
+        #expect(runnerSource.contains("SIGKILL"))
+        #expect(!runnerSource.contains("do shell script"))
+    }
+
+    @Test func boundedAppleScriptErrorsNeverExposeTerminalDiagnostics() {
+        let secret = "SyntheticPrivateTranscriptAndTTY"
+        let error = BoundedAppleScriptError.redactedNonZeroExit(
+            status: 17,
+            untrustedStderr: "Terminal rejected \(secret)"
+        )
+        #expect(error.localizedDescription == "osascript exited with status 17")
+        #expect(!error.localizedDescription.contains(secret))
     }
 
     @MainActor

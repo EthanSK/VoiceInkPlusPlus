@@ -5,6 +5,27 @@ import os
 
 @MainActor
 final class FocusLockService: ObservableObject {
+    /// Apple Terminal can reuse one AXTextArea while its selected tab changes. The
+    /// native window ID plus TTY is therefore part of the exact Next-button decision;
+    /// neither a PID, mutable title, nor retained AX wrapper is a session identity.
+    fileprivate enum TerminalAutomationTarget {
+        case appleTerminal(windowID: Int, tty: String)
+    }
+
+    struct TerminalCaptureScriptResult: Equatable {
+        let windowID: Int
+        let sessionIdentity: String
+        let siblingSessionCount: Int
+        let contents: String
+    }
+
+    struct TerminalNativeScriptResult: Equatable {
+        let windowID: Int
+        let sessionIdentity: String
+        let previousContents: String
+        let currentContents: String
+    }
+
     fileprivate struct ExactInputIdentity {
         let role: String
         let subrole: String?
@@ -36,6 +57,11 @@ final class FocusLockService: ObservableObject {
         fileprivate let telegramVisualIdentityCapture: TelegramWindowVisualIdentityCapture?
         fileprivate let app: NSRunningApplication
         fileprivate let pid: pid_t
+        fileprivate let terminalAutomationTarget: TerminalAutomationTarget?
+        /// Async Terminal identity enrichment may finish after Ethan has already
+        /// selected another second-chance input. Only this decision token permits a
+        /// late result to replace the target that originally spawned it.
+        fileprivate let captureID: UUID
         let bundleIdentifier: String?
         let displayInfo: DisplayInfo
         var processIdentifier: pid_t { pid }
@@ -265,6 +291,13 @@ final class FocusLockService: ObservableObject {
         case focusSafetyViolation
     }
 
+    enum BackgroundTerminalTextDeliveryResult: Equatable {
+        case issued(previousContents: String, currentContents: String)
+        case unavailable
+        case failed(String)
+        case focusSafetyViolation
+    }
+
     private struct NearbySubmitButtonCandidate {
         let element: AXUIElement
         let usesAuditedUnlabelledContract: Bool
@@ -488,6 +521,18 @@ final class FocusLockService: ObservableObject {
     private init() {}
 
     func captureFocusedInput(allowApplicationFallback: Bool = false) -> Target? {
+        captureFocusedInputSnapshot(
+            allowApplicationFallback: allowApplicationFallback
+        )
+    }
+
+    /// Capture the exact AX input synchronously at the physical button decision.
+    /// Native Terminal window/TTY enrichment is deliberately separate and bounded:
+    /// recording startup must not wait for Apple Events, while a later user click
+    /// must never change which input this snapshot represents.
+    func captureFocusedInputSnapshot(
+        allowApplicationFallback: Bool = false
+    ) -> Target? {
         guard AXIsProcessTrusted() else {
             logger.error("Focused input capture failed because Accessibility is not trusted")
             return nil
@@ -572,6 +617,8 @@ final class FocusLockService: ObservableObject {
             telegramVisualIdentityCapture: telegramVisualIdentityCapture,
             app: app,
             pid: pid,
+            terminalAutomationTarget: nil,
+            captureID: UUID(),
             bundleIdentifier: app.bundleIdentifier,
             displayInfo: Target.DisplayInfo(
                 applicationName: app.localizedName ?? app.bundleIdentifier ?? String(localized: "Unknown app"),
@@ -579,6 +626,372 @@ final class FocusLockService: ObservableObject {
                 applicationIcon: app.icon
             )
         )
+    }
+
+    /// Enrich one already-frozen Apple Terminal AX decision with its native window
+    /// ID and TTY. The bounded script may finish after the user leaves Terminal, so
+    /// the result is accepted only if the decision-moment selected-tab controls and
+    /// readable terminal-content fingerprint still identify the same native session.
+    func completingTerminalAutomationTarget(for target: Target) async -> Target {
+        guard let element = target.element,
+              let window = target.window,
+              target.bundleIdentifier == "com.apple.Terminal" else {
+            return target
+        }
+        let terminalAutomationTarget = await captureTerminalAutomationTarget(
+            pid: target.pid,
+            element: element,
+            window: window
+        )
+        guard let terminalAutomationTarget else { return target }
+        return Target(
+            element: target.element,
+            window: target.window,
+            identity: target.identity,
+            telegramVisualIdentityCapture:
+                target.telegramVisualIdentityCapture,
+            app: target.app,
+            pid: target.pid,
+            terminalAutomationTarget: terminalAutomationTarget,
+            captureID: target.captureID,
+            bundleIdentifier: target.bundleIdentifier,
+            displayInfo: target.displayInfo
+        )
+    }
+
+    func representsSameCaptureDecision(_ lhs: Target, _ rhs: Target) -> Bool {
+        lhs.captureID == rhs.captureID
+    }
+
+    func requiresNativeTerminalSessionBinding(for target: Target) -> Bool {
+        target.bundleIdentifier == "com.apple.Terminal"
+    }
+
+    func hasNativeTerminalAutomationTarget(
+        for session: BackgroundDeliverySession
+    ) -> Bool {
+        session.target.terminalAutomationTarget != nil
+    }
+
+    private func captureTerminalAutomationTarget(
+        pid: pid_t,
+        element: AXUIElement,
+        window: AXUIElement
+    ) async -> TerminalAutomationTarget? {
+        guard terminalCaptureBoundaryMatches(
+            pid: pid,
+            element: element,
+            window: window
+        ), let windowID = SkyLightTargetedMouseEventPost.windowID(for: window),
+           let decisionContents = stringAttribute(
+               kAXValueAttribute,
+               from: element
+           ) else {
+            return nil
+        }
+
+        // Apple Terminal can reuse its AXTextArea wrapper when the selected tab
+        // changes. Freeze the selected-tab AX token(s) and readable buffer anchors
+        // before the Apple Event await; window/wrapper equality alone is insufficient.
+        let decisionSelectedControls = terminalSelectedControls(in: window)
+        let decisionContentAnchors = Self.terminalContentAnchors(
+            decisionContents
+        )
+        let source = Self.terminalScriptHelpers + """
+
+        tell application "Terminal"
+            set frontWindows to every window whose frontmost is true
+            if (count of frontWindows) is not 1 then error "Terminal front window was not unique"
+            set targetWindow to item 1 of frontWindows
+            set targetTab to selected tab of targetWindow
+            set targetTTY to (tty of targetTab as text)
+            if targetTTY is "" then error "Terminal selected tab had no TTY"
+            set targetContents to my voiceInkTail((contents of targetTab as text), 4096)
+            return my voiceInkFramedResult({(id of targetWindow as text), targetTTY, (count of tabs of targetWindow as text)}, {targetContents})
+        end tell
+        """
+
+        let parsed: TerminalCaptureScriptResult
+        do {
+            let stdout = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: 1.5
+            ).stdout
+            guard let result = Self.terminalCaptureScriptResult(stdout) else {
+                logger.error("Terminal native identity capture returned malformed bounded metadata")
+                return nil
+            }
+            parsed = result
+        } catch {
+            logger.error("AppleScript failed for capture exact Terminal session category=\(String(describing: type(of: error)), privacy: .public)")
+            return nil
+        }
+
+        let currentSelectedControls = terminalSelectedControls(in: window)
+        let selectionControlsMatch =
+            decisionSelectedControls.count == currentSelectedControls.count
+            && zip(
+                decisionSelectedControls,
+                currentSelectedControls
+            ).allSatisfy { CFEqual($0.0, $0.1) }
+        let nativeAnchors = Self.terminalContentAnchors(parsed.contents)
+        guard parsed.windowID == Int(windowID),
+              Self.terminalSelectionMultiplicityIsSafe(
+                  selectedControlCount: decisionSelectedControls.count,
+                  siblingSessionCount: parsed.siblingSessionCount
+              ),
+              selectionControlsMatch,
+              Self.terminalDecisionFingerprintMatches(
+                  captured: decisionContentAnchors,
+                  native: nativeAnchors,
+                  siblingSessionCount: parsed.siblingSessionCount
+              ),
+              terminalEnrichmentBoundaryMatches(
+                  pid: pid,
+                  element: element,
+                  window: window
+              ) else {
+            logger.error("Terminal scripting capture did not match the decision-moment AX/native session boundary pid=\(pid, privacy: .public) expectedWindowID=\(windowID, privacy: .public) selectedControls=\(decisionSelectedControls.count, privacy: .public) siblingSessions=\(parsed.siblingSessionCount, privacy: .public)")
+            return nil
+        }
+
+        logger.info("Captured Terminal scripting destination windowID=\(windowID, privacy: .public) tty=\(parsed.sessionIdentity, privacy: .private(mask: .hash))")
+        return .appleTerminal(
+            windowID: Int(windowID),
+            tty: parsed.sessionIdentity
+        )
+    }
+
+    static func terminalCaptureScriptResult(
+        _ value: String
+    ) -> TerminalCaptureScriptResult? {
+        guard let framed = terminalFramedFields(
+            value,
+            metadataCount: 3,
+            payloadCount: 1
+        ), let windowID = Int(framed.metadata[0]),
+              !framed.metadata[1].isEmpty,
+              let siblingSessionCount = Int(framed.metadata[2]),
+              siblingSessionCount > 0,
+              let contents = framed.payloads.first else {
+            return nil
+        }
+        return TerminalCaptureScriptResult(
+            windowID: windowID,
+            sessionIdentity: framed.metadata[1],
+            siblingSessionCount: siblingSessionCount,
+            contents: contents
+        )
+    }
+
+    static func terminalNativeScriptResult(
+        _ value: String
+    ) -> TerminalNativeScriptResult? {
+        guard let framed = terminalFramedFields(
+            value,
+            metadataCount: 2,
+            payloadCount: 2
+        ), let windowID = Int(framed.metadata[0]),
+              !framed.metadata[1].isEmpty else {
+            return nil
+        }
+        return TerminalNativeScriptResult(
+            windowID: windowID,
+            sessionIdentity: framed.metadata[1],
+            previousContents: framed.payloads[0],
+            currentContents: framed.payloads[1]
+        )
+    }
+
+    static func terminalContentAnchors(_ contents: String) -> [String] {
+        let normalized = contents
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let anchors = normalized
+            .split(separator: "\n")
+            .map {
+                $0.split(whereSeparator: { $0.isWhitespace })
+                    .joined(separator: " ")
+            }
+            .filter { $0.count >= 20 }
+        return Array(anchors.suffix(20))
+    }
+
+    static func terminalDecisionFingerprintMatches(
+        captured: [String],
+        native: [String],
+        siblingSessionCount: Int
+    ) -> Bool {
+        // A genuinely single native session has no sibling to switch to, so a fresh
+        // short prompt remains safe. Multiple tabs require independent readable
+        // content in addition to the selected-tab AX token.
+        if siblingSessionCount == 1, captured.isEmpty {
+            return true
+        }
+        return contextFingerprintMatches(
+            captured: captured,
+            current: native
+        )
+    }
+
+    static func terminalSelectionMultiplicityIsSafe(
+        selectedControlCount: Int,
+        siblingSessionCount: Int
+    ) -> Bool {
+        siblingSessionCount == 1 || selectedControlCount == 1
+    }
+
+    private static let terminalScriptHelpers = """
+    on voiceInkTail(valueText, maximumLength)
+        set valueText to valueText as text
+        if (count characters of valueText) > maximumLength then
+            set startIndex to (count characters of valueText) - maximumLength + 1
+            return text startIndex thru -1 of valueText
+        end if
+        return valueText
+    end voiceInkTail
+
+    on voiceInkFramedResult(metadataValues, payloadValues)
+        set outputText to ""
+        repeat with metadataValue in metadataValues
+            set outputText to outputText & ((contents of metadataValue) as text) & linefeed
+        end repeat
+        repeat with payloadValue in payloadValues
+            set payloadText to (contents of payloadValue) as text
+            set outputText to outputText & ((count characters of payloadText) as text) & linefeed
+        end repeat
+        repeat with payloadValue in payloadValues
+            set outputText to outputText & ((contents of payloadValue) as text)
+        end repeat
+        return outputText
+    end voiceInkFramedResult
+    """
+
+    private static func terminalFramedFields(
+        _ value: String,
+        metadataCount: Int,
+        payloadCount: Int
+    ) -> (metadata: [String], payloads: [String])? {
+        guard metadataCount > 0, payloadCount > 0 else { return nil }
+        var cursor = value.startIndex
+
+        func nextHeaderLine() -> String? {
+            guard let newline = value[cursor...].firstIndex(of: "\n") else {
+                return nil
+            }
+            var line = String(value[cursor..<newline])
+            if line.last == "\r" { line.removeLast() }
+            cursor = value.index(after: newline)
+            return line
+        }
+
+        var metadata: [String] = []
+        for _ in 0..<metadataCount {
+            guard let field = nextHeaderLine() else { return nil }
+            metadata.append(field)
+        }
+
+        var lengths: [Int] = []
+        for _ in 0..<payloadCount {
+            guard let field = nextHeaderLine(),
+                  let length = Int(field),
+                  (0...4096).contains(length) else {
+                return nil
+            }
+            lengths.append(length)
+        }
+
+        var payloads: [String] = []
+        for length in lengths {
+            guard let end = value.index(
+                cursor,
+                offsetBy: length,
+                limitedBy: value.endIndex
+            ) else {
+                return nil
+            }
+            payloads.append(String(value[cursor..<end]))
+            cursor = end
+        }
+
+        let suffix = value[cursor...]
+        guard suffix.isEmpty || suffix == "\n" else { return nil }
+        return (metadata, payloads)
+    }
+
+    private func terminalCaptureBoundaryMatches(
+        pid: pid_t,
+        element: AXUIElement,
+        window: AXUIElement
+    ) -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let focused = systemFocusedElement(),
+              focused.pid == pid,
+              CFEqual(focused.element, element),
+              let focusedWindow = elementAttribute(
+                  kAXFocusedWindowAttribute,
+                  from: AXUIElementCreateApplication(pid)
+              ),
+              CFEqual(focusedWindow, window),
+              captureWindow(
+                  for: element,
+                  pid: pid,
+                  bundleIdentifier: "com.apple.Terminal"
+              ).map({ CFEqual($0, window) }) == true else {
+            return false
+        }
+        return true
+    }
+
+    /// Once the bounded native lookup starts, Ethan may leave Terminal immediately.
+    /// Preserve the decision by validating Terminal's internal selected window/editor
+    /// instead of incorrectly requiring Terminal to remain system-frontmost.
+    private func terminalEnrichmentBoundaryMatches(
+        pid: pid_t,
+        element: AXUIElement,
+        window: AXUIElement
+    ) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              !app.isTerminated,
+              let focusedWindow = elementAttribute(
+                  kAXFocusedWindowAttribute,
+                  from: AXUIElementCreateApplication(pid)
+              ),
+              CFEqual(focusedWindow, window),
+              let internallyFocused = elementAttribute(
+                  kAXFocusedUIElementAttribute,
+                  from: AXUIElementCreateApplication(pid)
+              ),
+              CFEqual(internallyFocused, element),
+              captureWindow(
+                  for: element,
+                  pid: pid,
+                  bundleIdentifier: "com.apple.Terminal"
+              ).map({ CFEqual($0, window) }) == true else {
+            return false
+        }
+        return true
+    }
+
+    private func terminalSelectedControls(
+        in window: AXUIElement
+    ) -> [AXUIElement] {
+        descendants(of: window).filter { element in
+            guard stringAttribute(kAXRoleAttribute, from: element)
+                    == kAXRadioButtonRole else {
+                return false
+            }
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element,
+                kAXValueAttribute as CFString,
+                &value
+            ) == .success,
+                  let number = value as? NSNumber else {
+                return false
+            }
+            return number.intValue == 1
+        }
     }
 
     func showRecordingStartInput(_ target: Target?) {
@@ -1329,6 +1742,106 @@ final class FocusLockService: ObservableObject {
             : .failed(result.rawValue)
     }
 
+    /// A native Terminal operation may execute only one plain-text command. Embedded
+    /// newlines or control characters would smuggle extra terminal actions inside the
+    /// transcript, so the complete operation fails before Terminal is touched.
+    static func terminalTextIsSafeForSingleNativeOperation(
+        _ text: String
+    ) -> Bool {
+        guard !text.isEmpty else { return false }
+        return text.unicodeScalars.allSatisfy { scalar in
+            !CharacterSet.controlCharacters.contains(scalar)
+                && !CharacterSet.newlines.contains(scalar)
+        }
+    }
+
+    /// Bind transcript text and Return to the exact Apple Terminal window/TTY in one
+    /// host-native operation. This route exists only for a frozen Next destination:
+    /// it never activates Terminal, never inserts by AX/PID first, and never retries
+    /// Return. Missing identity or unsupported paste-only behavior fails closed.
+    func performTerminalTextDelivery(
+        _ text: String,
+        autoSendKey: AutoSendKey,
+        for session: BackgroundDeliverySession
+    ) async -> BackgroundTerminalTextDeliveryResult {
+        guard Self.terminalTextIsSafeForSingleNativeOperation(text) else {
+            return .failed(
+                "transcript contains control characters that are unsafe for one native terminal operation"
+            )
+        }
+        guard session.bundleIdentifier == "com.apple.Terminal",
+              autoSendKey == .enter,
+              backgroundSessionRemainsPrepared(session),
+              let destination = session.target.terminalAutomationTarget else {
+            return .unavailable
+        }
+
+        let expectedWindowID: Int
+        let expectedTTY: String
+        switch destination {
+        case .appleTerminal(let windowID, let tty):
+            expectedWindowID = windowID
+            expectedTTY = tty
+        }
+
+        let textLiteral = Self.appleScriptLiteral(text)
+        let ttyLiteral = Self.appleScriptLiteral(expectedTTY)
+        let source = Self.terminalScriptHelpers + """
+
+        tell application "Terminal"
+            set windowMatchCount to 0
+            set tabMatchCount to 0
+            set targetWindow to missing value
+            set targetTab to missing value
+            repeat with candidateWindow in windows
+                if (id of candidateWindow as integer) is \(expectedWindowID) then
+                    set windowMatchCount to windowMatchCount + 1
+                    set targetWindow to contents of candidateWindow
+                end if
+            end repeat
+            if windowMatchCount is not 1 then error "Terminal window ID was not unique"
+            repeat with candidateTab in tabs of targetWindow
+                if (tty of candidateTab as text) is (\(ttyLiteral)) then
+                    set tabMatchCount to tabMatchCount + 1
+                    set targetTab to contents of candidateTab
+                end if
+            end repeat
+            if tabMatchCount is not 1 then error "Terminal TTY was not unique in the captured window"
+            set beforeContents to my voiceInkTail((contents of targetTab as text), 4096)
+            do script (\(textLiteral)) in targetTab
+            delay 0.08
+            set afterContents to my voiceInkTail((contents of targetTab as text), 4096)
+            return my voiceInkFramedResult({(id of targetWindow as text), (tty of targetTab as text)}, {beforeContents, afterContents})
+        end tell
+        """
+
+        let parsed: TerminalNativeScriptResult
+        do {
+            let stdout = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: 2
+            ).stdout
+            guard let result = Self.terminalNativeScriptResult(stdout),
+                  result.windowID == expectedWindowID,
+                  result.sessionIdentity == expectedTTY else {
+                return .failed(
+                    "Terminal returned a different native window or TTY"
+                )
+            }
+            parsed = result
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+
+        guard backgroundFocusBoundaryIsSafeAfterSubmission(session) else {
+            return .focusSafetyViolation
+        }
+        return .issued(
+            previousContents: parsed.previousContents,
+            currentContents: parsed.currentContents
+        )
+    }
+
     func backgroundDeliveryBoundaryMatches(
         _ session: BackgroundDeliverySession
     ) -> Bool {
@@ -1640,6 +2153,8 @@ final class FocusLockService: ObservableObject {
                 : nil,
             app: target.app,
             pid: target.pid,
+            terminalAutomationTarget: target.terminalAutomationTarget,
+            captureID: target.captureID,
             bundleIdentifier: target.bundleIdentifier,
             displayInfo: Target.DisplayInfo(
                 applicationName: target.displayInfo.applicationName,
@@ -3414,6 +3929,41 @@ final class FocusLockService: ObservableObject {
             return nil
         }
         return value as? String
+    }
+
+    static func appleScriptLiteral(_ value: String) -> String {
+        var expression: [String] = []
+        var segment = ""
+
+        func flushSegment() {
+            guard !segment.isEmpty else { return }
+            let escaped = segment
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            expression.append("\"\(escaped)\"")
+            segment = ""
+        }
+
+        // Newlines and other controls are rejected by the Terminal delivery policy,
+        // but keep the literal helper data-safe and independently testable. Never let
+        // quotes, backslashes, or control bytes become AppleScript source.
+        for character in value {
+            switch character {
+            case "\n":
+                flushSegment()
+                expression.append("(ASCII character 10)")
+            case "\r":
+                flushSegment()
+                expression.append("(ASCII character 13)")
+            case "\t":
+                flushSegment()
+                expression.append("(ASCII character 9)")
+            default:
+                segment.append(character)
+            }
+        }
+        flushSegment()
+        return expression.isEmpty ? "\"\"" : expression.joined(separator: " & ")
     }
 
     private func nonEmptyStringAttribute(

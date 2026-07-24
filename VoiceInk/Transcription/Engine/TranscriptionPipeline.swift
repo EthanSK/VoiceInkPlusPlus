@@ -61,7 +61,7 @@ class TranscriptionPipeline {
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
-        pasteTarget resolvePasteTarget: @escaping () -> RecordingPasteTarget,
+        pasteTarget resolvePasteTarget: @escaping () async -> RecordingPasteTarget,
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         // ── VIPP (skip-mode-processing feature) — EXPLICIT bypass flag ──
         // Resolved at pipeline-run time from the owning RecordingSession's one-shot
@@ -382,7 +382,7 @@ class TranscriptionPipeline {
             return
         }
 
-        let pasteTargetForDelivery = resolvePasteTarget()
+        let pasteTargetForDelivery = await resolvePasteTarget()
         // Re-resolve after the target is frozen so a second-chance Next-button press
         // that arrived during transcription/enhancement supplies the latest target's
         // complete Mode (output action, command, and Return), not just its input. The

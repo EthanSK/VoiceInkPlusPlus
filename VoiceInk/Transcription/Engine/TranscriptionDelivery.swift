@@ -35,6 +35,13 @@ final class TranscriptionDelivery {
         case needsNonActivatingExactInput
     }
 
+    enum NativeTerminalDeliveryVerification: Equatable {
+        case verified
+        case unchanged
+        case modifiedWithoutSubmit
+        case unreadable
+    }
+
     private struct BackgroundAutoSendObservation {
         let verification: BackgroundAutoSendVerification
         let snapshot: FocusLockService.FocusedInputTextSnapshot?
@@ -177,6 +184,41 @@ final class TranscriptionDelivery {
         case .unchanged, .modifiedWithoutSubmit:
             return .failed
         }
+    }
+
+    static func classifyNativeTerminalDelivery(
+        from previousText: String,
+        to currentText: String?,
+        insertedText: String
+    ) -> NativeTerminalDeliveryVerification {
+        guard let currentText else { return .unreadable }
+        guard currentText != previousText else { return .unchanged }
+        guard !insertedText.isEmpty else { return .unreadable }
+
+        // Terminal returns bounded tails. Find the exact suffix(previous) that became
+        // prefix(current), then inspect only bytes appended by this operation. This
+        // avoids the rejected occurrence-count heuristic when a dictated phrase
+        // already exists in scrollback.
+        let maximumOverlap = min(previousText.count, currentText.count)
+        var appendedText: Substring?
+        for length in stride(from: maximumOverlap, through: 1, by: -1) {
+            let previousSuffix = previousText.suffix(length)
+            let currentPrefix = currentText.prefix(length)
+            if previousSuffix == currentPrefix {
+                appendedText = currentText.dropFirst(length)
+                break
+            }
+        }
+        guard let appendedText,
+              let insertedRange = appendedText.range(of: insertedText) else {
+            // A full-screen Claude Code TUI may repaint before the bounded read.
+            // The native operation was already one-shot; unreadable never retries.
+            return .unreadable
+        }
+        let postInsert = appendedText[insertedRange.upperBound...]
+        return postInsert.contains("\n") || postInsert.contains("\r")
+            ? .verified
+            : .modifiedWithoutSubmit
     }
 
     static func foregroundOpenAIAutoSendOutcome(
@@ -733,6 +775,22 @@ final class TranscriptionDelivery {
         }
         defer { FocusLockService.shared.finishBackgroundDelivery(session) }
 
+        // Apple Terminal AXTextArea identity is not a tab/TTY identity. For a
+        // background Next route, text and Return must be one native operation on the
+        // capture-time window/TTY pair. Never AX/PID-insert first and append a native
+        // newline afterward: a tab change could execute different text than we typed.
+        if FocusLockService.shared.requiresNativeTerminalSessionBinding(
+            for: focusedInput
+        ) {
+            await deliverToNativeTerminalSession(
+                pastedText,
+                target: target,
+                autoSendKey: autoSendKey,
+                session: session
+            )
+            return
+        }
+
         guard let textBeforeInsertion = FocusLockService.shared.backgroundInputText(
             for: session
         ) else {
@@ -836,6 +894,68 @@ final class TranscriptionDelivery {
             pastedText: pastedText,
             session: session
         )
+    }
+
+    private func deliverToNativeTerminalSession(
+        _ pastedText: String,
+        target: RecordingPasteTarget,
+        autoSendKey: AutoSendKey,
+        session: FocusLockService.BackgroundDeliverySession
+    ) async {
+        let result = await FocusLockService.shared.performTerminalTextDelivery(
+            pastedText,
+            autoSendKey: autoSendKey,
+            for: session
+        )
+        switch result {
+        case .unavailable:
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "exact Apple Terminal window/TTY identity or atomic Return route unavailable"
+            )
+        case .failed(let detail):
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "native Apple Terminal delivery failed: \(detail)"
+            )
+        case .focusSafetyViolation:
+            handleBackgroundPasteFailure(
+                pastedText,
+                destination: target.destination,
+                detail: "native Apple Terminal delivery could not prove the app remained backgrounded"
+            )
+        case .issued(let previousContents, let currentContents):
+            let verification = Self.classifyNativeTerminalDelivery(
+                from: previousContents,
+                to: currentContents,
+                insertedText: pastedText
+            )
+            let success = verification == .verified
+            vippLog.info("paste: background text verified success=\(success, privacy: .public) targetPid=\(session.processIdentifier, privacy: .public) chars=\(pastedText.count, privacy: .public) route=terminalNativeAtomic frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            vippLog.info("paste: background auto-send finished success=\(success, privacy: .public) key=\(autoSendKey.rawValue, privacy: .public) route=terminalNativeAtomic verification=\(String(describing: verification), privacy: .public) surface=terminal targetPid=\(session.processIdentifier, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            switch verification {
+            case .verified:
+                return
+            case .unreadable:
+                // The exact one-shot native operation was issued, but Claude Code can
+                // repaint its TUI before Terminal returns the bounded buffer. Preserve
+                // honest telemetry without a false red error or dangerous retry.
+                vippLog.notice("paste: exact Terminal text+Return post-state became unreadable; no retry and no visible false-failure targetPid=\(session.processIdentifier, privacy: .public)")
+            case .modifiedWithoutSubmit:
+                showAutoSendFailure(
+                    "Transcription inserted into the saved Terminal session, but Return was not verified",
+                    detail: "terminalNativeAtomic modifiedWithoutSubmit targetPid=\(session.processIdentifier)"
+                )
+            case .unchanged:
+                handleBackgroundPasteFailure(
+                    pastedText,
+                    destination: target.destination,
+                    detail: "exact Terminal session contents remained unchanged after native text+Return"
+                )
+            }
+        }
     }
 
     /// Foreground Cmd-V may finish just as Ethan moves elsewhere. The saved exact

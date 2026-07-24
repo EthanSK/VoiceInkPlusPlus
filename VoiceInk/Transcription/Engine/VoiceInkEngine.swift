@@ -268,7 +268,32 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // switching in place. Keep text reserved for failures; a toast here made the
         // compact recorder noisy and duplicated the much clearer icon transition.
         vippLog.info("paste retarget: pending session \(session.id.uuidString, privacy: .public) destination=focusedDuringTranscription targetCaptured=true")
+        beginTerminalPasteTargetEnrichment(
+            for: session,
+            captured: focusedInput
+        )
         return .retargeted
+    }
+
+    private func beginTerminalPasteTargetEnrichment(
+        for session: RecordingSession,
+        captured: FocusLockService.Target
+    ) {
+        guard FocusLockService.shared.requiresNativeTerminalSessionBinding(
+            for: captured
+        ) else {
+            return
+        }
+        let task = Task { @MainActor in
+            await FocusLockService.shared
+                .completingTerminalAutomationTarget(for: captured)
+        }
+        // This enriches the already accepted exact Next decision; it never recaptures
+        // whichever app or Terminal tab happens to be focused when the task finishes.
+        session.beginPasteTargetEnrichment(
+            captured: captured,
+            task: task
+        )
     }
 
     /// Recompute the DERIVED compat `recordingState` + `partialTranscript` from the active
@@ -329,9 +354,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .recordingStart,
                     focusedInput: focusedInput,
-                    mode: ModeRuntimeResolver.modeSnapshot(
-                        forPasteTargetBundleIdentifier: focusedInput?.bundleIdentifier
-                    )
+                    // Native Terminal identity enrichment updates this same atomic
+                    // target while recording; keep its already frozen Mode.
+                    mode: active.pasteTarget.mode
                 )
             case .primaryCurrentInput:
                 // PRIMARY IS BASE VOICEINK. Do not capture a Telegram/OpenAI/Terminal
@@ -339,6 +364,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // system Cmd-V and generic Return follow whichever keyboard input and
                 // Mode are current at delivery. Only a later physical Next press may
                 // replace this with an exact focusedDuringTranscription target.
+                active.discardPasteTargetEnrichment()
                 active.pasteTarget = RecordingPasteTarget(
                     destination: .primaryCurrentInput,
                     focusedInput: nil
@@ -430,7 +456,28 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // This passive recording-start capture exists solely for a possible Next
             // stop. A normal Primary stop discards it structurally and never enters an
             // app-specific resolver, even though the user could choose Next later.
-            let recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true)
+            let recordingStartFocusedInput = FocusLockService.shared
+                .captureFocusedInputSnapshot(allowApplicationFallback: true)
+            let recordingStartIdentityTask: Task<
+                FocusLockService.Target,
+                Never
+            >?
+            if let recordingStartFocusedInput,
+               FocusLockService.shared.requiresNativeTerminalSessionBinding(
+                   for: recordingStartFocusedInput
+               ) {
+                // Begin beside microphone startup, never in front of it. Delivery
+                // awaits this same bounded decision-token task if Next is pressed
+                // before Terminal finishes returning its exact window/TTY pair.
+                recordingStartIdentityTask = Task { @MainActor in
+                    await FocusLockService.shared
+                        .completingTerminalAutomationTarget(
+                            for: recordingStartFocusedInput
+                        )
+                }
+            } else {
+                recordingStartIdentityTask = nil
+            }
 
             requestRecordPermission { [weak self] granted in
                 Task { @MainActor [weak self] in
@@ -440,9 +487,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             startRequestID: startRequestID,
                             modeId: modeId,
                             useCase: useCase,
-                            recordingStartFocusedInput: recordingStartFocusedInput
+                            recordingStartFocusedInput:
+                                recordingStartFocusedInput,
+                            recordingStartIdentityTask:
+                                recordingStartIdentityTask
                         )
                     } else {
+                        recordingStartIdentityTask?.cancel()
                         self.recordingStartReservation.cancel(startRequestID)
                         self.logger.error("Recording permission denied")
                     }
@@ -460,7 +511,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         startRequestID: UUID,
         modeId: UUID?,
         useCase: RecordingSession.UseCase,
-        recordingStartFocusedInput: FocusLockService.Target?
+        recordingStartFocusedInput: FocusLockService.Target?,
+        recordingStartIdentityTask: Task<FocusLockService.Target, Never>?
     ) async {
         // Cleanup yields while shared model managers release memory. Keep the start
         // reservation owned across that wait so no second start can overtake it, then
@@ -474,6 +526,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // events cannot append another mic owner.
         guard recordingStartReservation.consume(startRequestID),
               activeRecordingSession == nil else {
+            recordingStartIdentityTask?.cancel()
             vippLog.notice("startNewSession: stale or duplicate START refused requestID=\(startRequestID.uuidString, privacy: .public)")
             return
         }
@@ -491,6 +544,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // Append to the collection so the card appears immediately (shows the .starting state).
         sessions.append(session)
         recomputeDerivedState()
+
+        if let recordingStartIdentityTask,
+           let recordingStartFocusedInput {
+            session.beginPasteTargetEnrichment(
+                captured: recordingStartFocusedInput,
+                task: recordingStartIdentityTask
+            )
+        }
 
         let activeModeTask = ActiveWindowService.shared.beginApplyingConfiguration(modeId: modeId) { [weak self, weak session] in
             guard let self, let session else { return false }
@@ -546,7 +607,25 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.phase = .recording
             recomputeDerivedState()
             if session.recordingStartFocusedInput == nil {
-                session.recordingStartFocusedInput = FocusLockService.shared.captureFocusedInput(allowApplicationFallback: true) // Retry only if even the owning application could not be captured during the shortcut event.
+                let retryTarget = FocusLockService.shared
+                    .captureFocusedInputSnapshot(
+                        allowApplicationFallback: true
+                    )
+                session.recordingStartFocusedInput = retryTarget
+                session.pasteTarget = RecordingPasteTarget(
+                    destination: .recordingStart,
+                    focusedInput: retryTarget,
+                    mode: ModeRuntimeResolver.modeSnapshot(
+                        forPasteTargetBundleIdentifier:
+                            retryTarget?.bundleIdentifier
+                    )
+                )
+                if let retryTarget {
+                    beginTerminalPasteTargetEnrichment(
+                        for: session,
+                        captured: retryTarget
+                    )
+                }
             }
             FocusLockService.shared.showRecordingStartInput(session.recordingStartFocusedInput) // Show the saved destination only after microphone recording really started, never when post-recording transcription begins.
 
@@ -840,7 +919,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 guard let session else {
                     preconditionFailure("The recording session must exist until its delivery target is resolved")
                 }
-                return session.resolvePasteTargetForDelivery()
+                return await session.resolvePasteTargetForDelivery()
             },
             outputConfiguration: { [weak session] in
                 let resolved = ModeRuntimeResolver.pasteTargetOutputConfiguration(
