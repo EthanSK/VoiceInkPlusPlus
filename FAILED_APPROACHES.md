@@ -811,6 +811,24 @@ No row may be promoted merely because a later build reused part of it.
   or cleanup lives outside that queue. Require the shared-resource policy regression and an overlap
   trace with no cleanup/preload crossing between A and B.
 
+## Transcription provider configuration failures
+
+### Copying Deepgram's `en-GB` locale into Soniox
+
+- **State:** REJECTED.
+- **Temptation:** Soniox V5 recognizes English, so using Deepgram's regional `en-GB` value appears
+  to be a way to configure Ethan's UK accent.
+- **Observed failure condition:** Soniox's official language-hints and supported-languages
+  documentation publishes ISO language codes and lists English only as `en`; it exposes no accent
+  or regional-English parameter. VoiceInk++'s `SonioxProvider.languageCodes` likewise contains
+  `en` but not `en-GB`, so model-language validation cannot preserve the regional value.
+- **Use instead:** Keep Soniox on strict `en`. The multilingual English model handles accents
+  internally. Soniox context may describe a domain, location, or audience, but arbitrary context
+  is not a documented accent selector and must not be presented as one.
+- **Reconsider only if:** Soniox officially documents a regional-English/accent parameter or a
+  supported `en-GB` code for both `stt-rt-v5` and `stt-async-v5`, and the pinned LLMkit adapter
+  transmits and verifies that exact setting.
+
 ## Verification failures and false confidence
 
 ### Unit tests passed, real app failed

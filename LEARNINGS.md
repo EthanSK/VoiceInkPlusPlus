@@ -25,6 +25,26 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T16:45:54Z
+**Trigger:** Ethan asked whether Soniox could be configured for a UK accent.
+**Symptom:** Soniox V5 was visibly configured as generic English, so it was unclear whether VoiceInk++ should send a regional `en-GB` locale for Ethan's British accent.
+**Root cause:** Soniox's current official language-hints contract accepts ISO language codes and publishes English only as `en`; it exposes no accent or regional-English parameter. VoiceInk++ and its pinned LLMkit adapter therefore correctly send `language_hints=["en"]` with strict English restriction. `en-GB` is not in SonioxProvider's supported-language list and would be normalized back to a supported fallback before a recording.
+**Fix:** No runtime change: the active `com.ethansk.VoiceInkPlusPlus` defaults and all seven Mode overrides already select Soniox V5 real-time with `selectedLanguage=en`, which is the strongest documented English configuration. Soniox handles regional accents within its English model; arbitrary context could describe a UK setting but is not a documented accent selector and is not used as one.
+**Commit:** investigation-only; installed v2.0.257 implementation unchanged
+**Guard:** Before changing a Soniox language value, check the official supported-language and language-hints docs plus `SonioxProvider.languageCodes`; do not copy Deepgram's BCP-47 `en-GB` value into Soniox.
+---
+
+---
+**Date:** 2026-07-24T16:45:53Z
+**Trigger:** Ethan reported “couldn't verify the saved background input” and no pasted result from the Codex latch behavior.
+**Symptom:** Installed v2.0.257 captured Codex as the locked destination, but a Next-while-recording attempt inserted nothing and surfaced the saved-background-input warning.
+**Root cause:** The correlated trace selected `recordingStart`, captured the exact Codex `AXTextArea`, and received a non-empty 85-character Soniox final. Delivery then failed before any text insertion or Send lookup because `prepareBackgroundDelivery` could not re-resolve the saved Codex element/window after another app became frontmost. The current coarse error does not distinguish an unreadable retained window/wrapper from a rejected context fingerprint.
+**Fix:** Investigation only: keep the exact-input failure closed and isolate the next repair to saved Codex element/window re-resolution diagnostics. Do not change Soniox, targeted Unicode, or Return/Send handling for this symptom because none of those stages ran.
+**Commit:** investigation-only; installed v2.0.257 implementation unchanged
+**Guard:** Correlated trace at 2026-07-24 17:36:15–17:36:25 BST proves `recordingStart`, `targetCaptured=true`, Soniox `finalChars=85`, then `Background exact-input preparation could not resolve the saved element/window`; require resolver-stage diagnostics and a physical build-5813 Next-route rerun before any implementation is accepted.
+---
+
+---
 **Date:** 2026-07-24T01:08:55Z
 **Trigger:** Ethan reported v2.0.255 was not reliably pressing Enter in Codex, suggested a small delay, then physically confirmed v2.0.257: 'Okay, it's working.'
 **Symptom:** VoiceInk++ v2.0.255 could paste into the current Codex composer but ordinary Primary Return was intermittent or absent.
