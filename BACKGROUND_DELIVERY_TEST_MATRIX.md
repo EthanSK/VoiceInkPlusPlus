@@ -4,18 +4,20 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
-**Current runtime state verified 2026-07-24:** signed VoiceInk++ v2.0.257 is installed from commits
-`3efdc07` and `bd6beae` with CDHash `9664c70e1c4af3939da269b445ebda2f04bb4b0a` and exact delivery
-enabled. Its fresh Mini bundle named and passed all 45 unit tests through direct `xcrun xctest`
+**Current runtime state verified 2026-07-24:** signed VoiceInk++ v2.0.258 is installed from commit
+`5652c3b` with CDHash `3e48da503f346e1eea88b62c4f5c2cc3617a716e` and exact delivery
+enabled. Its fresh Mini bundle named and passed all 46 unit tests through direct `xcrun xctest`
 after the canonical Xcode action built and stalled in TestManager; deep/strict signing and outer
-Automation verify, and `/Applications/VoiceInk.app` remained byte-identical. v2.0.257 pins the
-ChatGPT-hosted Codex build-5813 tuple, keeps Soniox partials visible immediately in the recorder HUD,
-and adds one generic 100 ms Primary paste-to-Return settle. Ethan physically accepted two consecutive
-foreground Codex Primary stops: both traces proved `primaryCurrentInput`, `targetCaptured=false`,
-`appSpecificDelivery=false`, `commandPosted`, and `settleMs=100`, then he confirmed the result worked.
-This does not accept either current build-5813 Next route. Preserve the earlier v2.0.247/build-5650
-`recordingStart` evidence and v2.0.245 Telegram evidence without extrapolating them to the current
-tuple; the distinct Codex second-chance route, Telegram reruns, and context-menu check remain pending.
+Automation verify, and `/Applications/VoiceInk.app` remained byte-identical. v2.0.258 preserves
+v2.0.257's ChatGPT-hosted Codex build-5813 tuple, immediate Soniox recorder-HUD partials, and generic
+100 ms Primary paste-to-Return settle. It changes only the read-only system-focus preflight used by
+exact Next delivery: the first successful read still returns immediately, while transient
+unavailability may retry for nine attempts across at most 200 ms before failing closed. Ethan's two
+accepted v2.0.257 foreground Codex Primary stops remain the current Primary evidence; v2.0.258 still
+needs a physical Primary regression and Codex Next rerun. Preserve the earlier
+v2.0.247/build-5650 `recordingStart` evidence and v2.0.245 Telegram evidence without extrapolating
+them to the current tuple; the distinct Codex second-chance route, Telegram reruns, and context-menu
+check remain pending.
 
 Signed v2.0.243 from reproducible commit `5475ef2` with CDHash
 `5be83c4f545772472a836306d64eded1253f1c63` remains the rollback checkpoint. It reconstructs the

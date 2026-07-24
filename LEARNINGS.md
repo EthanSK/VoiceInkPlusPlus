@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T17:11:26Z
+**Trigger:** Ethan reported another failed Codex latch test and asked to return to the earlier unreliable-but-working behavior.
+**Symptom:** Signed v2.0.257 selected recordingStart with an exact Codex target and a non-empty Soniox final, but inserted nothing because exact delivery aborted before resolver, paste, or Send.
+**Root cause:** The correlated trace failed at the read-only system keyboard-focus snapshot: macOS returned no readable focused element across the prior three-attempt 50 ms window. A separate v257 attempt reached the later saved-wrapper resolver, so these are distinct failure stages.
+**Fix:** Commit 5652c3b keeps Primary, exact identity, insertion, and Send unchanged; it makes the focus snapshot return immediately on success but tolerate transient unavailability for nine attempts across at most 200 ms, and adds privacy-safe resolver-stage diagnostics. Signed v2.0.258 is installed with CDHash 3e48da503f346e1eea88b62c4f5c2cc3617a716e.
+**Commit:** 5652c3b
+**Guard:** Fresh Mac Mini direct xcrun xctest named and passed all 46 tests, including exactNextDeliveryToleratesTransientSystemFocusReadUnavailability, primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands, secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt, and realtimeStreamingRemainsRecorderHUDOnlyUntilFinalDelivery. Physical Codex latch acceptance remains pending and must agree with the live trace.
+---
+
+
+---
 **Date:** 2026-07-24T16:45:54Z
 **Trigger:** Ethan asked whether Soniox could be configured for a UK accent.
 **Symptom:** Soniox V5 was visibly configured as generic English, so it was unclear whether VoiceInk++ should send a regional `en-GB` locale for Ethan's British accent.
