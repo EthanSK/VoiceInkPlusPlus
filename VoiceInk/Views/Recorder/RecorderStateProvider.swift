@@ -5,6 +5,10 @@ import Foundation
 protocol RecorderStateProvider: AnyObject {
     var recordingState: RecordingState { get }
     var partialTranscript: String { get }
+    // A realtime provider owns a live-text HUD from recording start, even before
+    // its first partial arrives. This is presentation state only: the placeholder
+    // never enters the transcript or either Primary/Next delivery route.
+    var showsRealtimeTranscriptHUD: Bool { get }
     var pasteDestinationIndicatorTarget: FocusLockService.Target? { get } // While recording this previews the Next Track destination; after stop it follows the session's actual pending paste target until delivery finishes.
     var iconActionPulse: RecorderIconActionPulse? { get } // Primary normal stop flashes the left/current icon; either accepted Next-button route flashes the right/locked icon.
 
@@ -26,6 +30,8 @@ protocol RecorderStateProvider: AnyObject {
 }
 
 extension RecorderStateProvider {
+    var showsRealtimeTranscriptHUD: Bool { false }
+
     var currentFocusIconActionPulseID: UUID? {
         guard let pulse = iconActionPulse, pulse.icon == .currentFocus else { return nil }
         return pulse.id

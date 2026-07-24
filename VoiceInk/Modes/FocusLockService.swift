@@ -453,6 +453,18 @@ final class FocusLockService: ObservableObject {
             shortVersion: "26.715.70719",
             build: "5650",
             chromium: "150.0.7871.124"
+        ),
+        // ChatGPT 26.721.30844 build 5813 still exposes the Codex idle composer
+        // action as an unlabelled AX button. Keep using the accepted v247
+        // non-activating click, but only after the existing bounded search proves
+        // exactly one enabled, pressable, same-window, composer-adjacent candidate
+        // and re-proves that complete boundary immediately before the one click.
+        // The raw tree contains another unlabelled button, so tuple membership alone
+        // is deliberately insufficient and ambiguity continues to fail closed.
+        (
+            shortVersion: "26.721.30844",
+            build: "5813",
+            chromium: "150.0.7871.128"
         )
     ]
 

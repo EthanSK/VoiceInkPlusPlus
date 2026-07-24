@@ -35,10 +35,18 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         return shouldShowPasteDestinationIndicator ? 280 : compactWidth // Active layout also includes the exact build label immediately left of Stop.
     }
 
-    // true when live transcript is streaming in during recording
+    // Realtime mode owns this panel immediately. Before the provider's first partial,
+    // an ellipsis makes the streaming mode visible without reviving routine
+    // "Recording" text or inventing transcript content.
     private var hasLiveTranscript: Bool {
         stateProvider.recordingState == .recording
-            && !stateProvider.partialTranscript.isEmpty
+            && stateProvider.showsRealtimeTranscriptHUD
+    }
+
+    private var liveTranscriptDisplayText: String {
+        stateProvider.partialTranscript.isEmpty
+            ? "…"
+            : stateProvider.partialTranscript
     }
 
     private var hasAssistantResponse: Bool {
@@ -161,7 +169,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var transcriptSection: some View {
         VStack(spacing: 0) {
             if hasLiveTranscript {
-                LiveTranscriptView(text: stateProvider.partialTranscript)
+                LiveTranscriptView(text: liveTranscriptDisplayText)
                 Divider().background(Color.white.opacity(0.15))
             }
         }

@@ -175,6 +175,12 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // streams partial transcripts from its realtime session).
     @Published var partialTranscript: String = ""
 
+    // Make the realtime HUD visible as soon as the frozen Mode selects a streaming
+    // provider. A network/Wi-Fi handshake may delay the first Soniox partial, but the
+    // recorder must still communicate that live transcription is active. The empty
+    // state renders only an ellipsis; it is never treated as transcript content.
+    @Published var showsRealtimeTranscriptHUD = false
+
     // ── VIPP (skip-mode-processing feature) — per-session ONE-SHOT bypass flag ──
     //
     // WHAT: when true, THIS recording's pipeline skips ALL of the active Mode's

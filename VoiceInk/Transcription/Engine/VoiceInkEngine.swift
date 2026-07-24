@@ -506,6 +506,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         session.transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
             transcriptionModelManager: self.transcriptionModelManager
         )
+        session.showsRealtimeTranscriptHUD =
+            session.transcriptionConfiguration?.isRealtimeEnabled == true
 
         do {
             let fileName = "\(UUID().uuidString).wav"
@@ -577,6 +579,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
 
             session.transcriptionConfiguration = transcriptionConfiguration
+            session.showsRealtimeTranscriptHUD =
+                self.serviceRegistry.shouldUseRealtimeTranscription(
+                    for: transcriptionConfiguration
+                )
 
             if self.serviceRegistry.shouldUseRealtimeTranscription(for: transcriptionConfiguration) {
                 let streamingSession = self.serviceRegistry.createSession(
