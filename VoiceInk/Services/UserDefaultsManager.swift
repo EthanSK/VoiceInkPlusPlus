@@ -6,7 +6,6 @@ extension UserDefaults {
         static let selectedAudioDeviceUID = "selectedAudioDeviceUID"
         static let selectedAudioDeviceModelUID = "selectedAudioDeviceModelUID"
         static let prioritizedDevices = "prioritizedDevices"
-        static let affiliatePromotionDismissed = "VoiceInkAffiliatePromotionDismissed"
     }
 
     var audioInputModeRawValue: String? {
@@ -29,8 +28,4 @@ extension UserDefaults {
         set { setValue(newValue, forKey: Keys.prioritizedDevices) }
     }
 
-    var affiliatePromotionDismissed: Bool {
-        get { bool(forKey: Keys.affiliatePromotionDismissed) }
-        set { setValue(newValue, forKey: Keys.affiliatePromotionDismissed) }
-    }
 }

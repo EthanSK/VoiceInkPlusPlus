@@ -23,7 +23,6 @@ struct VoiceInkApp: App {
     @StateObject private var enhancementService: AIEnhancementService
     @StateObject private var activeWindowService = ActiveWindowService.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
-    @AppStorage("enableAnnouncements") private var enableAnnouncements = true
     @State private var showMenuBarIcon = true
     @State private var didShowAccessibilityReminder = false
 
@@ -301,10 +300,6 @@ struct VoiceInkApp: App {
                         .environmentObject(enhancementService)
                         .modelContainer(container)
                         .onAppear {
-                            if enableAnnouncements {
-                                AnnouncementsService.shared.start()
-                            }
-
                             showAccessibilityReminderIfNeeded()
 
                             // Start the automatic audio cleanup process only if transcript cleanup is not enabled
@@ -325,7 +320,6 @@ struct VoiceInkApp: App {
                             WindowManager.shared.configureWindow(window)
                         })
                         .onDisappear {
-                            AnnouncementsService.shared.stop()
                             whisperModelManager.unloadModel()
 
                             // Stop the automatic audio cleanup process
@@ -343,7 +337,6 @@ struct VoiceInkApp: App {
                         })
                 }
             }
-            .confettiCelebrationPresenter()
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 950, height: 730)

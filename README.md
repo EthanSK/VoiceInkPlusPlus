@@ -142,6 +142,8 @@ open ~/Downloads/VoiceInkPlusPlus.app
 
 VoiceInk++ is a personal, opinionated fork being shared in public. The destination workflows are intentionally specific and regression-protected; changes to them should preserve all three routes rather than collapsing them into one toggle.
 
+This fork has no Pro purchase, trial, license validation, affiliate promotion, or remote promotional-announcement system. Provider API costs are still paid directly to whichever optional transcription or AI service you configure.
+
 There is no VoiceInk++ Homebrew cask or public binary release at present. The upstream `voiceink` cask and downloads install the upstream product, not this fork.
 
 ## Origin and license

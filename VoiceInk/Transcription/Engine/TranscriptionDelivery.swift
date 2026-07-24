@@ -412,7 +412,7 @@ final class TranscriptionDelivery {
             return
         }
 
-        let commandText = deliverableText(from: text)
+        let commandText = text
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
@@ -473,9 +473,8 @@ final class TranscriptionDelivery {
         output: OutputRuntimeConfiguration,
         actions: Actions
     ) async {
-        let textToPaste = deliverableText(from: text)
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
-        let pastedText = textToPaste + (appendSpace ? " " : "")
+        let pastedText = text + (appendSpace ? " " : "")
         vippLog.info("paste: BEGIN len=\(pastedText.count, privacy: .public) destination=\(String(describing: target.destination), privacy: .public) targetCaptured=\(target.focusedInput != nil, privacy: .public) exactInput=\(target.focusedInput?.hasExactInput ?? false, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         SoundManager.shared.playStopSound()
         FocusLockService.shared.setStartInputIndicatorVisible(target.destination == .recordingStart)
@@ -1339,15 +1338,4 @@ final class TranscriptionDelivery {
         vippLog.error("paste: target restore failed; copied transcription to clipboard instead of pasting into an unintended input")
     }
 
-    private func deliverableText(from text: String) -> String {
-        var textToDeliver = text
-        if let restrictionMessage = LicenseViewModel().usageRestrictionMessage {
-            textToDeliver = """
-                \(restrictionMessage)
-                \n\(textToDeliver)
-                """
-        }
-
-        return textToDeliver
-    }
 }

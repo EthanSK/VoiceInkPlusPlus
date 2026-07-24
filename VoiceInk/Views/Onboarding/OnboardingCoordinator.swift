@@ -2,8 +2,6 @@ import SwiftUI
 
 @MainActor
 final class OnboardingCoordinator: ObservableObject {
-    let licenseViewModel = LicenseViewModel()
-
     @Published var storedStage: String {
         didSet {
             defaults.set(storedStage, forKey: OnboardingStorageKeys.stage)
@@ -73,6 +71,13 @@ final class OnboardingCoordinator: ObservableObject {
             return stage
         }
 
+        // Older upstream onboarding could persist the removed commercial step.
+        // Resume on the final trust screen so one click completes setup without
+        // resurrecting license, trial, or purchase UI.
+        if storedStage == "license" {
+            return .trust
+        }
+
         if storedStage == "starterMode" || storedStage == "shortcut" {
             return .experience
         }
@@ -106,15 +111,11 @@ final class OnboardingCoordinator: ObservableObject {
             return OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 1
         }
 
-        if stage == .license {
-            return OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 2
-        }
-
         return stage.stepNumber
     }
 
     var totalStepCount: Int {
-        OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 2
+        OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 1
     }
 
     var experienceStep: OnboardingExperienceStep {

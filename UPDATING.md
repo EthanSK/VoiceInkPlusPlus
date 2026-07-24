@@ -91,10 +91,11 @@ make local                          # builds whisper.cpp (cached after first tim
 # output: ~/Downloads/VoiceInkPlusPlus.app  (quarantine already stripped by the Makefile)
 ```
 
-`make local` injects the `LOCAL_BUILD` compile flag → `LicenseViewModel` is hard-coded to `.licensed`,
-so a local build is permanently Pro with **no** trial/keychain/Polar gate. No Apple Developer cert
-needed (ad-hoc `CODE_SIGN_IDENTITY = -`). Mic / Accessibility / Screen-Recording are normal TCC grants
-on first launch.
+VoiceInk++ contains no commercial license, trial, purchase, affiliate-promotion, or remote
+promotional-announcement runtime. Do not reintroduce those upstream systems during a feature port.
+`make local` still injects the `LOCAL_BUILD` compile flag for standalone capabilities and uses
+ad-hoc `CODE_SIGN_IDENTITY = -`, so no paid Apple Developer certificate is needed. Mic /
+Accessibility / Screen-Recording are normal TCC grants on first launch.
 
 The built bundle is **`VoiceInkPlusPlus.app`** (output: `~/Downloads/VoiceInkPlusPlus.app`) — the
 `PRODUCT_NAME` is the build-path-safe `VoiceInkPlusPlus`; the user-visible name is **VoiceInk++** via
@@ -207,8 +208,10 @@ The best candidates from that audit, in suggested order, are:
 Do not port `cde93d3` as written: it removes non-Whisper custom/cloud prompts and would delete the
 marked prompt block that carries VoiceInk++ vocabulary to the local Deepgram adapter. Also skip the
 large formatter-only `f20ac14`; it adds conflict without product behavior. Streaming, live-transcript,
-media-muting, window-recovery, provider-list, and licensing changes remain deferred until Ethan asks
-for those features and their local interaction tests are defined.
+media-muting, window-recovery, and provider-list changes remain deferred until Ethan asks for those
+features and their local interaction tests are defined. Upstream licensing, trial, purchase,
+affiliate, and promotional-announcement changes are intentionally rejected for this commercial-free
+fork.
 
 Sparkle remains disabled for local builds. The legacy Mini script
 `~/.claude/scripts/voiceink-fork-update.sh` still exists, but its LaunchAgent is deliberately named
