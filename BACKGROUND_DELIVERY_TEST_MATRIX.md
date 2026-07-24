@@ -4,20 +4,23 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
-**Current runtime state verified 2026-07-24:** signed VoiceInk++ v2.0.258 is installed from commit
-`5652c3b` with CDHash `3e48da503f346e1eea88b62c4f5c2cc3617a716e` and exact delivery
+**Current runtime state verified 2026-07-24:** signed VoiceInk++ v2.0.259 is installed from commit
+`049efc7` with CDHash `b791737a00d593fdb8a76ac67fce5ed74149824f` and exact delivery
 enabled. Its fresh Mini bundle named and passed all 46 unit tests through direct `xcrun xctest`
 after the canonical Xcode action built and stalled in TestManager; deep/strict signing and outer
-Automation verify, and `/Applications/VoiceInk.app` remained byte-identical. v2.0.258 preserves
-v2.0.257's ChatGPT-hosted Codex build-5813 tuple, immediate Soniox recorder-HUD partials, and generic
-100 ms Primary paste-to-Return settle. It changes only the read-only system-focus preflight used by
-exact Next delivery: the first successful read still returns immediately, while transient
-unavailability may retry for nine attempts across at most 200 ms before failing closed. Ethan's two
-accepted v2.0.257 foreground Codex Primary stops remain the current Primary evidence; v2.0.258 still
-needs a physical Primary regression and Codex Next rerun. Preserve the earlier
-v2.0.247/build-5650 `recordingStart` evidence and v2.0.245 Telegram evidence without extrapolating
-them to the current tuple; the distinct Codex second-chance route, Telegram reruns, and context-menu
-check remain pending.
+Automation verify, and `/Applications/VoiceInk.app` was untouched. v2.0.259 changes only the
+ChatGPT-hosted Codex audited tuple list for ChatGPT 26.721.31836 build 5828 / Chromium
+150.0.7871.128, plus exact wrong-build and wrong-Chromium rejection tests. It preserves v2.0.258's
+bounded read-only system-focus retry, v2.0.257's generic 100 ms Primary paste-to-Return settle, and
+every non-Codex route.
+
+Ethan physically accepted v2.0.259's background Codex `recordingStart` route: while Chrome remained
+frontmost, the trace verified exact insertion, resolved the FooterActions Send control twice at the
+irreversible boundary, issued exactly one `skyLightTargetedSendClick`, and the dictated message
+visibly arrived in Codex. The composer wrapper became unreadable after the action, so telemetry
+correctly remained indeterminate and did not retry or show a false failure; visible submission is
+part of this acceptance. The distinct Codex `focusedDuringTranscription` second-chance route,
+Telegram reruns, the current Primary physical regression, and the context-menu check remain pending.
 
 Signed v2.0.243 from reproducible commit `5475ef2` with CDHash
 `5be83c4f545772472a836306d64eded1253f1c63` remains the rollback checkpoint. It reconstructs the
@@ -94,9 +97,9 @@ proven semantic action. Immediate pre/post system focus must remain on B.
 
 ## Required exact Next destinations
 
-| Destination | Saved input | Preferred non-activating insertion | Auto-send chain | Verification | Audited live evidence through installed v2.0.245 |
+| Destination | Saved input | Preferred non-activating insertion | Auto-send chain | Verification | Current audited live evidence |
 | --- | --- | --- | --- | --- | --- |
-| Codex desktop | Exact Codex task composer | Targeted Unicode after verified internal window/editor focus | Explicit nearby semantic Send only; ordinary HID Return only while the exact composer owns system keyboard focus, with at most one retry after a readable unchanged composer | Exact composer clears/resets; rendered-message echo is optional telemetry; one issued action followed by an unreadable replacement remains indeterminate and requires matching user-visible confirmation | v243 commit `5475ef2` remains the Primary-working checkpoint. v247 physically passed `recordingStart`: exact background insertion plus the audited build-5650 FooterActions Send action while VS Code remained frontmost, followed by this message arriving in Codex. AX post-state was unreadable/indeterminate, and `focusedDuringTranscription` remains pending |
+| Codex desktop | Exact Codex task composer | Targeted Unicode after verified internal window/editor focus | Explicit nearby semantic Send only; ordinary HID Return only while the exact composer owns system keyboard focus, with at most one retry after a readable unchanged composer | Exact composer clears/resets; rendered-message echo is optional telemetry; one issued action followed by an unreadable replacement remains indeterminate and requires matching user-visible confirmation | v259 physically passed `recordingStart` on ChatGPT build 5828: exact background insertion plus one audited FooterActions Send action while Chrome remained frontmost, followed by the dictated message arriving here. AX post-state was unreadable/indeterminate, so the matching visible result is part of acceptance. `focusedDuringTranscription` remains pending |
 | ChatGPT Option-Space floating window | Exact `AXTextArea` in the compact non-activating window | Targeted Unicode without synthetic activation only while it still owns keyboard focus | Explicitly labelled nearby Send or ordinary HID Return while exact system focus remains; one retry only after readable unchanged text | Floating composer clears/resets without the app becoming frontmost | Exact insertion repeatedly worked; Return produced newline, no-op, or unreadable state, and v233 `AXPress` left the composer unchanged; background Send failed/unaccepted |
 | Claude Code/Codex CLI in Apple Terminal or iTerm | Exact terminal input plus captured window-ID + TTY/session-ID pair | Host-native text addressed to that exact pair; never PID-targeted Unicode | Text + Return in one exact-session native operation; Apple Terminal paste-only unsupported, iTerm supports `newline false`; no title routing, activation, or retry | Native contents prove the inserted segment at the expected prompt boundary plus prompt-tail transition; host never activated | Architecture/tests existed, but no accepted final exact live trace established the complete route; unverified |
 | Claude Code/Codex CLI in Ghostty, Warp, VS Code, or Cursor | Exact host input when uniquely resolvable | Targeted Unicode after exact host/window verification | None in the background; fail visibly without focusing the host | Exact readable insertion only; no claim of background submission | No accepted host-by-host final trace; unverified |

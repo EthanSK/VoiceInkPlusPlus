@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-24T17:45:18Z
+**Trigger:** Ethan reported Codex Next-button latch pasted but no longer sent at all on v2.0.258.
+**Symptom:** v2.0.258 inserted a recordingStart transcript into the exact background ChatGPT-hosted Codex composer but never submitted it.
+**Root cause:** ChatGPT.app updated to 26.721.31836 build 5828 with Chromium 150.0.7871.128; the bounded tree still exposed exactly one unlabelled idle Send candidate, but the fail-closed audited tuple list ended at build 5813 and rejected it before action.
+**Fix:** Commit 049efc7 adds only the exact build-5828 tuple plus wrong-build and wrong-Chromium rejection tests; Primary, insertion, focus preparation, generic Return, verification, and other apps remain unchanged.
+**Commit:** 049efc7133bf96530ebbff0a965e48e86bb4fbaf
+**Guard:** Signed v2.0.259 passed all 46 named Mini tests. Ethan's 2026-07-24 recordingStart retest verified exact background insertion while Chrome stayed frontmost, resolved FooterActions Send twice, issued one skyLightTargetedSendClick, and this exact dictated message visibly arrived in Codex; post-state remained unreadable/indeterminate, so visible submission is part of acceptance and focusedDuringTranscription remains separate.
+---
+
+
+---
 **Date:** 2026-07-24T17:11:26Z
 **Trigger:** Ethan reported another failed Codex latch test and asked to return to the earlier unreliable-but-working behavior.
 **Symptom:** Signed v2.0.257 selected recordingStart with an exact Codex target and a non-empty Soniox final, but inserted nothing because exact delivery aborted before resolver, paste, or Send.
