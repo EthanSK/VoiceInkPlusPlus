@@ -43,7 +43,7 @@ For a realtime stop that pastes nothing or appears to skip Return, separate tran
 
 ## Normalize the two mouse controls before reasoning
 
-- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts; the same primary button again performs a base VoiceInk normal stop into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`). It owns no exact input or destination Mode.
+- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording or paused, one press performs a base VoiceInk normal stop after the macOS double-click interval into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`); two presses inside that interval toggle capture pause/resume without finalizing. It owns no exact input or destination Mode.
 - **Next button** is the preferred name for the separate forward/secondary control. **Forward button**, macOS **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases.
 - Unqualified **toggle** means the primary button's start/stop lifecycle and corresponding shortcut mode. Never reinterpret it as a Next-button destination toggle. Commit `671b4c7` tried that and was deliberately reverted by `bed22b7`.
 - **Second chance** names only the post-primary-stop, still-transcribing retarget route. **Latch** means preserve/replace one session's destination; it never means toggle the destination off.
@@ -59,9 +59,17 @@ Keep these three routes distinct:
 
 | Action | Destination |
 | --- | --- |
-| Primary button again while recording | Base VoiceInk normal stop into the system keyboard input focused at final delivery (`primaryCurrentInput`); never capture, reuse, or fall back to `recordingStart` |
+| Primary button once while recording or paused | After the double-click decision window, base VoiceInk normal stop into the system keyboard input focused at final delivery (`primaryCurrentInput`); never capture, reuse, or fall back to `recordingStart` |
+| Primary button twice while recording or paused | Toggle capture pause/resume inside the same session; no finalization or destination decision |
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still transcribing and before post-processing | Second chance: replace that newest pending session's input and complete Mode atomically (`focusedDuringTranscription`) |
+
+Pause is capture state, not a fourth delivery route. The second Primary press cancels the pending
+single-press stop; pause/resume must not paste, change Mode, or change the tentative recording-start
+target. Gate callbacks before stopping AUHAL so paused audio enters neither WAV nor realtime
+streaming, keep the mirrored HUD visible with its frozen partial and pause indicator, resume media
+and the YouTube helper while paused, and pause them again on resume. Next while paused still stops
+through `recordingStart`.
 
 Keep real-time provider partials inside the black recorder HUD. The streaming callback may update only
 the active session's `partialTranscript`; it must never create or maintain provisional text ranges in

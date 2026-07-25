@@ -17,13 +17,13 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Canonical mouse terminology
 
-Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording; pressing that same button again performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`). The system keyboard focus and current Mode at delivery decide paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. Its first press starts recording. While recording or paused, one press performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`) after the macOS double-click interval; two presses inside that interval toggle capture pause/resume without finalizing. The system keyboard focus and current Mode at delivery decide paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
 Ethan's live G502 X LIGHTSPEED `Desktop: Default` profile was sanity-checked on 2026-07-14: the upper side thumb control runs the `speech to text` Shift-Control-Option macro and is the primary button; a different control is explicitly labeled `Next Track` and is the Next button. G HUB's separately labeled `Mouse Button 4` and `Mouse Button 5` are not aliases for that Next control. Never infer “forward button” means raw Mouse Button 5.
 
-The modifier-only Primary shortcut must not dismiss a context menu or disturb the focused composer merely because VoiceInk++ starts/stops recording. Suppress only the `flagsChanged` event that completes the owned Shift-Control-Option chord and any full-chord repeats. Forward partial modifiers and every release so the foreground app receives a balanced modifier sequence and no modifier can remain logically stuck. Preserve the pure reducer regression test and require one physical open-context-menu check before accepting a release that changes shortcut monitoring.
+The modifier-only Primary shortcut must not dismiss a context menu or disturb the focused composer merely because VoiceInk++ starts, stops, pauses, or resumes recording. Suppress only the `flagsChanged` event that completes the owned Shift-Control-Option chord and any full-chord repeats. Forward partial modifiers and every release so the foreground app receives a balanced modifier sequence and no modifier can remain logically stuck. Preserve the pure reducer regression test and require one physical open-context-menu check before accepting a release that changes shortcut monitoring.
 
 ## Primary isolation is a hard architectural boundary
 
@@ -56,9 +56,16 @@ Use **Next button** as the preferred user-facing term. **Next Track**, **Next Tr
 
 VoiceInk++ has three distinct one-click destination routes. Do not merge them, reinterpret them as a toggle, or infer one from another:
 
-1. **Primary button again while recording:** normal stop through base VoiceInk (`primaryCurrentInput`). Do not save an input; paste and generic auto-send follow the system keyboard focus and current Mode at delivery.
+1. **Primary button once while recording or paused:** after the double-click decision window, normal stop through base VoiceInk (`primaryCurrentInput`). Do not save an input; paste and generic auto-send follow the system keyboard focus and current Mode at delivery.
 2. **Next Track while recording:** stop recording and save the input captured at recording start (`recordingStart`), with the documented safe application fallback for Electron/Chromium.
 3. **Next Track after a normal stop, while the newest result is still transcribing and before post-processing begins:** this is Ethan's **second chance**. Replace that pending session's destination with the exact editable input focused now (`focusedDuringTranscription`). It does not stop anything, toggle anything, or release the target. Never skip an ineligible newer pending result to retarget an older session.
+
+A Primary double-press while recording or paused is deliberately not a destination route. It cancels
+the pending single-press stop and toggles microphone/WAV/realtime capture inside the same session.
+Pause/resume must not finalize, paste, change Mode, or change the tentative `recordingStart`
+destination. Paused audio must be excluded from both the saved WAV and streaming provider, media and
+the YouTube helper resume while paused and pause again on resume, and the mirrored HUD remains
+visible with a pause indication. Next while paused still stops through `recordingStart`.
 
 The canonical second-chance scenario is:
 

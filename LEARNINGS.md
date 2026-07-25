@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-25T17:59:10Z
+**Trigger:** Ethan asked for a double-click of the Primary trigger while recording to pause temporarily, then another double-click to continue so music could play without being transcribed.
+**Symptom:** The Primary mouse button could only start or finalize dictation, so Ethan could not pause mid-recording to listen to music or read without that interval entering the WAV/realtime transcript.
+**Root cause:** The Primary shortcut manager had no double-press decision window or paused capture state, and Recorder/CoreAudioRecorder exposed only start/stop rather than an atomic callback gate plus resumable AUHAL capture.
+**Fix:** Commit 681e605 adds a macOS-double-click-bounded Primary single-versus-double decision, pause/resume inside the same recording session, atomically gated AUHAL/WAV/realtime callbacks, media and YouTube-helper resume/pause pairing, mirrored amber pause HUD, and pending-stop cancellation before Next; all Primary/Next delivery routes remain unchanged.
+**Commit:** 681e60528fe943eacaec6275fee3157682af30d4
+**Guard:** Mac Mini canonical Xcode action built but hit the known TestManager stall; direct xcrun xctest named and passed all 59 tests, including new Primary double-press, paused-audio gating, Next-while-paused, modifier, realtime-HUD-only, Primary isolation, Codex/Telegram, Terminal, and second-chance guards. Signed v2.0.262 is installed with CDHash 6e8cf87efa239c203582888b997769494884518e, deep/strict signing and Automation=true. Physical G HUB timing/audio/media acceptance remains pending.
+---
+
+
+---
 **Date:** 2026-07-24T18:43:35Z
 **Trigger:** Ethan requested a daily update check, default on, with a disable switch and a notification saying there is a VoiceInk update.
 **Symptom:** VoiceInk++ needed a default-on daily upstream update alert that remains review-only and can be disabled in Settings.
