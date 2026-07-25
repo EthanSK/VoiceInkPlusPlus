@@ -12,10 +12,9 @@
   [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-50e3bf.svg)](LICENSE)
   ![Platform: macOS 14.4+](https://img.shields.io/badge/macOS-14.4%2B-7aa7ff.svg)
   ![Swift](https://img.shields.io/badge/Swift-native-ffbc6b.svg)
-  [![GitHub stars](https://img.shields.io/github/stars/EthanSK/VoiceInkPlusPlus?style=social)](https://github.com/EthanSK/VoiceInkPlusPlus/stargazers)
 </div>
 
-VoiceInk++ is Ethan Sarif-Kattan's opinionated macOS voice-to-text workflow. Speak instead of reaching for the keyboard, decide exactly which input receives every transcript, and carry on in another app while transcription, paste, and auto-send finish behind you.
+VoiceInk++ is Ethan Sarif-Kattan's opinionated macOS voice-to-text workflow. Speak instead of reaching for the keyboard, decide whether current focus or an exact saved input receives each transcript, and carry on in another app while transcription, paste, and auto-send finish behind you.
 
 It is built for people who use AI agents, terminals, chats, and editors all day—and do not want to spend even an awkward second staring at a transcription spinner.
 
@@ -69,7 +68,7 @@ Soniox needs your own provider credentials and funded account. Keep Deepgram or 
 
 ### 3. Learn the two-button rhythm
 
-- **Finish here:** stop normally to use the input focused now.
+- **Finish here:** stop normally and let whichever system keyboard input is focused at final delivery receive the result.
 - **Send it back:** press the Next button while recording to use the input where recording began.
 - **Second chance:** after a normal stop, focus another input and press the Next button while the result is still loading. Then keep working elsewhere.
 
@@ -77,13 +76,13 @@ That is the whole idea: stay in the flow. Something is always happening.
 
 ## Codex and Claude Code support
 
-All three Next-button routes work with agent inputs. The important distinction is who owns the editable macOS input:
+All three destination routes work with agent inputs. The important distinction is who owns the editable macOS input:
 
 | Agent surface | What VoiceInk++ locks | Auto-send route |
 | --- | --- | --- |
-| **Codex desktop** | The exact Codex composer | Verified background exact-input typing/submit, with bounded foreground fallbacks |
-| **Codex CLI** | The exact terminal or editor input hosting the CLI | Verified exact-input delivery when supported; safe foreground fallback otherwise |
-| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | Verified exact-input delivery when supported; safe foreground fallback otherwise |
+| **Codex desktop** | The exact Codex composer | Surface-specific Send when verifiable; safe foreground route when already focused |
+| **Codex CLI** | The exact terminal or editor input hosting the CLI | Host-native delivery when supported; safe focused-input route otherwise |
+| **Claude Code** | The exact Terminal, iTerm, Ghostty, VS Code, Cursor, or other host input | Host-native delivery when supported; safe focused-input route otherwise |
 | **Claude desktop** | The exact Claude composer | Verified exact-input delivery with safe failure behavior |
 
 For a CLI agent, the recorder intentionally shows the **host app icon**—for example, Terminal or VS Code—because that app owns the real input. Create a VoiceInk++ Mode for the host app, enable Return only where automatic submission is safe, and use the Next button exactly as you would in Codex desktop. No Codex or Claude plugin, shell hook, or process-name detection is required.
@@ -108,15 +107,16 @@ The compact recorder panel appears on every connected monitor and keeps its info
 - Record a new thought while earlier recordings are still transcribing.
 - Keep each recording's Mode, input, auto-send key, and delivery state isolated.
 - Type and auto-send into a verified exact background input without interrupting the workspace you moved to.
-- Fall back to verified foreground delivery only when the target is app-level or already frontmost.
+- Use the verified foreground route only when the exact saved input already owns keyboard focus or a foreground-only target can be safely promoted.
 - Cancel a recording instantly with Escape or the recorder's cancel control.
 - Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
+- Double-press the Primary button to pause and resume the same recording without including paused audio.
 - Pause and resume supported media without blindly toggling playback state.
 - Keep the recording waveform visible across every connected display.
 
 ## Build it
 
-VoiceInk++ currently ships as source rather than a notarized public binary. You need **macOS 14.4 or later**, Xcode, Git, Microphone permission, and Accessibility permission.
+VoiceInk++ currently ships as source rather than a notarized public binary. You need **macOS 14.4 or later**, Xcode, Git, Microphone permission, and Accessibility permission. Exact Apple Terminal/iTerm delivery additionally needs the optional Automation grant described in [BUILDING.md](BUILDING.md).
 
 ```sh
 git clone https://github.com/EthanSK/VoiceInkPlusPlus.git

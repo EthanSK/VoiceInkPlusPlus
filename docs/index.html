@@ -4,17 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0d12">
-  <meta name="description" content="VoiceInk++ is Ethan's opinionated macOS voice-to-text workflow for Codex and Claude Code: speak, choose the exact destination, and keep moving.">
+  <meta name="description" content="VoiceInk++ is Ethan's opinionated macOS voice-to-text workflow for Codex and Claude Code: speak, choose where every transcript lands, and keep moving.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="VoiceInk++ — Become Jarvis">
-  <meta property="og:description" content="Voice directly into Codex or Claude Code. Keep it moving. Not a second of waiting around.">
+  <meta property="og:description" content="Become Jarvis. Keep it moving. Not a second of waiting around.">
   <meta property="og:url" content="https://ethansk.github.io/VoiceInkPlusPlus/">
   <meta property="og:image" content="https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/1024-mac.png">
+  <meta property="og:image:alt" content="VoiceInk++ app icon">
   <meta name="twitter:card" content="summary">
   <link rel="canonical" href="https://ethansk.github.io/VoiceInkPlusPlus/">
   <link rel="icon" href="https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/128-mac.png">
   <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="styles.css">
+  <script>
+    document.documentElement.classList.add("js");
+    window.setTimeout(function () {
+      if (!window.voiceInkSiteReady) document.documentElement.classList.add("js-failed");
+    }, 2000);
+  </script>
   <title>VoiceInk++ — Become Jarvis</title>
 </head>
 <body>
@@ -33,13 +40,13 @@
       <a href="#setup">Ethan's setup</a>
       <a href="#routing">Three routes</a>
       <a href="#agents">Agents</a>
-      <a href="#features">What changed</a>
+      <a href="#features">Recorder</a>
       <a href="#build">Build it</a>
       <a class="nav-github" href="https://github.com/EthanSK/VoiceInkPlusPlus">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
 
-  <main id="main">
+  <main id="main" tabindex="-1">
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="live-dot"></span> Opinionated dictation for Mac power users</p>
@@ -48,7 +55,7 @@
           <span>Keep it moving.</span>
           <span class="hero-emphasis">Not a second of waiting around.</span>
         </h1>
-        <p class="hero-lede">VoiceInk++ fundamentally changes how you use computers. Speak instead of reaching for the keyboard, choose exactly where every thought lands, and move on while the work finishes behind you.</p>
+        <p class="hero-lede">Speak instead of reaching for the keyboard, decide where each transcript belongs, and carry on in another app while transcription, paste, and auto-send finish behind you.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="#setup">Copy Ethan's setup</a>
           <a class="button button-secondary" href="https://github.com/EthanSK/VoiceInkPlusPlus">View the source <span aria-hidden="true">↗</span></a>
@@ -59,7 +66,7 @@
         </blockquote>
       </div>
 
-      <div class="flow-console" role="img" aria-label="VoiceInk++ flow: you keep working while your transcript is routed and delivered">
+      <div class="flow-console" role="img" aria-label="VoiceInk++ flow: you keep working in Codex while a transcript remains locked to Terminal and delivers there in the background">
         <div class="console-topline">
           <span>FLOW CONSOLE</span>
           <span class="console-status"><i></i> ALWAYS MOVING</span>
@@ -104,7 +111,7 @@
 
     <section class="proof-strip" aria-label="VoiceInk++ highlights">
       <p><strong>3</strong><span>intentional destination routes</span></p>
-      <p><strong>N+1</strong><span>record while earlier results load</span></p>
+      <p><strong class="proof-word">Parallel</strong><span>record while earlier results load</span></p>
       <p><strong>All</strong><span>connected monitors show status</span></p>
       <p><strong>0</strong><span>reason to stare at a spinner</span></p>
     </section>
@@ -112,7 +119,7 @@
     <section class="setup section" id="setup" aria-labelledby="setup-title">
       <div class="section-heading setup-heading">
         <div class="ethan-mark">
-          <img src="https://avatars.githubusercontent.com/u/13756744?v=4" width="112" height="112" alt="Ethan Sarif-Kattan">
+          <img src="https://avatars.githubusercontent.com/u/13756744?v=4" width="112" height="112" loading="lazy" decoding="async" alt="Ethan Sarif-Kattan">
           <span class="verified-mark" aria-hidden="true" title="Ethan's personally tested setup">✓</span>
         </div>
         <div>
@@ -158,6 +165,7 @@
             <li>Realtime partials · HUD only</li>
             <li>Paste · Default</li>
             <li>Enhancement · Off for direct modes</li>
+            <li>Provider account · Required</li>
             <li>Mic · Your best input</li>
           </ul>
           <details class="detail-drawer">
@@ -175,8 +183,10 @@
             <div><kbd>NEXT</kbd><span>send it back</span></div>
             <div class="second-chance"><kbd>NEXT</kbd><span>latch a new input while loading</span></div>
           </div>
-          <h3>Two buttons. Three deliberate destinations.</h3>
-          <p>Finish in the current input, send the result back to where you started, or use the Next button after stopping to latch a new input while transcription runs. Then leave again. VoiceInk++ remembers the exact field and its auto-send choice.</p>
+          <div class="setup-routes-copy">
+            <h3>Two buttons. Three deliberate destinations.</h3>
+            <p>Let final keyboard focus decide, send the result back to where you started, or use the Next button after stopping to latch a new input while transcription runs. Only the two Next routes remember an exact field and its auto-send choice; Primary stays as simple as base VoiceInk.</p>
+          </div>
           <a class="text-link" href="#routing">See every route <span aria-hidden="true">↓</span></a>
         </article>
       </div>
@@ -185,7 +195,7 @@
     <section class="routing section" id="routing" aria-labelledby="routing-title">
       <div class="section-heading routing-heading">
         <div>
-          <p class="eyebrow">The main selling point</p>
+          <p class="eyebrow">Destination control · three routes, two buttons</p>
           <h2 id="routing-title">Never wait for your words to land.</h2>
         </div>
         <p>Most dictation tools make “stop” mean one thing. VoiceInk++ turns destination into a one-click decision—without making you babysit the result.</p>
@@ -193,21 +203,21 @@
 
       <div class="route-lab reveal" data-route-lab>
         <div class="route-tabs" role="tablist" aria-label="Choose a destination route">
-          <button type="button" id="route-tab-finish" role="tab" aria-selected="true" aria-controls="route-panel" tabindex="0" data-route="finish">
+          <button type="button" id="route-tab-finish" role="tab" aria-selected="true" aria-controls="route-panel-finish" tabindex="0" data-route="finish">
             <span>01</span><strong>Finish here</strong><small>Normal stop</small>
           </button>
-          <button type="button" id="route-tab-return" role="tab" aria-selected="false" aria-controls="route-panel" tabindex="-1" data-route="return">
+          <button type="button" id="route-tab-return" role="tab" aria-selected="false" aria-controls="route-panel-return" tabindex="0" data-route="return">
             <span>02</span><strong>Send it back</strong><small>Next button while recording</small>
           </button>
-          <button type="button" id="route-tab-retarget" role="tab" aria-selected="false" aria-controls="route-panel" tabindex="-1" data-route="retarget">
+          <button type="button" id="route-tab-retarget" role="tab" aria-selected="false" aria-controls="route-panel-retarget" tabindex="0" data-route="retarget">
             <span>03</span><strong>Second chance</strong><small>Next button while transcribing</small>
           </button>
         </div>
 
-        <div id="route-panel" class="route-panel" role="tabpanel" aria-live="polite" aria-labelledby="route-tab-finish">
-          <div class="route-stage" data-route-stage="finish">
+        <div id="route-panel-finish" class="route-panel" role="tabpanel" tabindex="0" aria-labelledby="route-tab-finish" data-route-panel="finish" data-active="true">
+          <div class="route-stage" data-route-stage="finish" aria-hidden="true">
             <div class="app-node start-node">
-              <span class="node-icon">C</span>
+              <span class="node-icon" aria-hidden="true">C</span>
               <small>START</small>
               <strong>Codex input</strong>
             </div>
@@ -217,20 +227,82 @@
               <span class="route-action">NORMAL STOP</span>
             </div>
             <div class="app-node target-node is-target">
-              <span class="node-icon">›_</span>
-              <small>FOCUSED AT STOP</small>
+              <span class="node-icon" aria-hidden="true">›_</span>
+              <small>FOCUSED AT DELIVERY</small>
               <strong>Terminal input</strong>
-              <em>PASTE + RETURN</em>
+              <em>PASTE · MODE MAY SEND</em>
             </div>
           </div>
           <div class="route-explanation">
-            <p class="route-kicker" data-route-kicker>Normal stop · focused at stop</p>
-            <h3 data-route-title>End wherever the thought belongs.</h3>
-            <p data-route-copy>Start in one app, move while talking, then use your normal recording button. VoiceInk++ locks the exact editable input focused when you stop.</p>
-            <ol data-route-steps>
+            <p class="route-kicker">Normal stop · keyboard focus at delivery</p>
+            <h3>Let the current input decide.</h3>
+            <p>Use your normal recording button to stop. VoiceInk++ saves no exact input: base VoiceInk pastes into whichever system keyboard input is focused when final delivery happens, then follows that app's current Mode.</p>
+            <ol>
               <li>Start recording in Codex.</li>
               <li>Move to Terminal while speaking.</li>
-              <li>Stop normally. The transcript lands in Terminal.</li>
+              <li>Stop normally. Keep Terminal focused through delivery and the transcript lands there.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div id="route-panel-return" class="route-panel" role="tabpanel" tabindex="0" aria-labelledby="route-tab-return" data-route-panel="return" data-active="false">
+          <div class="route-stage" data-route-stage="return" aria-hidden="true">
+            <div class="app-node start-node is-target">
+              <span class="node-icon" aria-hidden="true">C</span>
+              <small>LOCKED AT RECORDING START</small>
+              <strong>Codex input</strong>
+              <em>PASTE + APP AUTO-SEND</em>
+            </div>
+            <div class="route-track">
+              <span class="speech-packet">“send this back…”</span>
+              <span class="track-line"><i></i></span>
+              <span class="route-action">NEXT BUTTON</span>
+            </div>
+            <div class="app-node target-node">
+              <span class="node-icon" aria-hidden="true">V</span>
+              <small>CURRENTLY FOCUSED</small>
+              <strong>VS Code</strong>
+            </div>
+          </div>
+          <div class="route-explanation">
+            <p class="route-kicker">Next button during recording · recording start</p>
+            <h3>Send it back to where you began.</h3>
+            <p>Move anywhere while dictating, then stop with the Next button. VoiceInk++ preserves the exact input captured at recording start and delivers there without taking over the workspace you moved to when that app exposes a proven path.</p>
+            <ol>
+              <li>Start recording in the Codex composer.</li>
+              <li>Keep working in VS Code while you speak.</li>
+              <li>Press the Next button. The result returns to Codex.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div id="route-panel-retarget" class="route-panel" role="tabpanel" tabindex="0" aria-labelledby="route-tab-retarget" data-route-panel="retarget" data-active="false">
+          <div class="route-stage" data-route-stage="retarget" aria-hidden="true">
+            <div class="app-node start-node">
+              <span class="node-icon" aria-hidden="true">›_</span>
+              <small>NORMAL STOP</small>
+              <strong>No saved input yet</strong>
+            </div>
+            <div class="route-track">
+              <span class="speech-packet">“changed my mind…”</span>
+              <span class="track-line"><i></i></span>
+              <span class="route-action">NEXT DURING LOAD</span>
+            </div>
+            <div class="app-node target-node is-target">
+              <span class="node-icon" aria-hidden="true">C</span>
+              <small>NEW LOCKED INPUT</small>
+              <strong>ChatGPT input</strong>
+              <em>PASTE + APP AUTO-SEND</em>
+            </div>
+          </div>
+          <div class="route-explanation">
+            <p class="route-kicker">Next button while transcribing · second chance</p>
+            <h3>Latch a new input, then leave again.</h3>
+            <p>After a normal stop, focus a new editable input and press the Next button while the newest result is still loading. That exact field and its app-specific auto-send become the pending destination.</p>
+            <ol>
+              <li>Stop normally and let transcription begin.</li>
+              <li>Focus a new ChatGPT or agent input; press the Next button.</li>
+              <li>Move on. VoiceInk++ pastes and safely auto-sends there when supported.</li>
             </ol>
           </div>
         </div>
@@ -243,7 +315,7 @@
           <p class="eyebrow">Agent destinations, explicitly supported</p>
           <h2 id="agents-title">Talk straight into Codex or Claude Code.</h2>
         </div>
-        <p>The Next button works the same across desktop composers, terminals, and editor-hosted CLIs. VoiceInk++ locks the real editable input—not a guessed process name.</p>
+        <p>The two exact Next routes can preserve a desktop composer or the terminal/editor input that really hosts a CLI. VoiceInk++ uses only a proven app-specific path and fails closed instead of guessing.</p>
       </div>
 
       <div class="agent-matrix-shell reveal">
@@ -251,7 +323,7 @@
           <span>DESTINATION COMPATIBILITY</span>
           <strong><i></i> NO PLUGIN REQUIRED</strong>
         </div>
-        <div class="agent-matrix-scroll">
+        <div class="agent-matrix-scroll" tabindex="0" aria-label="Scrollable agent destination compatibility table">
           <table class="agent-matrix">
             <thead>
               <tr>
@@ -263,22 +335,28 @@
             </thead>
             <tbody>
               <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge codex-badge">C</span><strong>Codex desktop</strong></span></th>
-                <td data-label="Locks">Exact Codex composer</td>
-                <td data-label="Send path">Verified Send + Return fallbacks</td>
-                <td data-label="Icon"><span class="host-chip">Codex</span></td>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge codex-badge" aria-hidden="true">C</span><strong>Codex desktop</strong></span></th>
+                <td>Exact composer when verifiable</td>
+                <td>Surface-specific Send; safe foreground route when already focused</td>
+                <td><span class="host-chip">Codex</span></td>
               </tr>
               <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge">›_</span><strong>Codex CLI</strong></span></th>
-                <td data-label="Locks">Exact terminal or editor input</td>
-                <td data-label="Send path">Host app's paste + Return</td>
-                <td data-label="Icon"><span class="host-chip">Host app</span></td>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge cli-badge" aria-hidden="true">›_</span><strong>Codex CLI</strong></span></th>
+                <td>Exact host session when supported</td>
+                <td>Host-native delivery or a safe focused-input route</td>
+                <td><span class="host-chip">Host app</span></td>
               </tr>
               <tr>
-                <th scope="row"><span class="agent-surface"><span class="agent-badge claude-badge">A</span><strong>Claude Code</strong></span></th>
-                <td data-label="Locks">Exact terminal or editor input</td>
-                <td data-label="Send path">Host app's paste + Return</td>
-                <td data-label="Icon"><span class="host-chip">Host app</span></td>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge claude-badge" aria-hidden="true">A</span><strong>Claude Code</strong></span></th>
+                <td>Exact host session when supported</td>
+                <td>Host-native delivery or a safe focused-input route</td>
+                <td><span class="host-chip">Host app</span></td>
+              </tr>
+              <tr>
+                <th scope="row"><span class="agent-surface"><span class="agent-badge claude-badge" aria-hidden="true">A</span><strong>Claude desktop</strong></span></th>
+                <td>Exact composer when verifiable</td>
+                <td>App-specific delivery with visible safe failure</td>
+                <td><span class="host-chip">Claude</span></td>
               </tr>
             </tbody>
           </table>
@@ -286,12 +364,13 @@
         <aside class="host-rule">
           <span>THE HOST RULE</span>
           <p><strong>A CLI has no separate macOS input.</strong> If Claude Code is running in Terminal, the locked icon says Terminal. If Codex CLI is in VS Code, it says VS Code. Configure Return for that host app, then use all three destination routes normally.</p>
-          <code>[ MODE ] [ WAVEFORM ] [ CURRENT HOST ] [ LOCKED HOST ]</code>
+          <code tabindex="0" aria-label="Scrollable recorder layout">[ v&lt;version&gt; / .&lt;build&gt; ] [ STOP ] [ MODE ] [ WAVEFORM ] [ CURRENT HOST ] [ LOCKED HOST ]</code>
         </aside>
       </div>
     </section>
 
     <section class="manifesto section" aria-label="The VoiceInk++ workflow">
+      <h2 class="sr-only">The VoiceInk++ workflow</h2>
       <p class="manifesto-small">The old rhythm</p>
       <p class="old-rhythm"><span>speak</span><i>→</i><span>stop</span><i>→</i><strong>wait</strong><i>→</i><span>paste</span><i>→</i><span>resume</span></p>
       <p class="manifesto-small">The VoiceInk++ rhythm</p>
@@ -337,14 +416,14 @@
         <article class="feature reveal">
           <div class="feature-visual safety-visual" aria-hidden="true"><span>⌘V</span><i>✓</i><span>↵</span></div>
           <p class="feature-number">04 / TRUST IT</p>
-          <h3>Foreground paste and verified auto-send.</h3>
-          <p>VoiceInk++ restores and verifies the saved input, pastes in the foreground, sends when that app's Mode asks it to, then restores your later workspace.</p>
+          <h3>Base paste or exact background delivery.</h3>
+          <p>Primary stays as simple as base VoiceInk. Next verifies the saved input, delivers without focus theft when the app exposes a proven path, and surfaces a real warning instead of guessing or silently claiming success.</p>
         </article>
         <article class="feature reveal">
           <div class="feature-visual control-visual" aria-hidden="true"><span>×</span><span>ϟ̸</span><span>▶︎</span></div>
           <p class="feature-number">05 / STAY IN CONTROL</p>
-          <h3>Cancel, skip processing, preserve media.</h3>
-          <p>Discard instantly, force a one-shot raw transcript, or pause and resume supported media without a blind toggle.</p>
+          <h3>Pause the thought—not the session.</h3>
+          <p>Double-press Primary to pause and resume one recording, keep paused audio out of the transcript, or discard instantly and force a one-shot raw result when you need it.</p>
         </article>
       </div>
     </section>
@@ -353,33 +432,36 @@
       <div class="build-copy">
         <p class="eyebrow">Public, open source, deliberately personal</p>
         <h2 id="build-title">Build Ethan's workflow on your Mac.</h2>
-        <p>VoiceInk++ currently ships as source, not a notarized public download. You need macOS 14.4 or later, Xcode, and a few minutes to grant Microphone and Accessibility permission.</p>
+        <p>VoiceInk++ currently ships as source, not a notarized public download. You need macOS 14.4 or later, Xcode, and a few minutes to grant Microphone and Accessibility permission. Exact Apple Terminal/iTerm delivery also needs the optional Automation grant described in the build guide.</p>
         <ol class="build-steps">
           <li><span>1</span><p><strong>Clone the fork.</strong><br>Use Ethan's VoiceInkPlusPlus repository—not the upstream VoiceInk download.</p></li>
           <li><span>2</span><p><strong>Build the local app.</strong><br>The Makefile creates an ad-hoc signed VoiceInk++ app without requiring a paid developer account.</p></li>
-          <li><span>3</span><p><strong>Grant permission and configure.</strong><br>Allow Microphone and Accessibility, pick your model, then create per-app Modes.</p></li>
+          <li><span>3</span><p><strong>Grant permission and configure.</strong><br>Allow Microphone and Accessibility, add Automation if you use Terminal/iTerm exact delivery, pick your model, then create per-app Modes.</p></li>
         </ol>
         <div class="build-actions">
           <a class="button button-primary" href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/BUILDING.md">Read the build guide <span aria-hidden="true">↗</span></a>
           <a class="button button-secondary" href="https://github.com/EthanSK/VoiceInkPlusPlus/issues">Report an issue</a>
         </div>
       </div>
-      <section class="terminal-card" aria-label="Commands to build VoiceInk++ locally">
+      <section class="terminal-card" aria-labelledby="terminal-card-title">
+        <h3 id="terminal-card-title" class="sr-only">Commands to build VoiceInk++ locally</h3>
         <div class="terminal-bar"><span></span><span></span><span></span><strong>LOCAL BUILD</strong></div>
-        <pre><code><span class="prompt">$</span> git clone https://github.com/EthanSK/VoiceInkPlusPlus.git
+        <pre tabindex="0" aria-label="Scrollable local build commands"><code><span class="prompt">$</span> git clone https://github.com/EthanSK/VoiceInkPlusPlus.git
 <span class="prompt">$</span> cd VoiceInkPlusPlus
 <span class="prompt">$</span> make local
 <span class="prompt">$</span> open ~/Downloads/VoiceInkPlusPlus.app</code></pre>
-        <button class="copy-command" type="button" data-copy-command aria-label="Copy build commands">Copy commands</button>
+        <button class="copy-command" type="button" data-copy-command>Copy commands</button>
+        <span class="sr-only" role="status" aria-live="polite" data-copy-status></span>
         <p><span class="live-dot"></span> Output: standalone VoiceInk++ app</p>
       </section>
+      <p class="build-warning"><strong>Do not use the upstream Homebrew cask for this fork.</strong> It installs upstream VoiceInk, not VoiceInk++.</p>
     </section>
 
     <section class="origin-note section" aria-label="Project origin and license">
-      <img src="https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/128-mac.png" width="72" height="72" alt="">
+      <img src="https://raw.githubusercontent.com/EthanSK/VoiceInkPlusPlus/main/VoiceInk/Assets.xcassets/AppIcon.appiconset/128-mac.png" width="72" height="72" loading="lazy" decoding="async" alt="">
       <div>
         <h2>Personal fork. Shared in public.</h2>
-        <p>VoiceInk++ is Ethan Sarif-Kattan's opinionated fork of <a href="https://github.com/Beingpax/VoiceInk">VoiceInk by Beingpax</a>. It keeps the excellent native macOS foundation and pushes hard on destination control, overlapping work, and the no-wait agent workflow. Licensed under GPL‑3.0.</p>
+        <p>VoiceInk++ is Ethan Sarif-Kattan's opinionated fork of <a href="https://github.com/Beingpax/VoiceInk">VoiceInk by Beingpax</a>. It keeps the excellent native macOS foundation and pushes hard on destination control, overlapping work, and the no-wait agent workflow. This fork has no Pro purchase, trial, license validation, affiliate promotion, or remote promotional-announcement system. Licensed under GPL‑3.0.</p>
       </div>
       <a class="text-link" href="https://github.com/EthanSK/VoiceInkPlusPlus">Explore the code <span aria-hidden="true">↗</span></a>
     </section>
@@ -389,6 +471,7 @@
     <p><strong>VoiceInk++</strong> · Become Jarvis. Keep it moving.</p>
     <nav aria-label="Footer">
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus">GitHub</a>
+      <a href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/TERMINOLOGY.md">Button glossary</a>
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/RECORDING_DESTINATIONS.md">Destination guide</a>
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus/tree/main/.agents/skills/learnings">Learnings skill</a>
       <a href="https://github.com/EthanSK/VoiceInkPlusPlus/blob/main/LICENSE">GPL‑3.0</a>

@@ -1,8 +1,6 @@
 (function () {
   "use strict";
 
-  document.documentElement.classList.add("js");
-
   var header = document.querySelector("[data-header]");
   var nav = document.querySelector("[data-nav]");
   var navToggle = document.querySelector("[data-nav-toggle]");
@@ -17,6 +15,13 @@
   window.addEventListener("scroll", updateHeader, { passive: true });
 
   if (nav && navToggle) {
+    function closeNav(returnFocus) {
+      navToggle.setAttribute("aria-expanded", "false");
+      nav.classList.remove("is-open");
+      navToggle.querySelector(".sr-only").textContent = "Open navigation";
+      if (returnFocus) navToggle.focus();
+    }
+
     navToggle.addEventListener("click", function () {
       var open = navToggle.getAttribute("aria-expanded") === "true";
       navToggle.setAttribute("aria-expanded", String(!open));
@@ -26,9 +31,13 @@
 
     nav.addEventListener("click", function (event) {
       if (event.target.closest("a")) {
-        navToggle.setAttribute("aria-expanded", "false");
-        nav.classList.remove("is-open");
-        navToggle.querySelector(".sr-only").textContent = "Open navigation";
+        closeNav(false);
+      }
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && navToggle.getAttribute("aria-expanded") === "true") {
+        closeNav(true);
       }
     });
   }
@@ -53,73 +62,13 @@
     });
   }
 
-  var routes = {
-    finish: {
-      kicker: "Normal stop · focused at stop",
-      title: "End wherever the thought belongs.",
-      copy: "Start in one app, move while talking, then use your normal recording button. VoiceInk++ locks the exact editable input focused when you stop.",
-      steps: [
-        "Start recording in Codex.",
-        "Move to Terminal while speaking.",
-        "Stop normally. The transcript lands in Terminal."
-      ],
-      start: { icon: "C", label: "START", app: "Codex input" },
-      target: { icon: "›_", label: "FOCUSED AT STOP", app: "Terminal input", result: "PASTE + RETURN" },
-      action: "NORMAL STOP",
-      speech: "“ship the idea…”"
-    },
-    return: {
-      kicker: "Next button during recording · recording start",
-      title: "Send it back to where you began.",
-      copy: "Move anywhere while dictating, then stop with the Next button. VoiceInk++ restores the input captured at recording start, delivers there, and returns you to the workspace you were using.",
-      steps: [
-        "Start recording in the Codex composer.",
-        "Keep working in VS Code while you speak.",
-        "Press the Next button. The result returns to Codex."
-      ],
-      start: { icon: "C", label: "RECORDING START", app: "Codex input" },
-      target: { icon: "V", label: "CURRENTLY FOCUSED", app: "VS Code", result: "WORKSPACE RESTORED" },
-      action: "NEXT BUTTON",
-      speech: "“send this back…”"
-    },
-    retarget: {
-      kicker: "Next button while transcribing · second chance",
-      title: "Latch a new input, then leave again.",
-      copy: "If you stopped normally but changed your mind while transcription is loading, focus a new editable input and press the Next button once. That field and its app-specific auto-send become the pending destination.",
-      steps: [
-        "Stop normally and let transcription begin.",
-        "Focus a new ChatGPT or agent input; press the Next button.",
-        "Move on. VoiceInk++ pastes, sends, and restores you later."
-      ],
-      start: { icon: "›_", label: "OLD STOP TARGET", app: "Terminal input" },
-      target: { icon: "C", label: "NEW LOCKED INPUT", app: "ChatGPT input", result: "PASTE + APP AUTO-SEND" },
-      action: "NEXT DURING LOAD",
-      speech: "“changed my mind…”"
-    }
-  };
-
   var routeLab = document.querySelector("[data-route-lab]");
   if (routeLab) {
     var tabs = Array.prototype.slice.call(routeLab.querySelectorAll("[role='tab']"));
-    var panel = routeLab.querySelector("[role='tabpanel']");
-    var stage = routeLab.querySelector(".route-stage");
-    var startNode = routeLab.querySelector(".start-node");
-    var targetNode = routeLab.querySelector(".target-node");
-
-    function setNode(node, data) {
-      node.querySelector(".node-icon").textContent = data.icon;
-      node.querySelector("small").textContent = data.label;
-      node.querySelector("strong").textContent = data.app;
-      var result = node.querySelector("em");
-      if (result && data.result) {
-        result.textContent = data.result;
-      }
-    }
+    var panels = Array.prototype.slice.call(routeLab.querySelectorAll("[data-route-panel]"));
+    routeLab.classList.add("is-interactive");
 
     function activateRoute(name, moveFocus) {
-      var route = routes[name];
-      if (!route) return;
-
       tabs.forEach(function (tab) {
         var selected = tab.getAttribute("data-route") === name;
         tab.setAttribute("aria-selected", String(selected));
@@ -127,26 +76,10 @@
         if (selected && moveFocus) tab.focus();
       });
 
-      var activeTab = tabs.find(function (tab) {
-        return tab.getAttribute("data-route") === name;
-      });
-
-      panel.setAttribute("aria-labelledby", activeTab.id);
-      stage.setAttribute("data-route-stage", name);
-      routeLab.querySelector("[data-route-kicker]").textContent = route.kicker;
-      routeLab.querySelector("[data-route-title]").textContent = route.title;
-      routeLab.querySelector("[data-route-copy]").textContent = route.copy;
-      routeLab.querySelector(".route-action").textContent = route.action;
-      routeLab.querySelector(".speech-packet").textContent = route.speech;
-      setNode(startNode, route.start);
-      setNode(targetNode, route.target);
-
-      var stepList = routeLab.querySelector("[data-route-steps]");
-      stepList.replaceChildren();
-      route.steps.forEach(function (step) {
-        var item = document.createElement("li");
-        item.textContent = step;
-        stepList.appendChild(item);
+      panels.forEach(function (panel) {
+        var selected = panel.getAttribute("data-route-panel") === name;
+        panel.hidden = !selected;
+        panel.setAttribute("data-active", String(selected));
       });
     }
 
@@ -173,10 +106,13 @@
         }
       });
     });
+
+    activateRoute("finish", false);
   }
 
   var copyButton = document.querySelector("[data-copy-command]");
   if (copyButton) {
+    var copyStatus = document.querySelector("[data-copy-status]");
     var commands = [
       "git clone https://github.com/EthanSK/VoiceInkPlusPlus.git",
       "cd VoiceInkPlusPlus",
@@ -189,8 +125,10 @@
 
       function showResult(label) {
         copyButton.textContent = label;
+        if (copyStatus) copyStatus.textContent = label;
         window.setTimeout(function () {
           copyButton.textContent = original;
+          if (copyStatus) copyStatus.textContent = "";
         }, 1800);
       }
 
@@ -214,4 +152,6 @@
       }
     });
   }
+
+  window.voiceInkSiteReady = true;
 }());

@@ -14,9 +14,9 @@
   --amber: #ffbc6b;
   --violet: #b6a1ff;
   --danger: #ff7d80;
-  --display: "Avenir Next Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
-  --body: "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
-  --mono: "SFMono-Regular", "Roboto Mono", Consolas, monospace;
+  --display: "Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", "Helvetica Neue", sans-serif;
+  --body: "Avenir Next", Avenir, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "Roboto Mono", Consolas, monospace;
   --radius-sm: 12px;
   --radius-md: 22px;
   --radius-lg: 34px;
@@ -124,6 +124,10 @@ img {
 
 .skip-link:focus {
   transform: translateY(0);
+}
+
+.skip-link:focus-visible {
+  outline-color: var(--ink);
 }
 
 .site-header {
@@ -692,7 +696,7 @@ img {
 
 .console-readout small {
   color: var(--quiet);
-  font-size: 0.56rem;
+  font-size: 0.62rem;
   letter-spacing: 0.08em;
 }
 
@@ -735,6 +739,12 @@ img {
   font-family: var(--display);
   font-size: 2.5rem;
   line-height: 1;
+}
+
+.proof-strip .proof-word {
+  font-size: clamp(1.25rem, 2vw, 1.65rem);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .proof-strip span {
@@ -853,6 +863,15 @@ img {
 
 .setup-routes .two-button-map {
   margin-top: 40px;
+}
+
+.setup-routes-copy h3 {
+  margin-top: 0;
+}
+
+.setup-routes-copy p {
+  margin-bottom: 0;
+  color: var(--muted);
 }
 
 .step-index {
@@ -1207,13 +1226,21 @@ kbd {
 
 .route-tabs small {
   font-family: var(--mono);
-  font-size: 0.57rem;
+  font-size: 0.62rem;
+}
+
+.route-lab.is-interactive .route-panel[data-active="false"] {
+  display: none;
 }
 
 .route-panel {
   display: grid;
   min-height: 450px;
   grid-template-columns: minmax(0, 1.35fr) minmax(330px, 0.65fr);
+}
+
+.route-panel + .route-panel {
+  border-top: 1px solid var(--line);
 }
 
 .route-stage {
@@ -1282,7 +1309,7 @@ kbd {
 .app-node small,
 .app-node em {
   font-family: var(--mono);
-  font-size: 0.53rem;
+  font-size: 0.62rem;
   font-style: normal;
   letter-spacing: 0.08em;
 }
@@ -1488,6 +1515,7 @@ kbd {
 
 .agent-matrix-scroll {
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
 }
 
 .agent-matrix {
@@ -1615,6 +1643,12 @@ kbd {
   font-family: var(--mono);
   font-size: 0.59rem;
   white-space: nowrap;
+}
+
+.host-rule code:focus-visible,
+.agent-matrix-scroll:focus-visible,
+.terminal-card pre:focus-visible {
+  outline-offset: -4px;
 }
 
 .manifesto {
@@ -1856,6 +1890,21 @@ kbd {
   font-size: 1.02rem;
 }
 
+.build-warning {
+  grid-column: 1 / -1;
+  margin: -30px 0 0;
+  padding: 13px 16px;
+  border: 1px solid rgba(255, 188, 107, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 188, 107, 0.055);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.build-warning strong {
+  color: var(--amber);
+}
+
 .build-steps {
   padding: 0;
   margin: 34px 0 0;
@@ -1928,7 +1977,7 @@ kbd {
   margin-left: auto;
   color: var(--quiet);
   font-family: var(--mono);
-  font-size: 0.56rem;
+  font-size: 0.62rem;
   letter-spacing: 0.1em;
 }
 
@@ -2054,6 +2103,11 @@ kbd {
 .js .reveal.is-visible {
   opacity: 1;
   transform: translateY(0);
+}
+
+.js-failed .reveal {
+  opacity: 1;
+  transform: none;
 }
 
 @keyframes live-pulse {
@@ -2361,66 +2415,15 @@ kbd {
     padding: 22px;
   }
 
+  .route-tabs {
+    overflow-x: visible;
+    grid-template-columns: 1fr;
+  }
+
   .agent-matrix-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 6px;
-  }
-
-  .agent-matrix {
-    min-width: 0;
-  }
-
-  .agent-matrix thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
-
-  .agent-matrix,
-  .agent-matrix tbody,
-  .agent-matrix tr,
-  .agent-matrix th,
-  .agent-matrix td {
-    display: block;
-    width: 100%;
-  }
-
-  .agent-matrix tbody tr {
-    padding: 18px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .agent-matrix tbody tr:last-child {
-    border-bottom: 0;
-  }
-
-  .agent-matrix tbody th,
-  .agent-matrix tbody td {
-    padding: 9px 0;
-    border: 0;
-  }
-
-  .agent-matrix tbody th {
-    margin-bottom: 5px;
-  }
-
-  .agent-matrix tbody td {
-    display: grid;
-    grid-template-columns: 80px minmax(0, 1fr);
-    gap: 10px;
-  }
-
-  .agent-matrix tbody td::before {
-    color: var(--quiet);
-    content: attr(data-label);
-    font-family: var(--mono);
-    font-size: 0.58rem;
-    font-weight: 750;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
   }
 
   .stack-display > div {
@@ -2546,8 +2549,9 @@ kbd {
     transition-duration: 0.001ms !important;
   }
 
-  .reveal {
-    opacity: 1;
-    transform: none;
+  .js .reveal,
+  .js .reveal.is-visible {
+    opacity: 1 !important;
+    transform: none !important;
   }
 }
