@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-25T21:58:00Z
+**Trigger:** Ethan reported another apparent paste-plus-Return miss in Claude and asked for a Computer Use investigation of Claude Code.
+**Symptom:** Foreground Primary delivery in Claude appeared intermittent even though VoiceInk++ logged both the paste command and Return event as posted.
+**Root cause:** The reported surface was Claude Desktop 1.24012.9 in Code mode (`/Applications/Claude.app`, PID 52609), not Claude Code inside a terminal/editor host. The correlated 22:53:50 run selected `primaryCurrentInput`, resolved `targetAutoSend=enter`, posted Command-V, waited 100 ms, and posted one humanized HID Return while Claude remained frontmost; Computer Use then showed the submitted message and Claude responding. In the disposable Claude task, a settable prompt plus labelled Send control accepted ordinary Return both while idle and while another response was running; adding a draft during the latter changed Stop to Send and Return submitted the steering prompt. Claude therefore does not require a different key. The remaining unobserved boundary is whether its Electron prompt has consumed Command-V by the time VoiceInk++ posts Return; event-post success alone cannot prove that.
+**Fix:** Investigation only; no runtime behavior changed. Keep Claude Desktop separate from Claude Code host testing, preserve the running bounded delivery trace, and correlate the next visible miss with composer/Send state before changing the generic Primary delay or event route.
+**Commit:** investigation-only
+**Guard:** Disposable Computer Use probes visibly submitted and cleared the Claude prompt in idle and in-flight states without touching Ethan's active task. Do not add a Claude-specific Primary path: Primary must remain base-current-input. If a later trace proves the prompt still contains the transcript after Return, compare the current 100 ms settle with upstream VoiceInk's 500 ms delay using a uniquely numbered signed build and repeated physical foreground tests.
+---
+
+
+---
 **Date:** 2026-07-25T18:57:39Z
 **Trigger:** Ethan asked for the live website URL and for Claude Opus 5 to review and improve the already signed-off public launch.
 **Symptom:** The public Pages route lab still claimed Primary locked the exact input focused at stop, duplicated route copy in JavaScript, and hid the two Next routes when JavaScript was unavailable.
