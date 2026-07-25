@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-25T18:57:39Z
+**Trigger:** Ethan asked for the live website URL and for Claude Opus 5 to review and improve the already signed-off public launch.
+**Symptom:** The public Pages route lab still claimed Primary locked the exact input focused at stop, duplicated route copy in JavaScript, and hid the two Next routes when JavaScript was unavailable.
+**Root cause:** The public site predated the primaryCurrentInput isolation contract, and the same routing explanation was maintained separately in HTML, JavaScript, and README without contract-level validation.
+**Fix:** Commit b9783c4 makes HTML the three-route source of truth, keeps Primary base-current-input at final delivery, limits exact ownership to Next, adds progressive enhancement and accessibility fixes, and aligns README, agent support, permissions, source-only guidance, and pause/resume copy.
+**Commit:** b9783c430175535dbe194f05a71c1887d9fb8812
+**Guard:** Static-site validator, html-validate, node --check, markdown-link-check, structured-file checks, local HTTP checks, and diff checks passed. GitHub Pages built from main/docs with HTTPS; live HTML/CSS/JS hashes match local b9783c4 and the custom 404 returns the intended page. Personal-Chrome visual QA was unavailable because the only verified personal window was an unrelated LinkedIn tab on Ethan's active display.
+---
+
+
+---
 **Date:** 2026-07-25T18:18:37Z
 **Trigger:** Ethan reported the normal stop delay was a bit too long and the failure bar overlapped the heightened real-time block; it should appear above it.
 **Symptom:** After adding Primary double-press pause/resume, an ordinary single-press stop felt noticeably delayed, and a warning/error bar overlapped the expanded real-time transcript recorder block.
