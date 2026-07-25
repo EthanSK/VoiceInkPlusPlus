@@ -520,7 +520,7 @@ struct LiveTranscriptView: View {
                     .padding(.vertical, 6)
                     .id("bottom")
             }
-            .frame(height: 56)
+            .frame(height: MiniRecorderLayoutMetrics.liveTranscriptHeight)
             .mask(
                 LinearGradient(
                     stops: [
@@ -840,7 +840,7 @@ struct AssistantPanelView: View {
         }
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, 10)
-        .frame(height: 320)
+        .frame(height: MiniRecorderLayoutMetrics.assistantPanelHeight)
         .onAppear(perform: focusFollowUpFieldIfAvailable)
         .onChange(of: session.phase) {
             focusFollowUpFieldIfAvailable()

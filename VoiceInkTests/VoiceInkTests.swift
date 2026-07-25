@@ -147,6 +147,45 @@ struct VoiceInkTests {
         #expect(!coordinator.hasPendingNormalStop)
     }
 
+    @Test func primaryPauseDoublePressWindowCapsSlowSystemPreference() {
+        #expect(
+            PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
+                systemDoubleClickInterval: 0.8
+            ) == 0.45
+        )
+        #expect(
+            PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
+                systemDoubleClickInterval: 0.3
+            ) == 0.3
+        )
+    }
+
+    @Test func errorNotificationClearsExpandedRealtimeMiniRecorder() {
+        let reservedHeight = MiniRecorderLayoutMetrics.notificationBottomReservedHeight(
+            showsAssistant: false,
+            showsRealtimeTranscript: true,
+            sessionCount: 1
+        )
+        let recorderTop = reservedHeight
+        let origin = NotificationManager.notificationOrigin(
+            screenRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            notificationSize: NSSize(width: 500, height: 44),
+            bottomReservedHeight: reservedHeight
+        )
+
+        #expect(reservedHeight == 121)
+        #expect(origin.y == recorderTop + 16)
+    }
+
+    @Test func errorNotificationAlsoClearsStackedMiniRecorderCards() {
+        let reservedHeight = MiniRecorderLayoutMetrics.notificationBottomReservedHeight(
+            showsAssistant: false,
+            showsRealtimeTranscript: true,
+            sessionCount: 3
+        )
+        #expect(reservedHeight == 213)
+    }
+
     @Test func primaryDoublePressWhilePausedResumesInsteadOfStopping() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5

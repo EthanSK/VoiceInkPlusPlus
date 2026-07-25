@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import os
 
 enum RecorderPanelStyle: String, CaseIterable, Identifiable {
@@ -30,7 +31,7 @@ protocol RecorderPanelPresenting: AnyObject {
 }
 
 @MainActor
-class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
+class RecorderUIManager: ObservableObject, RecorderPanelPresenting, NotificationRecorderPlacementProviding {
     @Published var recorderPanelStyle: RecorderPanelStyle = .stored {
         didSet {
             guard oldValue != recorderPanelStyle else { return }
@@ -76,7 +77,35 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
     func configure(engine: VoiceInkEngine, recorder: Recorder) {
         self.engine = engine
         self.recorder = recorder
+        NotificationManager.shared.setRecorderPlacementProvider(self)
         setupNotifications()
+    }
+
+    /// Returns the full bottom reservation occupied by the visible mini recorder
+    /// on every mirrored display. NotificationManager uses this at presentation
+    /// time so errors sit above realtime text and stacked cards instead of
+    /// overlapping them. The notch style occupies the top edge and needs no
+    /// bottom reservation.
+    func notificationBottomReservedHeight(on screen: NSScreen) -> CGFloat? {
+        guard isRecorderPanelVisible,
+              recorderPanelStyle == .mini,
+              let engine else {
+            return nil
+        }
+
+        let baseSession = engine.activeRecordingSession ?? engine.sessions.last
+        let showsAssistant = engine.assistantSession.isVisible
+        guard showsAssistant || baseSession != nil else { return nil }
+
+        let showsRealtimeTranscript =
+            baseSession?.liveRecordingState.isRecordingOrPaused == true
+            && baseSession?.showsRealtimeTranscriptHUD == true
+
+        return MiniRecorderLayoutMetrics.notificationBottomReservedHeight(
+            showsAssistant: showsAssistant,
+            showsRealtimeTranscript: showsRealtimeTranscript,
+            sessionCount: engine.sessions.count
+        )
     }
 
     // MARK: - Recorder Panel Management

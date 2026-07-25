@@ -49,10 +49,6 @@ struct MiniRecorderStackView: View {
     // Per-card cancel: cancels THAT specific session (engine.cancelSession(id:)).
     let onCancelSession: (UUID) -> Void
 
-    // Approx vertical advance per stacked card. Matches the mini control-bar height (40)
-    // plus a small gap so stacked chips read as a discrete pile, not overlapping.
-    private let cardSpacing: CGFloat = 46
-
     // Sessions oldest→newest as stored by the engine.
     private var ordered: [RecordingSession] { engine.sessions }
 
@@ -89,7 +85,10 @@ struct MiniRecorderStackView: View {
                     // Each card is shifted UP by its distance from the base. The base card
                     // (indexFromBottom == 0) stays at offset 0; older transcribing cards
                     // climb upward in the bottom-anchored panel.
-                    .offset(y: -cardSpacing * CGFloat(indexFromBottom(of: session)))
+                    .offset(
+                        y: -MiniRecorderLayoutMetrics.stackedCardSpacing
+                            * CGFloat(indexFromBottom(of: session))
+                    )
                     .zIndex(zIndex(for: session))
                     .transition(
                         .move(edge: .bottom).combined(with: .opacity)

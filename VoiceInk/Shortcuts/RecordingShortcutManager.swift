@@ -478,6 +478,19 @@ private final class RecordingShortcutModeSource {
 /// capture pause/resume instead. This coordinator never chooses a paste target;
 /// the eventual single stop remains `.primaryCurrentInput`.
 struct PrimaryRecordingPressCoordinator {
+    // Ethan's global macOS double-click preference is intentionally generous
+    // (0.8s), but applying that entire interval to a recording stop makes every
+    // ordinary Primary stop feel stalled. Pause/resume is a deliberate mouse
+    // gesture, so retain faster system preferences while capping only this
+    // VoiceInk++ decision window at a responsive, still-forgiving interval.
+    static let maximumPauseDoublePressInterval: TimeInterval = 0.45
+
+    static func pauseDoublePressInterval(
+        systemDoubleClickInterval: TimeInterval
+    ) -> TimeInterval {
+        min(systemDoubleClickInterval, maximumPauseDoublePressInterval)
+    }
+
     enum Decision: Equatable {
         case startOrCancelImmediately
         case deferNormalStop(generation: Int)
@@ -631,7 +644,9 @@ final class RecordingShortcutModeHandler {
         toggleRecordingPause: @escaping @MainActor () async -> Bool = { false },
         cancelRecording: @escaping @MainActor () async -> Void,
         shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut? = { _ in nil },
-        primaryDoublePressInterval: TimeInterval = NSEvent.doubleClickInterval
+        primaryDoublePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
+            systemDoubleClickInterval: NSEvent.doubleClickInterval
+        )
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
         self.isRecorderVisible = isRecorderVisible

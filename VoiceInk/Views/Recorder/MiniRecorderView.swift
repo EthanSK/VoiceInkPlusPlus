@@ -13,7 +13,6 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     // MARK: - Layout Constants
 
-    private let controlBarHeight: CGFloat = 40
     private let compactWidth: CGFloat = 228
     private let expandedWidth: CGFloat = 344
     private let assistantWidth: CGFloat = 520
@@ -163,7 +162,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             }
             .padding(.trailing, 12)
         }
-        .frame(height: controlBarHeight)
+        .frame(height: MiniRecorderLayoutMetrics.controlBarHeight)
     }
 
     private var transcriptSection: some View {

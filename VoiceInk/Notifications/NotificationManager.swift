@@ -1,13 +1,26 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+protocol NotificationRecorderPlacementProviding: AnyObject {
+    func notificationBottomReservedHeight(on screen: NSScreen) -> CGFloat?
+}
+
 class NotificationManager {
     static let shared = NotificationManager()
 
     private var notificationWindow: NSPanel?
     private var dismissTimer: Timer?
+    private weak var recorderPlacementProvider: NotificationRecorderPlacementProviding?
 
     private init() {}
+
+    @MainActor
+    func setRecorderPlacementProvider(
+        _ provider: NotificationRecorderPlacementProviding
+    ) {
+        recorderPlacementProvider = provider
+    }
 
     @MainActor
     func showNotification(
@@ -107,17 +120,36 @@ class NotificationManager {
         let activeScreen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens[0]
         let screenRect = activeScreen.visibleFrame
         let notificationRect = window.frame
-        
-        // Position notification centered horizontally on screen
-        let notificationX = screenRect.midX - (notificationRect.width / 2)
-        
-        // Position notification near bottom of screen with appropriate spacing
-        let bottomPadding: CGFloat = 24
-        let componentHeight: CGFloat = 34
-        let notificationSpacing: CGFloat = 16
-        let notificationY = screenRect.minY + bottomPadding + componentHeight + notificationSpacing
-        
-        window.setFrameOrigin(NSPoint(x: notificationX, y: notificationY))
+
+        // When the mini recorder is visible, clear its real rendered envelope—not
+        // the old fixed 34pt estimate. Realtime text and stacked recordings make
+        // that envelope taller. If no mini recorder owns the bottom edge, retain
+        // the historical ordinary-notification position.
+        let defaultBottomReservedHeight: CGFloat = 24 + 34
+        let bottomReservedHeight =
+            recorderPlacementProvider?.notificationBottomReservedHeight(on: activeScreen)
+            ?? defaultBottomReservedHeight
+
+        window.setFrameOrigin(
+            Self.notificationOrigin(
+                screenRect: screenRect,
+                notificationSize: notificationRect.size,
+                bottomReservedHeight: bottomReservedHeight
+            )
+        )
+    }
+
+    static func notificationOrigin(
+        screenRect: NSRect,
+        notificationSize: NSSize,
+        bottomReservedHeight: CGFloat
+    ) -> NSPoint {
+        let spacing: CGFloat = 16
+        let x = screenRect.midX - (notificationSize.width / 2)
+        let proposedY = screenRect.minY + bottomReservedHeight + spacing
+        let maximumY = screenRect.maxY - notificationSize.height - spacing
+        let y = max(screenRect.minY + spacing, min(proposedY, maximumY))
+        return NSPoint(x: x, y: y)
     }
 
     @MainActor

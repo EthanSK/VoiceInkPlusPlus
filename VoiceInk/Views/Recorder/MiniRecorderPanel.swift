@@ -1,6 +1,37 @@
 import SwiftUI
 import AppKit
 
+/// Shared geometry for the bottom-anchored mini recorder and notifications that
+/// must clear it. Keep these values as the single source of truth: a hard-coded
+/// notification offset previously assumed a 34pt bar and overlapped the 97pt
+/// real-time transcript HUD.
+enum MiniRecorderLayoutMetrics {
+    static let bottomPadding: CGFloat = 24
+    static let controlBarHeight: CGFloat = 40
+    static let liveTranscriptHeight: CGFloat = 56
+    static let separatorHeight: CGFloat = 1
+    static let assistantPanelHeight: CGFloat = 320
+    static let stackedCardSpacing: CGFloat = 46
+
+    static func notificationBottomReservedHeight(
+        showsAssistant: Bool,
+        showsRealtimeTranscript: Bool,
+        sessionCount: Int
+    ) -> CGFloat {
+        let baseHeight: CGFloat
+        if showsAssistant {
+            baseHeight = assistantPanelHeight + separatorHeight + controlBarHeight
+        } else if showsRealtimeTranscript {
+            baseHeight = liveTranscriptHeight + separatorHeight + controlBarHeight
+        } else {
+            baseHeight = controlBarHeight
+        }
+
+        let stackedHeight = CGFloat(max(0, sessionCount - 1)) * stackedCardSpacing
+        return bottomPadding + baseHeight + stackedHeight
+    }
+}
+
 class MiniRecorderPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -39,12 +70,10 @@ class MiniRecorderPanel: NSPanel {
         }
 
         // Host stays large enough for assistant output; SwiftUI controls the visible mini width.
-        let padding: CGFloat = 24
-
         let visibleFrame = screen.visibleFrame
         let centerX = visibleFrame.midX
         let xPosition = centerX - (width / 2)
-        let yPosition = visibleFrame.minY + padding
+        let yPosition = visibleFrame.minY + MiniRecorderLayoutMetrics.bottomPadding
 
         return NSRect(
             x: xPosition,

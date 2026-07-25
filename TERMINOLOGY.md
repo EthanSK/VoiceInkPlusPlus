@@ -6,7 +6,7 @@ This is the canonical glossary for Ethan's mouse controls and recording destinat
 
 | Preferred term | Ethan may also say | Exact meaning |
 | --- | --- | --- |
-| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. The first press starts recording. While recording or paused, one press performs a normal stop after the system double-click interval; two presses inside that interval toggle capture pause/resume. In code, the shortcut uses `.toggle` mode. |
+| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. The first press starts recording. While recording or paused, one press performs a normal stop after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds; two presses inside that window toggle capture pause/resume. In code, the shortcut uses `.toggle` mode. |
 | **Next button** | forward button, secondary button, secondary mouse button, Next Track, Next Track media key/action/event, latch button, retarget button | The separate programmable mouse button mapped to the macOS Next Track media event (`NX_KEYTYPE_NEXT`). Its action depends on whether VoiceInk++ is recording or a normal-stop result is still loading. It is not the primary button and “secondary” does not mean macOS right-click. |
 
 In this repository, **toggle** without another qualifier means the primary button's start/stop lifecycle. It never means toggling a paste destination on or off. The short-lived Next-destination toggle experiment was deliberately reverted.
@@ -38,8 +38,8 @@ either physical button.
 | --- | --- | --- | --- |
 | Idle | Primary button | Start a new recording; while exact delivery is enabled, tentatively capture a recording-start candidate only in case Next is pressed | Not yet final |
 | Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
-| Recording | Primary button twice within the system double-click interval | Pause this same recording, stop microphone/WAV/stream input, and resume media; no delivery begins | Not yet final; existing tentative Next preview remains |
-| Paused | Primary button twice within the system double-click interval | Resume this same recording and pause media again; no delivery begins | Not yet final; existing tentative Next preview remains |
+| Recording | Primary button twice within the VoiceInk++ pause decision window | Pause this same recording, stop microphone/WAV/stream input, and resume media; no delivery begins | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button twice within the VoiceInk++ pause decision window | Resume this same recording and pause media again; no delivery begins | Not yet final; existing tentative Next preview remains |
 | Paused | Primary button once | After the same decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |

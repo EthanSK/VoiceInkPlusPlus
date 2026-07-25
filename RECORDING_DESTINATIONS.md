@@ -19,11 +19,11 @@ still owns `recordingStart`, and the post-Primary second chance still owns
 
 ## Pause without finalizing
 
-While a recording is active, double-press the **Primary button** within the macOS double-click
-interval to pause microphone capture. VoiceInk++ stops AUHAL itself while leaving the same WAV and
-realtime provider session open, so no paused audio is written or streamed. Media and the paired
-YouTube helper resume. Double-press Primary again to restart capture into that same session and
-pause media again.
+While a recording is active, double-press the **Primary button** within VoiceInk++'s pause decision
+window—the shorter of the macOS double-click interval and 0.45 seconds—to pause microphone capture.
+VoiceInk++ stops AUHAL itself while leaving the same WAV and realtime provider session open, so no
+paused audio is written or streamed. Media and the paired YouTube helper resume. Double-press
+Primary again to restart capture into that same session and pause media again.
 
 A single Primary press while recording or paused retains normal base-VoiceInk stop behavior after
 the short double-click decision window expires. The delay is necessary because the first press
@@ -169,8 +169,8 @@ event through its existing vendor software, such as Logitech G HUB. No VoiceInk-
 macro and no Karabiner configuration are required.
 
 Keep the ordinary mouse button assigned to the existing VoiceInk++ recording shortcut. A normal
-single stop now resolves after the system double-click interval; a double press during recording
-toggles pause/resume without changing the chosen delivery policy. Assign the
+single stop now resolves after VoiceInk++'s at-most-0.45-second pause decision window; a double
+press during recording toggles pause/resume without changing the chosen delivery policy. Assign the
 alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button for the entire time
 any recorder/transcription bar is visible; eligible recording and transcription states perform
 their normal destination action, while an ineligible visible-bar press is consumed as a safe no-op.
