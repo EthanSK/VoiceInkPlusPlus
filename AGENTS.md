@@ -79,6 +79,7 @@ The visible recorder/transcription bar is the strict ownership boundary for the 
 
 - Recorder panels appear on every connected monitor.
 - Do not show routine “Recording” text above the waveform; visible text is reserved for real warnings/errors.
+- When a warning/error bar is visible with the bottom-anchored mini recorder, its bottom edge must sit above the recorder's actual rendered envelope, including the expanded real-time transcript, assistant panel, and stacked transcription cards. Use the shared recorder layout metrics; never restore a fixed compact-bar offset that can overlap taller states.
 - Mode icon/emoji is left of the waveform.
 - The right side has two separate icons: current focused app first, then the per-session locked destination.
 - Keep both icon slots visible for every active session. When exact delivery is disabled or capture genuinely fails, the second slot shows the warning icon; never hide the slot merely to conceal a missing destination.

@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-25T18:18:37Z
+**Trigger:** Ethan reported the normal stop delay was a bit too long and the failure bar overlapped the heightened real-time block; it should appear above it.
+**Symptom:** After adding Primary double-press pause/resume, an ordinary single-press stop felt noticeably delayed, and a warning/error bar overlapped the expanded real-time transcript recorder block.
+**Root cause:** VoiceInk++ used Ethan's full 0.8-second macOS double-click preference as its stop-decision delay. Separately, NotificationManager reserved a fixed 34pt recorder height even though the real-time mini HUD occupies 97pt before bottom padding and stacked cards can extend it further.
+**Fix:** Commit 4f71b77 caps only the Primary pause gesture at the shorter of the system interval and 0.45 seconds, preserves faster system preferences, and routes notification placement through shared mini-recorder layout metrics for compact, real-time, assistant, and stacked-card envelopes.
+**Commit:** 4f71b77
+**Guard:** Exact Mac Mini candidate passed all 62 named direct xcrun xctest tests after the canonical locally signed Xcode action compiled then hit the known TestManager stall. New guards prove the 0.8-to-0.45 cap and 16pt notification clearance above one real-time HUD and stacked cards; all existing pause, Primary isolation, Next, realtime HUD-only, Codex/Telegram, and Terminal tests passed. Signed v2.0.263 is installed with CDHash ec64bc2689d79c5fdff4004e597d245db4483d98, deep/strict signing and Automation=true. Physical timing and visual-overlap acceptance remain pending.
+---
+
+
+---
 **Date:** 2026-07-25T17:59:10Z
 **Trigger:** Ethan asked for a double-click of the Primary trigger while recording to pause temporarily, then another double-click to continue so music could play without being transcribed.
 **Symptom:** The Primary mouse button could only start or finalize dictation, so Ethan could not pause mid-recording to listen to music or read without that interval entering the WAV/realtime transcript.
