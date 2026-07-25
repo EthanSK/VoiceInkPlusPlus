@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-25T22:25:00Z
+**Trigger:** Ethan asked whether a slightly slower but higher-quality real-time model could beat Soniox V5 while keeping post-stop waits bounded.
+**Symptom:** “Real-time” can be mistaken for a guarantee that stop latency never grows, and provider model names conceal whether VoiceInk++ actually supports their quality controls and Vocabulary.
+**Root cause:** Current official APIs expose different quality-first streaming controls. AssemblyAI Universal-3.5 Pro Streaming offers `max_accuracy`, contextual prompting, and keyterms, but VoiceInk++ still registers `universal-3-pro` and the pinned LLMkit adapter recognizes only that older name, does not send the new `mode`, and would omit keyterms for an unrecognized 3.5 name. Speechmatics Enhanced is already wired with custom Vocabulary and a fixed two-second `max_delay`; its official guidance says four seconds reaches Batch-equivalent accuracy and two seconds is roughly one-percent below Batch. OpenAI `gpt-realtime-whisper` offers `high`/`xhigh` delay tuning but requires a dedicated Realtime integration and does not support prompt steering. Deepgram Nova-3 already streams with `en-GB` and keyterms, whereas Flux is optimized for conversational turn-taking rather than long-form dictation. Streaming normally keeps up while speech is arriving, so post-stop work is mainly the unfinalized tail; it is not an absolute bound when the network/provider falls behind or VoiceInk++ receives an empty final and invokes its existing completed-audio Batch fallback.
+**Fix:** Investigation only. Keep Soniox V5 as the accepted default until identical real microphone recordings prove a replacement. Test Speechmatics Enhanced at the current two-second delay as the lowest-effort quality comparator, and treat AssemblyAI Universal-3.5 Pro Streaming `max_accuracy` as the strongest quality-first integration candidate. Measure stop-to-final p50/p95, proper-noun/Vocabulary accuracy, punctuation/edit burden, empty-final/fallback rate, and cost.
+**Commit:** investigation-only
+**Guard:** Never call a vendor universally better from its own benchmark. Before selecting AssemblyAI 3.5, update the registry and streaming adapter deliberately and prove the exact model, `max_accuracy`, prompt, and keyterm parameters in a sanitized endpoint test. Before changing Speechmatics delay, expose or deliberately set it and test real long dictation; do not infer a guaranteed stop bound from partial HUD text.
+---
+
+---
 **Date:** 2026-07-25T21:58:00Z
 **Trigger:** Ethan reported another apparent paste-plus-Return miss in Claude and asked for a Computer Use investigation of Claude Code.
 **Symptom:** Foreground Primary delivery in Claude appeared intermittent even though VoiceInk++ logged both the paste command and Return event as posted.
