@@ -320,6 +320,60 @@ class VoiceInkEngine: NSObject, ObservableObject {
         recomputeDerivedState()
     }
 
+    /// Toggles capture for the existing mic-owning session without finalizing its
+    /// audio or changing its paste destination. Pause/resume is deliberately not a
+    /// fourth delivery route: only the later single Primary stop or Next stop chooses
+    /// how this same session is delivered.
+    @discardableResult
+    func toggleRecordingPause() async -> Bool {
+        guard let session = activeRecordingSession else {
+            vippLog.info("recording pause toggle ignored because no active session owns the mic")
+            return false
+        }
+
+        let previousState = session.liveRecordingState
+        do {
+            switch previousState {
+            case .recording:
+                try await recorder.pauseRecording()
+                guard activeRecordingSession === session,
+                      session.phase == .recording,
+                      session.liveRecordingState == previousState,
+                      !session.shouldCancel else {
+                    return false
+                }
+                session.liveRecordingState = .paused
+                vippLog.info("recording pause toggle: session \(session.id.uuidString, privacy: .public) capture=paused media=resumed")
+
+            case .paused:
+                try await recorder.resumeRecording()
+                guard activeRecordingSession === session,
+                      session.phase == .recording,
+                      session.liveRecordingState == previousState,
+                      !session.shouldCancel else {
+                    return false
+                }
+                session.liveRecordingState = .recording
+                vippLog.info("recording pause toggle: session \(session.id.uuidString, privacy: .public) capture=resumed media=paused")
+
+            default:
+                vippLog.info("recording pause toggle ignored for liveState=\(String(describing: previousState), privacy: .public)")
+                return false
+            }
+            recomputeDerivedState()
+            return true
+        } catch {
+            logger.error("Recording pause toggle failed state=\(String(describing: previousState), privacy: .public) error=\(error, privacy: .public)")
+            NotificationManager.shared.showNotification(
+                title: previousState == .paused
+                    ? String(localized: "Recording could not resume")
+                    : String(localized: "Recording could not pause"),
+                type: .error
+            )
+            return false
+        }
+    }
+
     // MARK: - Toggle Record
 
     // The single entry point for the record shortcut / record button. Behaviour:
@@ -631,7 +685,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             await activeModeTask.value
 
-            guard session.liveRecordingState == .recording,
+            guard session.liveRecordingState.isRecordingOrPaused,
                   self.activeRecordingSession === session,
                   session.startID == startID,
                   !session.shouldCancel else {
@@ -694,7 +748,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // own the shared Recorder while this await was suspended. Never install
                 // A's callback into B's recorder: that would route B's microphone chunks
                 // into A's streaming provider and is a direct old/new transcript race.
-                guard session.liveRecordingState == .recording,
+                guard session.liveRecordingState.isRecordingOrPaused,
                       self.activeRecordingSession === session,
                       session.startID == startID,
                       !session.shouldCancel else {

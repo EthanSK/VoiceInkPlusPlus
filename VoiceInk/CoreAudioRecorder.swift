@@ -3,6 +3,7 @@ import CoreAudio
 import AudioToolbox
 import AVFoundation
 import os
+import Atomics
 
 // MARK: - Core Audio Recorder (AUHAL-based, does not change system default device)
 final class CoreAudioRecorder: @unchecked Sendable {
@@ -15,6 +16,11 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private var audioFile: ExtAudioFileRef?
 
     private var isRecording = false
+    // Pause keeps the recording file and realtime callback alive, but stops AUHAL.
+    // The callback gate is deliberately independent as a final boundary: even a
+    // callback already queued when pause begins cannot enter the WAV or stream.
+    private var isPaused = false
+    private let acceptsInputBuffers = ManagedAtomic(false)
     private var isAudioUnitInitialized = false
     private var currentDeviceID: AudioDeviceID = 0
     private var recordingURL: URL?
@@ -124,10 +130,49 @@ final class CoreAudioRecorder: @unchecked Sendable {
             try startAudioUnit()
         } catch {
             isRecording = false
+            isPaused = false
+            acceptsInputBuffers.store(false, ordering: .releasing)
             closeOutputFile()
             recordingURL = nil
             teardownPreparedAudioUnit()
             throw error
+        }
+    }
+
+    /// Stops microphone capture without closing the WAV or realtime stream.
+    func pauseRecording() throws {
+        guard isRecording, !isPaused, let unit = audioUnit else {
+            throw CoreAudioRecorderError.audioUnitNotInitialized
+        }
+
+        // Close the callback gate before stopping AUHAL so an in-flight callback
+        // cannot append post-pause speech to either output.
+        isPaused = true
+        acceptsInputBuffers.store(false, ordering: .releasing)
+        let status = AudioOutputUnitStop(unit)
+        guard status == noErr else {
+            isPaused = false
+            acceptsInputBuffers.store(true, ordering: .releasing)
+            throw CoreAudioRecorderError.failedToStop(status: status)
+        }
+        resetMeters()
+    }
+
+    /// Restarts capture into the same open WAV and realtime stream.
+    func resumeRecording() throws {
+        guard isRecording, isPaused, let unit = audioUnit, isAudioUnitInitialized else {
+            throw CoreAudioRecorderError.audioUnitNotInitialized
+        }
+
+        // Open the callback gate before AUHAL starts so the first resumed frames are
+        // retained. Restore the paused state if the hardware refuses to restart.
+        isPaused = false
+        acceptsInputBuffers.store(true, ordering: .releasing)
+        let status = AudioOutputUnitStart(unit)
+        guard status == noErr else {
+            isPaused = true
+            acceptsInputBuffers.store(false, ordering: .releasing)
+            throw CoreAudioRecorderError.failedToStart(status: status)
         }
     }
 
@@ -138,12 +183,17 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
 
         let wasRecording = isRecording
+        let wasPaused = isPaused
         isRecording = false
+        isPaused = false
+        acceptsInputBuffers.store(false, ordering: .releasing)
 
         if wasRecording, let unit = audioUnit {
-            let stopStatus = AudioOutputUnitStop(unit)
-            if stopStatus != noErr {
-                logger.warning("🎙️ AudioOutputUnitStop returned \(stopStatus, privacy: .public)")
+            if !wasPaused {
+                let stopStatus = AudioOutputUnitStop(unit)
+                if stopStatus != noErr {
+                    logger.warning("🎙️ AudioOutputUnitStop returned \(stopStatus, privacy: .public)")
+                }
             }
 
             let resetStatus = AudioUnitReset(unit, kAudioUnitScope_Global, 0)
@@ -168,8 +218,13 @@ final class CoreAudioRecorder: @unchecked Sendable {
     }
 
     var isCurrentlyRecording: Bool { isRecording }
+    var isCurrentlyPaused: Bool { isPaused }
     var currentRecordingURL: URL? { recordingURL }
     var currentDevice: AudioDeviceID { currentDeviceID }
+
+    static func shouldProcessInputBuffer(isRecording: Bool, isPaused: Bool) -> Bool {
+        isRecording && !isPaused
+    }
 
     /// Switches to a new input device mid-recording without stopping the file write
     func switchDevice(to newDeviceID: AudioDeviceID) throws {
@@ -183,10 +238,17 @@ final class CoreAudioRecorder: @unchecked Sendable {
         let oldDeviceID = currentDeviceID
         logger.notice("🎙️ Switching recording device from \(oldDeviceID, privacy: .public) to \(newDeviceID, privacy: .public)")
 
-        // Step 1: Stop the AudioUnit (but keep file open)
-        var status = AudioOutputUnitStop(unit)
-        if status != noErr {
-            logger.warning("🎙️ Warning: AudioOutputUnitStop returned \(status, privacy: .public)")
+        let wasPaused = isPaused
+
+        // Step 1: Stop the AudioUnit if it is currently capturing (but keep the
+        // file open). A paused recording is already stopped and must stay paused
+        // after the device switch.
+        var status: OSStatus = noErr
+        if !wasPaused {
+            status = AudioOutputUnitStop(unit)
+            if status != noErr {
+                logger.warning("🎙️ Warning: AudioOutputUnitStop returned \(status, privacy: .public)")
+            }
         }
 
         // Step 2: Uninitialize to allow reconfiguration
@@ -214,7 +276,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
             AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &recoveryDevice, UInt32(MemoryLayout<AudioDeviceID>.size))
             let initializeStatus = AudioUnitInitialize(unit)
             isAudioUnitInitialized = initializeStatus == noErr
-            if initializeStatus == noErr {
+            if initializeStatus == noErr, !wasPaused {
                 AudioOutputUnitStart(unit)
             }
             throw CoreAudioRecorderError.failedToSetDevice(status: status)
@@ -290,9 +352,11 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
         isAudioUnitInitialized = true
 
-        status = AudioOutputUnitStart(unit)
-        if status != noErr {
-            throw CoreAudioRecorderError.failedToStart(status: status)
+        if !wasPaused {
+            status = AudioOutputUnitStart(unit)
+            if status != noErr {
+                throw CoreAudioRecorderError.failedToStart(status: status)
+            }
         }
 
         logger.notice("🎙️ Successfully switched to device \(newDeviceID, privacy: .public)")
@@ -549,9 +613,13 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
 
         isRecording = true
+        isPaused = false
+        acceptsInputBuffers.store(true, ordering: .releasing)
         let status = AudioOutputUnitStart(audioUnit)
         if status != noErr {
             isRecording = false
+            isPaused = false
+            acceptsInputBuffers.store(false, ordering: .releasing)
             logger.error("Failed to start AudioUnit: \(status, privacy: .public)")
             throw CoreAudioRecorderError.failedToStart(status: status)
         }
@@ -641,7 +709,9 @@ final class CoreAudioRecorder: @unchecked Sendable {
         inNumberFrames: UInt32
     ) -> OSStatus {
 
-        guard let audioUnit = audioUnit, isRecording, let renderBuf = renderBuffer else {
+        guard let audioUnit = audioUnit,
+              acceptsInputBuffers.load(ordering: .acquiring),
+              let renderBuf = renderBuffer else {
             return noErr
         }
 
@@ -678,6 +748,12 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
         if status != noErr {
             return status
+        }
+
+        // Pause can race a callback that passed the entry gate just before AUHAL
+        // stopped. Recheck after render and before either irreversible sink.
+        guard acceptsInputBuffers.load(ordering: .acquiring) else {
+            return noErr
         }
 
         // Calculate audio meters from input buffer
@@ -970,6 +1046,7 @@ enum CoreAudioRecorderError: LocalizedError {
     case failedToSetFileFormat(status: OSStatus)
     case failedToInitialize(status: OSStatus)
     case failedToStart(status: OSStatus)
+    case failedToStop(status: OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -1001,6 +1078,8 @@ enum CoreAudioRecorderError: LocalizedError {
             return String(format: String(localized: "Failed to initialize AudioUnit: %lld"), Int64(status))
         case .failedToStart(let status):
             return String(format: String(localized: "Failed to start AudioUnit: %lld"), Int64(status))
+        case .failedToStop(let status):
+            return String(format: String(localized: "Failed to pause AudioUnit: %lld"), Int64(status))
         }
     }
 }

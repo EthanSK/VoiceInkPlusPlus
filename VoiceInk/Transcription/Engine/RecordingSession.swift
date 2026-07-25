@@ -118,8 +118,10 @@ struct RecordingPasteTarget {
 //                                              │    .done     │  → removed from `sessions`
 //                                              └──────────────┘     (UI animates it out)
 //
-//   • .recording    — actively capturing audio. THE mic owner. At most ONE session is
-//                     ever in this phase (the one-active-recording invariant below).
+//   • .recording    — owns the open capture session. THE mic owner. Its fine-grained
+//                     live state is normally `.recording`, or `.paused` while AUHAL
+//                     is temporarily stopped but the same WAV/stream remains open.
+//                     At most ONE session is ever in this phase.
 //   • .transcribing — audio captured, pipeline running (network upload / whisper /
 //                     fluidaudio transcription). Mic already released.
 //   • .delivering   — transcription (and optional AI enhancement) done; the result is
@@ -171,8 +173,9 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // existing MiniRecorderView / NotchRecorderView can render a single session unchanged.
     @Published var liveRecordingState: RecordingState
 
-    // Live streaming partial (only meaningful while .recording — only the recording session
-    // streams partial transcripts from its realtime session).
+    // Live streaming partial (only meaningful while phase == .recording — only this
+    // session streams partials). While liveRecordingState == .paused, the last partial
+    // stays frozen in the HUD and no new audio reaches the provider.
     @Published var partialTranscript: String = ""
 
     // Make the realtime HUD visible as soon as the frozen Mode selects a streaming

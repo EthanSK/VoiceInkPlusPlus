@@ -22,7 +22,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     private var shouldShowPasteDestinationIndicator: Bool {
         switch stateProvider.recordingState {
-        case .starting, .recording, .transcribing, .enhancing:
+        case .starting, .recording, .paused, .transcribing, .enhancing:
             return true
         case .idle, .busy:
             return false
@@ -39,7 +39,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     // an ellipsis makes the streaming mode visible without reviving routine
     // "Recording" text or inventing transcript content.
     private var hasLiveTranscript: Bool {
-        stateProvider.recordingState == .recording
+        stateProvider.recordingState.isRecordingOrPaused
             && stateProvider.showsRealtimeTranscriptHUD
     }
 
@@ -66,7 +66,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     // cancel (the assistant close-button affordance covers idle dismissal instead).
     private var shouldShowCancelButton: Bool {
         switch stateProvider.recordingState {
-        case .starting, .recording, .transcribing, .enhancing:
+        case .starting, .recording, .paused, .transcribing, .enhancing:
             return true
         case .idle, .busy:
             return false
@@ -74,7 +74,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     private var liveAssistantFollowUpText: String {
-        guard stateProvider.recordingState == .recording else { return "" }
+        guard stateProvider.recordingState.isRecordingOrPaused else { return "" }
         return stateProvider.partialTranscript
     }
 
@@ -155,7 +155,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 if shouldShowPasteDestinationIndicator {
                     PasteDestinationIndicator(
                         target: stateProvider.pasteDestinationIndicatorTarget,
-                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
+                        context: stateProvider.recordingState == .starting || stateProvider.recordingState.isRecordingOrPaused ? .nextTrackStop : .pendingPaste,
                         actionPulseID: stateProvider.lockedDestinationIconActionPulseID
                     ) // Do not hide this at stop: the same per-session icon confirms VoiceInk still owns the target while transcription is loading, and updates if Next Track retargets it.
                         .transition(.opacity)

@@ -142,6 +142,9 @@ class RecordingShortcutManager: ObservableObject {
                     stopPasteDestination: stopPasteDestination
                 )
             },
+            toggleRecordingPause: {
+                await engine.toggleRecordingPause()
+            },
             cancelRecording: {
                 await recorderUIManager.cancelRecording()
             }
@@ -332,10 +335,14 @@ class RecordingShortcutManager: ObservableObject {
             onNextTrackKeyDown: { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return false }
+                    // Next owns a different physical gesture and destination route.
+                    // Cancel the delayed single-Primary decision first so it cannot
+                    // fire after Next has already stopped the same recording.
+                    self.shortcutModeHandler.cancelPendingPrimaryStopDecision()
 
-                    if self.engine.recordingState == .recording,
+                    if self.engine.recordingState.isRecordingOrPaused,
                        self.recorderUIManager.isRecorderPanelVisible {
-                        self.logger.info("Next Track key-down consumed recordingState=recording route=recordingStart")
+                        self.logger.info("Next Track key-down consumed recordingState=\(String(describing: self.engine.recordingState), privacy: .public) route=recordingStart")
                         Task { @MainActor [weak self] in
                             await self?.recorderUIManager.toggleRecorderPanel(
                                 stopPasteDestination: .recordingStart
@@ -463,12 +470,85 @@ private final class RecordingShortcutModeSource {
     }
 }
 
+/// Pure timing state for the Primary button's recording-time double press.
+///
+/// The first press cannot stop immediately because it is indistinguishable from
+/// the first half of a double press. It therefore owns one bounded deferred
+/// normal stop. A matching second press consumes that pending stop and toggles
+/// capture pause/resume instead. This coordinator never chooses a paste target;
+/// the eventual single stop remains `.primaryCurrentInput`.
+struct PrimaryRecordingPressCoordinator {
+    enum Decision: Equatable {
+        case startOrCancelImmediately
+        case deferNormalStop(generation: Int)
+        case togglePause
+        case performOverdueNormalStop
+    }
+
+    private struct PendingStop {
+        let eventTime: TimeInterval
+        let generation: Int
+    }
+
+    let doublePressInterval: TimeInterval
+    private var nextGeneration = 0
+    private var pendingStop: PendingStop?
+
+    init(doublePressInterval: TimeInterval) {
+        self.doublePressInterval = doublePressInterval
+    }
+
+    var hasPendingNormalStop: Bool {
+        pendingStop != nil
+    }
+
+    mutating func registerPress(
+        recordingState: RecordingState,
+        eventTime: TimeInterval
+    ) -> Decision {
+        guard recordingState.isRecordingOrPaused else {
+            pendingStop = nil
+            return .startOrCancelImmediately
+        }
+
+        if let pendingStop {
+            let elapsed = eventTime - pendingStop.eventTime
+            self.pendingStop = nil
+            if elapsed >= 0, elapsed <= doublePressInterval {
+                return .togglePause
+            }
+            // The sleep task should normally have committed this already. If the
+            // MainActor was delayed, fail toward the promised single-stop action
+            // instead of silently converting a slow pair into a pause.
+            return .performOverdueNormalStop
+        }
+
+        nextGeneration += 1
+        pendingStop = PendingStop(
+            eventTime: eventTime,
+            generation: nextGeneration
+        )
+        return .deferNormalStop(generation: nextGeneration)
+    }
+
+    mutating func consumeDeferredStop(generation: Int) -> Bool {
+        guard pendingStop?.generation == generation else { return false }
+        pendingStop = nil
+        return true
+    }
+
+    mutating func cancelPendingStop() {
+        pendingStop = nil
+    }
+}
+
 @MainActor
 final class RecordingShortcutModeHandler {
     private let canHandleShortcutAction: @MainActor () -> Bool
     private let isRecorderVisible: @MainActor () -> Bool
     private let recordingState: @MainActor () -> RecordingState
     private let toggleRecorderPanel: @MainActor (UUID?, RecordingPasteDestination) async -> Void
+    private let toggleRecordingPause: @MainActor () async -> Bool
     private let cancelRecording: @MainActor () async -> Void
     // Feature A (2026-06-21): resolve the active Shortcut for an action so we can read
     // whether it's modifier-only + its required modifier mask. See the STOP-hold logic.
@@ -509,6 +589,8 @@ final class RecordingShortcutModeHandler {
     private var interruptedRecordingActions = Set<ShortcutAction>()
     private var activeShortcutCanCancelAccidentalStart = false
     private var lastShortcutPressTime: Date?
+    private var primaryPressCoordinator: PrimaryRecordingPressCoordinator
+    private var primaryStopDecisionTask: Task<Void, Never>?
 
     // Feature A (focus lock) — NEW START→STOP DECISION MODEL (2026-06-21).
     //
@@ -546,18 +628,25 @@ final class RecordingShortcutModeHandler {
         isRecorderVisible: @escaping @MainActor () -> Bool,
         recordingState: @escaping @MainActor () -> RecordingState,
         toggleRecorderPanel: @escaping @MainActor (UUID?, RecordingPasteDestination) async -> Void,
+        toggleRecordingPause: @escaping @MainActor () async -> Bool = { false },
         cancelRecording: @escaping @MainActor () async -> Void,
-        shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut? = { _ in nil }
+        shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut? = { _ in nil },
+        primaryDoublePressInterval: TimeInterval = NSEvent.doubleClickInterval
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
         self.isRecorderVisible = isRecorderVisible
         self.recordingState = recordingState
         self.toggleRecorderPanel = toggleRecorderPanel
+        self.toggleRecordingPause = toggleRecordingPause
         self.cancelRecording = cancelRecording
         self.shortcutForAction = shortcutForAction
+        self.primaryPressCoordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: primaryDoublePressInterval
+        )
     }
 
     func reset() {
+        cancelPendingPrimaryStopDecision()
         isShortcutPressed = false
         shortcutPressStartTime = nil
         isHandsFreeRecording = false
@@ -586,7 +675,13 @@ final class RecordingShortcutModeHandler {
             return
         }
 
-        if let lastTrigger = lastShortcutPressTime,
+        let isPrimaryToggleGesture =
+            action == .primaryRecording && mode == .toggle
+        if Self.shouldApplyShortcutPressCooldown(
+            action: action,
+            mode: mode
+        ),
+           let lastTrigger = lastShortcutPressTime,
            Date().timeIntervalSince(lastTrigger) < shortcutPressCooldown {
             return
         }
@@ -599,6 +694,14 @@ final class RecordingShortcutModeHandler {
         activeShortcutCanCancelAccidentalStart = canCurrentShortcutPressCancelAccidentalStart
         lastShortcutPressTime = Date()
         shortcutPressStartTime = eventTime
+
+        if isPrimaryToggleGesture {
+            await handlePrimaryToggleKeyDown(
+                eventTime: eventTime,
+                modeId: modeId
+            )
+            return
+        }
 
         if mode == .toggle {
             if isHandsFreeRecording {
@@ -781,6 +884,95 @@ final class RecordingShortcutModeHandler {
                 await toggleRecorderPanel(modeId, .primaryCurrentInput)
             }
         }
+    }
+
+    static func shouldApplyShortcutPressCooldown(
+        action: ShortcutAction,
+        mode: RecordingShortcutManager.Mode
+    ) -> Bool {
+        // Repeats from one held chord are still rejected by isShortcutPressed and
+        // ShortcutMonitor's reducer. Only a released-and-pressed-again Primary
+        // toggle bypasses the legacy cooldown so the second click can mean pause.
+        !(action == .primaryRecording && mode == .toggle)
+    }
+
+    private func handlePrimaryToggleKeyDown(
+        eventTime: TimeInterval,
+        modeId: UUID?
+    ) async {
+        let decision = primaryPressCoordinator.registerPress(
+            recordingState: recordingState(),
+            eventTime: eventTime
+        )
+
+        switch decision {
+        case .startOrCancelImmediately:
+            primaryStopDecisionTask?.cancel()
+            primaryStopDecisionTask = nil
+            guard canHandleShortcutAction() else { return }
+            await toggleRecorderPanel(modeId, .primaryCurrentInput)
+
+        case .deferNormalStop(let generation):
+            schedulePrimaryNormalStop(
+                generation: generation,
+                modeId: modeId
+            )
+
+        case .togglePause:
+            primaryStopDecisionTask?.cancel()
+            primaryStopDecisionTask = nil
+            guard canHandleShortcutAction() else { return }
+            let didToggle = await toggleRecordingPause()
+            vippLog.info("shortcut: Primary double-press pause toggle success=\(didToggle, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
+
+        case .performOverdueNormalStop:
+            primaryStopDecisionTask?.cancel()
+            primaryStopDecisionTask = nil
+            guard recordingState().isRecordingOrPaused,
+                  canHandleShortcutAction() else {
+                return
+            }
+            vippLog.info("shortcut: overdue Primary single press committed as base-current-input stop")
+            await toggleRecorderPanel(modeId, .primaryCurrentInput)
+        }
+    }
+
+    private func schedulePrimaryNormalStop(
+        generation: Int,
+        modeId: UUID?
+    ) {
+        primaryStopDecisionTask?.cancel()
+        let delay = primaryPressCoordinator.doublePressInterval
+        vippLog.info("shortcut: Primary first recording-time press deferred for \(delay, privacy: .public)s awaiting possible pause double-press")
+        primaryStopDecisionTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return
+            }
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.primaryPressCoordinator.consumeDeferredStop(
+                      generation: generation
+                  ),
+                  self.recordingState().isRecordingOrPaused,
+                  self.isRecorderVisible(),
+                  self.canHandleShortcutAction() else {
+                return
+            }
+
+            self.primaryStopDecisionTask = nil
+            self.vippLog.info("shortcut: Primary single press window expired → base-current-input normal stop")
+            await self.toggleRecorderPanel(modeId, .primaryCurrentInput)
+        }
+    }
+
+    func cancelPendingPrimaryStopDecision() {
+        primaryStopDecisionTask?.cancel()
+        primaryStopDecisionTask = nil
+        primaryPressCoordinator.cancelPendingStop()
     }
 
     func handleKeyUp(

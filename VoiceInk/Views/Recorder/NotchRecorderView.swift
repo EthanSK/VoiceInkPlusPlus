@@ -28,7 +28,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         }
 
         switch stateProvider.recordingState {
-        case .recording:
+        case .recording, .paused:
             // Keep the realtime panel visible before the provider's first partial so
             // a slow Wi-Fi/WebSocket handshake cannot make streaming mode look off.
             let shouldShowLive = stateProvider.showsRealtimeTranscriptHUD
@@ -94,7 +94,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     private var shouldShowPasteDestinationIndicator: Bool {
         switch stateProvider.recordingState {
-        case .starting, .recording, .transcribing, .enhancing:
+        case .starting, .recording, .paused, .transcribing, .enhancing:
             return true
         case .idle, .busy:
             return false
@@ -106,7 +106,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     // abort before paste) plus the brief .starting handshake. Hidden at .idle/.busy.
     private var shouldShowCancelButton: Bool {
         switch stateProvider.recordingState {
-        case .starting, .recording, .transcribing, .enhancing:
+        case .starting, .recording, .paused, .transcribing, .enhancing:
             return true
         case .idle, .busy:
             return false
@@ -114,7 +114,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     private var liveAssistantFollowUpText: String {
-        guard stateProvider.recordingState == .recording else { return "" }
+        guard stateProvider.recordingState.isRecordingOrPaused else { return "" }
         return stateProvider.partialTranscript
     }
 
@@ -236,7 +236,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 if shouldShowPasteDestinationIndicator {
                     PasteDestinationIndicator(
                         target: stateProvider.pasteDestinationIndicatorTarget,
-                        context: stateProvider.recordingState == .starting || stateProvider.recordingState == .recording ? .nextTrackStop : .pendingPaste,
+                        context: stateProvider.recordingState == .starting || stateProvider.recordingState.isRecordingOrPaused ? .nextTrackStop : .pendingPaste,
                         actionPulseID: stateProvider.lockedDestinationIconActionPulseID
                     ) // Mirrors the mini capsule and stays attached to this session until paste succeeds or visibly fails.
                         .padding(.leading, 8)

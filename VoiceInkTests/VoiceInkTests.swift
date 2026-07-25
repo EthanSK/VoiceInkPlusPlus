@@ -127,6 +127,171 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func primaryDoublePressDefersStopThenTogglesPause() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+
+        let firstDecision = coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10
+        )
+        #expect(firstDecision == .deferNormalStop(generation: 1))
+        #expect(coordinator.hasPendingNormalStop)
+
+        let secondDecision = coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10.3
+        )
+        #expect(secondDecision == .togglePause)
+        #expect(!coordinator.hasPendingNormalStop)
+    }
+
+    @Test func primaryDoublePressWhilePausedResumesInsteadOfStopping() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+
+        let firstDecision = coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 20
+        )
+        #expect(firstDecision == .deferNormalStop(generation: 1))
+        let secondDecision = coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 20.4
+        )
+        #expect(secondDecision == .togglePause)
+    }
+
+    @Test func primarySinglePressCommitsExactlyOneDeferredStop() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+        let decision = coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 30
+        )
+        let generation: Int
+        switch decision {
+        case .deferNormalStop(let value):
+            generation = value
+        default:
+            Issue.record("Expected a deferred Primary normal stop")
+            return
+        }
+
+        let firstConsumption = coordinator.consumeDeferredStop(
+            generation: generation
+        )
+        let secondConsumption = coordinator.consumeDeferredStop(
+            generation: generation
+        )
+        #expect(firstConsumption)
+        #expect(!secondConsumption)
+        #expect(!coordinator.hasPendingNormalStop)
+    }
+
+    @Test func alternateStopCanCancelPendingPrimaryDecision() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+        let decision = coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 40
+        )
+        let generation: Int
+        switch decision {
+        case .deferNormalStop(let value):
+            generation = value
+        default:
+            Issue.record("Expected a deferred Primary normal stop")
+            return
+        }
+
+        coordinator.cancelPendingStop()
+        #expect(!coordinator.hasPendingNormalStop)
+        let consumedAfterCancellation = coordinator.consumeDeferredStop(
+            generation: generation
+        )
+        #expect(!consumedAfterCancellation)
+    }
+
+    @MainActor
+    @Test func rapidSecondPrimaryToggleBypassesOnlyLegacyCooldown() {
+        #expect(!RecordingShortcutModeHandler.shouldApplyShortcutPressCooldown(
+            action: .primaryRecording,
+            mode: .toggle
+        ))
+        #expect(RecordingShortcutModeHandler.shouldApplyShortcutPressCooldown(
+            action: .secondaryRecording,
+            mode: .toggle
+        ))
+        #expect(RecordingShortcutModeHandler.shouldApplyShortcutPressCooldown(
+            action: .primaryRecording,
+            mode: .pushToTalk
+        ))
+    }
+
+    @Test func pausedCoreAudioRejectsEveryInputBuffer() {
+        #expect(CoreAudioRecorder.shouldProcessInputBuffer(
+            isRecording: true,
+            isPaused: false
+        ))
+        #expect(!CoreAudioRecorder.shouldProcessInputBuffer(
+            isRecording: true,
+            isPaused: true
+        ))
+        #expect(!CoreAudioRecorder.shouldProcessInputBuffer(
+            isRecording: false,
+            isPaused: false
+        ))
+    }
+
+    @Test func nextTrackCancelsDeferredPrimaryStopBeforeItsOwnRoute() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Shortcuts/RecordingShortcutManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let nextStart = try #require(source.range(
+            of: "            onNextTrackKeyDown:"
+        ))
+        let monitorEnd = try #require(source.range(
+            of: "        )\n    }\n\n    static func shouldConsumeNextTrack",
+            range: nextStart.upperBound..<source.endIndex
+        ))
+        let nextBody = source[nextStart.lowerBound..<monitorEnd.lowerBound]
+        let cancellation = try #require(nextBody.range(
+            of: "cancelPendingPrimaryStopDecision()"
+        ))
+        let recordingStartRoute = try #require(nextBody.range(
+            of: "stopPasteDestination: .recordingStart"
+        ))
+
+        #expect(cancellation.lowerBound < recordingStartRoute.lowerBound)
+
+        let deferredStart = try #require(source.range(
+            of: "    private func schedulePrimaryNormalStop("
+        ))
+        let deferredEnd = try #require(source.range(
+            of: "    func cancelPendingPrimaryStopDecision()",
+            range: deferredStart.upperBound..<source.endIndex
+        ))
+        let deferredBody = source[
+            deferredStart.lowerBound..<deferredEnd.lowerBound
+        ]
+        #expect(deferredBody.contains(
+            "toggleRecorderPanel(modeId, .primaryCurrentInput)"
+        ))
+        #expect(!deferredBody.contains(".recordingStart"))
+        #expect(!deferredBody.contains(".focusedDuringTranscription"))
+    }
+
     @Test func recordingStartReservationRejectsDuplicatePendingStarts() {
         var reservation = RecordingStartReservation()
         let first = UUID()

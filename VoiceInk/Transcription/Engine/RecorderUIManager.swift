@@ -204,7 +204,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
         if isRecorderPanelVisible {
             switch engine.recordingState {
-            case .recording:
+            case .recording, .paused:
                 await engine.toggleRecord(
                     modeId: modeId,
                     stopPasteDestination: stopPasteDestination
@@ -366,7 +366,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             // correct (unlike the re-entrant toggle path, which we now ignore).
             vippLog.info("handleDismissRecorderPanelNotification: explicit dismiss (state=\(String(describing: self.engine?.recordingState), privacy: .public))")
             switch engine?.recordingState {
-            case .starting, .recording, .transcribing, .enhancing:
+            case .starting, .recording, .paused, .transcribing, .enhancing:
                 await cancelRecording()
             case .idle, .busy, nil:
                 await dismissRecorderPanel()

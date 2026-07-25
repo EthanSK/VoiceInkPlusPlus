@@ -117,7 +117,7 @@ struct RecorderRecordButton: View {
         switch recordingState {
         case .idle, .starting, .busy:
             return .ready
-        case .recording:
+        case .recording, .paused:
             return .recording
         case .transcribing, .enhancing:
             return .processing
@@ -126,7 +126,7 @@ struct RecorderRecordButton: View {
 
     private var isDisabled: Bool {
         switch recordingState {
-        case .idle, .recording:
+        case .idle, .recording, .paused:
             return false
         case .starting, .transcribing, .enhancing, .busy:
             return true
@@ -203,6 +203,8 @@ struct RecorderRecordButton: View {
             return String(localized: "Starting recording")
         case .recording:
             return String(localized: "Stop recording")
+        case .paused:
+            return String(localized: "Stop paused recording")
         case .transcribing:
             return String(localized: "Transcribing recording")
         case .enhancing:
@@ -788,6 +790,14 @@ struct RecorderStatusDisplay: View {
             } else if currentState == .recording {
                 AudioVisualizer(audioMeter: audioMeter, color: .white, isActive: true)
                     .scaleEffect(y: menuBarHeight != nil ? min(1.0, (menuBarHeight! - 8) / 25) : 1.0, anchor: .center)
+                    .transition(.opacity)
+            } else if currentState == .paused {
+                // Pause is visible without adding routine status text above the
+                // waveform. The amber symbol appears on every mirrored recorder.
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(AppTheme.Status.warningStrong)
+                    .frame(width: 40, height: 20)
                     .transition(.opacity)
             } else {
                 StaticVisualizer(color: .white)

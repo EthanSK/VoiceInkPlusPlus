@@ -195,13 +195,87 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
+    /// Temporarily releases the microphone and media suppression while preserving
+    /// this recording's open WAV and realtime transcription session.
+    func pauseRecording() async throws {
+        guard let currentRecorder = recorder else {
+            throw CoreAudioRecorderError.audioUnitNotInitialized
+        }
+        audioMuteTask?.cancel()
+        audioMuteTask = nil
+        mediaPauseTask?.cancel()
+        mediaPauseTask = nil
+        stopAudioMeter()
+
+        do {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                audioSetupQueue.async {
+                    do {
+                        try currentRecorder.pauseRecording()
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } catch {
+            // Capture is still live when the hardware pause fails, so restore the
+            // meter and leave media suppression paired with the active recording.
+            startAudioMeterTimer()
+            muteSystemAudio()
+            pauseMedia()
+            throw error
+        }
+
+        resetAudioMeter()
+        audioRestorationTask?.cancel()
+        audioRestorationTask = Task {
+            guard !Task.isCancelled else { return }
+            await mediaController.unmuteSystemAudio()
+            guard !Task.isCancelled else { return }
+            await playbackController.resumeMedia()
+        }
+        // The YouTube helper owns only a recording-start/stop protocol. A pause is
+        // therefore a temporary stop, paired with a fresh start on resume.
+        RecordingActivityNotifier.postRecordingStopped()
+        logger.info("Recording capture paused; WAV and realtime session remain open")
+    }
+
+    /// Continues capture into the same WAV/realtime session and reapplies the same
+    /// media suppression used at initial recording start.
+    func resumeRecording() async throws {
+        audioRestorationTask?.cancel()
+        audioRestorationTask = nil
+
+        guard let currentRecorder = recorder else {
+            throw CoreAudioRecorderError.audioUnitNotInitialized
+        }
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            audioSetupQueue.async {
+                do {
+                    try currentRecorder.resumeRecording()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+
+        startAudioMeterTimer()
+        muteSystemAudio()
+        pauseMedia()
+        RecordingActivityNotifier.postRecordingStarted()
+        logger.info("Recording capture resumed into the existing WAV and realtime session")
+    }
+
     func stopRecording() async {
         audioMuteTask?.cancel()
         audioMuteTask = nil
         mediaPauseTask?.cancel()
         mediaPauseTask = nil
-        audioMeterUpdateTimer?.cancel()
-        audioMeterUpdateTimer = nil
+        stopAudioMeter()
 
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
@@ -214,16 +288,13 @@ class Recorder: NSObject, ObservableObject {
             }
         }
 
-        smoothedValuesLock.lock()
-        smoothedAverage = 0
-        smoothedPeak = 0
-        smoothedValuesLock.unlock()
-
-        audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
+        resetAudioMeter()
 
         audioRestorationTask?.cancel()
         audioRestorationTask = Task {
+            guard !Task.isCancelled else { return }
             await mediaController.unmuteSystemAudio()
+            guard !Task.isCancelled else { return }
             await playbackController.resumeMedia()
         }
 
@@ -270,6 +341,7 @@ class Recorder: NSObject, ObservableObject {
     }
 
     private func startAudioMeterTimer() {
+        audioMeterUpdateTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: audioMeterQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(17)) 
         timer.setEventHandler { [weak self] in
@@ -277,6 +349,19 @@ class Recorder: NSObject, ObservableObject {
         }
         timer.resume()
         audioMeterUpdateTimer = timer
+    }
+
+    private func stopAudioMeter() {
+        audioMeterUpdateTimer?.cancel()
+        audioMeterUpdateTimer = nil
+    }
+
+    private func resetAudioMeter() {
+        smoothedValuesLock.lock()
+        smoothedAverage = 0
+        smoothedPeak = 0
+        smoothedValuesLock.unlock()
+        audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
     }
 
     private func schedulePrepareForCurrentDevice(reason: String) {

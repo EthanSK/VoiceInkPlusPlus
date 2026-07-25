@@ -6,7 +6,7 @@ This is the canonical glossary for Ethan's mouse controls and recording destinat
 
 | Preferred term | Ethan may also say | Exact meaning |
 | --- | --- | --- |
-| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. The first press starts recording. Pressing that same button again performs a normal stop. In code, the shortcut can use `.toggle` mode. |
+| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. The first press starts recording. While recording or paused, one press performs a normal stop after the system double-click interval; two presses inside that interval toggle capture pause/resume. In code, the shortcut uses `.toggle` mode. |
 | **Next button** | forward button, secondary button, secondary mouse button, Next Track, Next Track media key/action/event, latch button, retarget button | The separate programmable mouse button mapped to the macOS Next Track media event (`NX_KEYTYPE_NEXT`). Its action depends on whether VoiceInk++ is recording or a normal-stop result is still loading. It is not the primary button and “secondary” does not mean macOS right-click. |
 
 In this repository, **toggle** without another qualifier means the primary button's start/stop lifecycle. It never means toggling a paste destination on or off. The short-lived Next-destination toggle experiment was deliberately reverted.
@@ -37,13 +37,22 @@ either physical button.
 | State before the press | Control pressed | Result | Destination value |
 | --- | --- | --- | --- |
 | Idle | Primary button | Start a new recording; while exact delivery is enabled, tentatively capture a recording-start candidate only in case Next is pressed | Not yet final |
-| Recording | Primary button again | **Normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
-| Recording | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
+| Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
+| Recording | Primary button twice within the system double-click interval | Pause this same recording, stop microphone/WAV/stream input, and resume media; no delivery begins | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button twice within the system double-click interval | Resume this same recording and pause media again; no delivery begins | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button once | After the same decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
+| Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
 | Recorder bar visible, but no session remains eligible for a destination change | Next button | Consume the press as a VoiceInk++ no-op; never advance media while the bar is visible | Existing destination remains unchanged |
 | Recorder bar hidden, with no active recording or eligible normal-stop result | Next button | Pass the Next Track event through to media normally | No VoiceInk++ destination action |
 
 If a new recording is active while an older result is transcribing, the active recording determines the button action: primary stops that recording normally; Next stops it into `recordingStart`. Do not silently reinterpret that press as a retarget of an older session.
+
+Pause is capture state inside the existing recording session, not a paste destination and not a
+fourth route. Words, music, and room audio while paused are excluded from both the saved WAV and a
+realtime provider stream. The realtime HUD remains visible with its last partial frozen, and the
+recorder waveform slot shows a pause symbol on every monitor. Media resumes on pause and is paused
+again on resume, including the paired recording activity messages used by the YouTube helper.
 
 The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or exact delivery is temporarily disabled. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
 
@@ -51,10 +60,12 @@ The recorder bar is the strict ownership boundary for the physical Next button. 
 
 ### Primary normal stop is always base VoiceInk
 
-The second press of the primary/thumb/toggle button does not latch any exact input. It posts ordinary
-system-focused paste and the current Mode's generic auto-send key to whichever keyboard input macOS
-owns at delivery. It must not capture, reuse, restore, verify, or fall back to the tentative
-recording-start input, and it must never enter Telegram/OpenAI/Terminal or other app-specific delivery.
+One Primary press while recording or paused does not latch any exact input. After the short
+double-click decision window proves it was a single press, it posts ordinary system-focused paste
+and the current Mode's generic auto-send key to whichever keyboard input macOS owns at delivery. It
+must not capture, reuse, restore, verify, or fall back to the tentative recording-start input, and it
+must never enter Telegram/OpenAI/Terminal or other app-specific delivery. A second Primary press
+inside that window cancels the pending stop and only toggles capture pause/resume.
 
 The recording-start or “old known” input is invoked only by pressing the Next button while recording.
 
