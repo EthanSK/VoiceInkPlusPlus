@@ -10,9 +10,9 @@ struct AssemblyAIProvider: CloudProvider {
 
     var models: [CloudModel] {[
         CloudModel(
-            name: "universal-3-pro",
-            displayName: "Universal-3 Pro",
-            description: "Highest-accuracy multilingual transcription with realtime support.",
+            name: AssemblyAIStreamingConnectionConfiguration.universal35ProModelName,
+            displayName: "Universal-3.5 Pro",
+            description: "Highest-accuracy multilingual transcription using max-accuracy realtime mode.",
             provider: .assemblyAI,
             speed: 0.94,
             accuracy: 0.98,

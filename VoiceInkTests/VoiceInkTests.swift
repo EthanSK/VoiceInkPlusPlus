@@ -42,6 +42,48 @@ private final class TranscriptionQueueTestState {
 
 struct VoiceInkTests {
 
+    @Test func assemblyAIUniversal35StreamingUsesMaxAccuracyAndContext() throws {
+        let url = try #require(
+            AssemblyAIStreamingConnectionConfiguration.connectionURL(
+                modelName: AssemblyAIStreamingConnectionConfiguration.universal35ProModelName,
+                language: "en",
+                prompt: "Technical software dictation.",
+                customVocabulary: ["VoiceInk++", "Codex", "codex", "   "]
+            )
+        )
+        let queryItems = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        let query = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+
+        #expect(query["speech_model"] == "universal-3-5-pro")
+        #expect(query["mode"] == "max_accuracy")
+        #expect(query["language_codes"] == #"["en"]"#)
+        #expect(query["prompt"] == "Technical software dictation.")
+        #expect(query["keyterms_prompt"] == #"["VoiceInk++","Codex"]"#)
+        #expect(query["language_code"] == nil)
+        #expect(query["format_turns"] == nil)
+    }
+
+    @Test func assemblyAIUniversal35ReplacesLegacyModelNames() {
+        #expect(
+            StreamingKeysMigration.assemblyAI35ModelMappings["universal-3-pro"]
+                == "universal-3-5-pro"
+        )
+        #expect(
+            StreamingKeysMigration.assemblyAI35ModelMappings["u3-rt-pro"]
+                == "universal-3-5-pro"
+        )
+
+        let provider = AssemblyAIProvider()
+        #expect(provider.models.contains { model in
+            model.name == "universal-3-5-pro"
+                && model.displayName == "Universal-3.5 Pro"
+                && model.supportsStreaming
+        })
+        #expect(!provider.models.contains { $0.name == "universal-3-pro" })
+    }
+
     @Test func primaryModifierChordSuppressesOnlyTheCompletedPress() {
         let shortcut = Shortcut.modifierOnly(
             keyCode: nil,
