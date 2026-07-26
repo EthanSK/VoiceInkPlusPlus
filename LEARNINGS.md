@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-26T19:39:25Z
+**Trigger:** Ethan reported that a rapid new recording after stopping the previous one sometimes did not paste, did not appear to transcribe, or pasted the older result.
+**Symptom:** Rapidly starting and stopping a new realtime recording while an older result was still finishing could leave delivery missing, delayed, or apparently paired with the older transcript.
+**Root cause:** AssemblyAI provider finalization still began only when the serial post-processing queue reached that job. An older job could therefore keep a stopped session socket open while a newer recording connected, and final completion timing was not separately bound from FIFO delivery timing.
+**Fix:** Commit 3776298 gives each streaming recording one audio-bound, one-shot finalization task; AssemblyAI starts provider commit/close at stop, while the serial queue awaits that exact result and still delivers immutable jobs in recording order. Startup completion, cancellation, empty-final batch fallback, Primary/Next routing, and shared-resource guards remain independent.
+**Commit:** 3776298fd04e6ffd251f76302358050303291b3e
+**Guard:** Fresh Mac Mini direct xcrun xctest passed all 69 named tests, including reverse provider completion with FIFO delivery, one-shot audio identity rejection, per-session cancellation, startup-before-commit ordering, reset drain, immutable job identity, empty-final fallback, realtime HUD-only, Primary isolation, and both Next-route guards. Physical rapid A/B AssemblyAI trace remains the release acceptance gate.
+---
+
+
+---
 **Date:** 2026-07-26T19:05:28Z
 **Trigger:** Ethan's screenshot showed no Universal Pro 3 under Custom and he asked for Soniox, Universal, and other configured transcription models in one list.
 **Symptom:** AI Models > Custom showed only the Deepgram proxy, so connected Universal-3.5 Pro, Universal-2, and Soniox appeared to be missing even though they were configured and usable.
