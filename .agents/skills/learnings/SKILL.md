@@ -39,6 +39,13 @@ commercial symbol or file names.
 
 For a recorder stuck on **Transcribing**, diagnose the resolved provider before touching delivery code or downgrading the app. Read the active fork domain `com.ethansk.VoiceInkPlusPlus`, decode every `modeConfigurationsV2` entry, and inspect `selectedTranscriptionModelName`, `isRealtimeTranscriptionEnabled`, and `selectedLanguage`; Mode overrides are authoritative over top-level model/language values and are frozen per recording by `ModeRuntimeResolver`. Do not inspect only the legacy `com.prakashjoshipax.VoiceInk` domain. Correlate the resolved provider with `StreamingTranscriptionService` lines such as `Streaming start requested model=` and the first server/socket error. Before switching providers, run a direct end-to-end transcription against the proposed endpoint using synthetic, non-private speech and require a successful response within the normal latency range. Preserve the installed delivery binary when provider/account evidence explains the failure.
 
+For a requested Soniox-versus-AssemblyAI comparison using saved recordings, read
+[references/provider-realtime-ab-test.md](references/provider-realtime-ab-test.md)
+and use `scripts/compare-realtime-stt.mjs`. Dry-run the corpus first, require one
+successful candidate-provider probe before the full run, keep private reports in
+`/private/tmp` with mode `0600`, and adjudicate meaningful transcript disagreements
+against the source audio rather than treating text fluency as ground truth.
+
 For a realtime stop that pastes nothing or appears to skip Return, separate transcription finalization from delivery before touching Primary or Next routing. Correlate `Streaming stop completed ... finalChars=` with `pipeline: about to DELIVER finalChars=` and the selected Mode. `finalChars=0` is not a successful final: the completed audio must take the existing batch fallback before any delivery route runs. A non-empty Primary trace with `targetAutoSend=none` instead means the current input app's Mode intentionally disabled Return; do not reinterpret it as latch contamination.
 
 ## Normalize the two mouse controls before reasoning
