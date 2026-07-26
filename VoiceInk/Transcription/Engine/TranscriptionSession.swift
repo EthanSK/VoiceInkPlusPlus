@@ -7,11 +7,82 @@ protocol TranscriptionSession: AnyObject {
     /// Prepares the session. Returns an audio chunk callback for streaming, or nil for file-based.
     func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)?
 
+    /// Gives a stopped recording a chance to begin provider finalization before
+    /// its serial post-processing/delivery turn. File/local sessions deliberately
+    /// remain serialized; a realtime cloud session may close its own socket now
+    /// while the immutable job identity preserves FIFO delivery later.
+    func beginFinalization(audioURL: URL)
+
     /// Called after recording stops. Returns the final transcribed text.
     func transcribe(audioURL: URL) async throws -> String
 
     /// Cancel the session and clean up resources.
     func cancel()
+}
+
+extension TranscriptionSession {
+    func beginFinalization(audioURL _: URL) {}
+}
+
+/// Owns exactly one asynchronous final result for exactly one recorded file.
+///
+/// Rapid recording overlap is safe only when "finish provider A now" and "deliver
+/// A in FIFO order later" are separate decisions. This one-shot binding lets a
+/// realtime socket close promptly without allowing another recording, audio URL,
+/// or later call to replace the result awaited by A's pipeline.
+@MainActor
+final class TranscriptionFinalizationTask {
+    enum FinalizationError: Error, LocalizedError, Equatable {
+        case audioIdentityMismatch(expected: String, received: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .audioIdentityMismatch(let expected, let received):
+                return "Streaming finalization audio changed from \(expected) to \(received)."
+            }
+        }
+    }
+
+    typealias Operation = @MainActor (URL) async throws -> String
+
+    private(set) var audioURL: URL?
+    private(set) var task: Task<String, Error>?
+
+    @discardableResult
+    func begin(audioURL: URL, operation: @escaping Operation) -> Bool {
+        let normalizedURL = audioURL.standardizedFileURL
+        guard task == nil else {
+            return false
+        }
+
+        self.audioURL = normalizedURL
+        task = Task { @MainActor in
+            try Task.checkCancellation()
+            let result = try await operation(normalizedURL)
+            try Task.checkCancellation()
+            return result
+        }
+        return true
+    }
+
+    func value(audioURL: URL, operation: @escaping Operation) async throws -> String {
+        let normalizedURL = audioURL.standardizedFileURL
+        if task == nil {
+            begin(audioURL: normalizedURL, operation: operation)
+        }
+
+        guard self.audioURL == normalizedURL, let task else {
+            throw FinalizationError.audioIdentityMismatch(
+                expected: self.audioURL?.lastPathComponent ?? "unbound",
+                received: normalizedURL.lastPathComponent
+            )
+        }
+        return try await task.value
+    }
+
+    func cancel() {
+        task?.cancel()
+    }
 }
 
 /// A streaming provider has not produced a deliverable final merely because its
@@ -68,9 +139,11 @@ final class FileTranscriptionSession: TranscriptionSession {
 final class StreamingTranscriptionSession: TranscriptionSession {
     private let streamingService: StreamingTranscriptionService
     private let fallbackService: TranscriptionService
+    private let finalization = TranscriptionFinalizationTask()
     private var model: (any TranscriptionModel)?
     private var context: TranscriptionRequestContext = .currentDefaults
     private var streamingFailed = false
+    private var eagerlyFinalizesAfterStop = false
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionSession")
@@ -86,6 +159,11 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         self.model = model
         self.context = context
+        // AssemblyAI limits concurrent realtime sockets. A stopped session must
+        // therefore commit/close promptly instead of waiting behind an older job's
+        // formatting, enhancement, or destination delivery. Other streaming
+        // providers retain the existing serial behavior until independently proven.
+        eagerlyFinalizesAfterStop = model.provider == .assemblyAI
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
 
         // Return callback immediately; WebSocket connects in background
@@ -128,10 +206,41 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         return callback
     }
 
+    func beginFinalization(audioURL: URL) {
+        guard eagerlyFinalizesAfterStop else { return }
+        let didBegin = finalization.begin(audioURL: audioURL) { [weak self] boundAudioURL in
+            guard let self else {
+                throw VoiceInkEngineError.transcriptionFailed
+            }
+            return try await self.performTranscription(audioURL: boundAudioURL)
+        }
+        if didBegin {
+            logger.notice("Streaming finalization started at recording stop file=\(audioURL.lastPathComponent, privacy: .public)")
+        }
+    }
+
     func transcribe(audioURL: URL) async throws -> String {
+        try await finalization.value(audioURL: audioURL) { [weak self] boundAudioURL in
+            guard let self else {
+                throw VoiceInkEngineError.transcriptionFailed
+            }
+            return try await self.performTranscription(audioURL: boundAudioURL)
+        }
+    }
+
+    private func performTranscription(audioURL: URL) async throws -> String {
         guard let model = model else {
             throw VoiceInkEngineError.transcriptionFailed
         }
+
+        // A very short recording can stop before the background WebSocket handshake
+        // finishes. Await that exact session's startup result before deciding whether
+        // to commit or use its completed WAV fallback; otherwise `notConnected` races
+        // a connection that was about to become usable.
+        if let startupTask {
+            await startupTask.value
+        }
+        try Task.checkCancellation()
 
         if !streamingFailed {
             do {
@@ -148,6 +257,8 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                     // finish the same audio through the normal provider first.
                     logger.warning("Streaming finalized without usable text; falling back to completed-file transcription")
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 logger.error("❌ Streaming failed, falling back to batch: \(error, privacy: .public)")
                 streamingService.cancel()
@@ -156,14 +267,17 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             streamingService.cancel()
         }
 
+        try Task.checkCancellation()
         let fallbackStart = Date()
         logger.notice("Using batch fallback for \(model.displayName, privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)")
         let text = try await fallbackService.transcribe(audioURL: audioURL, model: model, context: context)
+        try Task.checkCancellation()
         logger.notice("Batch fallback completed elapsed=\(Date().timeIntervalSince(fallbackStart), format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)")
         return text
     }
 
     func cancel() {
+        finalization.cancel()
         startupTask?.cancel()
         startupTask = nil
         startupTaskID = nil

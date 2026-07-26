@@ -871,6 +871,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
             transcriptionConfiguration: transcriptionConfiguration,
             transcriptionSession: session.transcriptionSession
         )
+        // Realtime provider finalization and user-visible delivery have different
+        // ordering requirements. AssemblyAI should commit/close this stopped
+        // recording's socket immediately so recording B can connect without building
+        // up stale sessions; the serial queue still awaits this exact one-shot result
+        // and delivers A, then B, using their immutable job identities.
+        job.transcriptionSession?.beginFinalization(audioURL: audioURL)
         vippLog.info("pipeline enqueue \(identity.logDescription, privacy: .public) model=\(transcriptionConfiguration.model.displayName, privacy: .public)")
 
         transcriptionJobQueue.enqueue(

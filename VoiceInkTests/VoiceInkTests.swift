@@ -523,6 +523,202 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func eagerStreamingFinalsMayFinishInReverseButDeliverInRecordingOrder() async throws {
+        var registry = TranscriptionJobRegistry()
+        let registeredA = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/rapid-a.wav")
+        )
+        let identityA = try #require(registeredA)
+        let registeredB = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/rapid-b.wav")
+        )
+        let identityB = try #require(registeredB)
+        let finalizerA = TranscriptionFinalizationTask()
+        let finalizerB = TranscriptionFinalizationTask()
+        let gateA = TranscriptionQueueTestGate()
+        let gateB = TranscriptionQueueTestGate()
+        let state = TranscriptionQueueTestState()
+        state.currentIdentities = [identityA, identityB]
+
+        #expect(finalizerA.begin(audioURL: identityA.audioURL) { _ in
+            state.events.append("provider-start:a")
+            await gateA.wait()
+            state.events.append("provider-finish:a")
+            return "result-a"
+        })
+        #expect(finalizerB.begin(audioURL: identityB.audioURL) { _ in
+            state.events.append("provider-start:b")
+            await gateB.wait()
+            state.events.append("provider-finish:b")
+            return "result-b"
+        })
+
+        while state.events.filter({ $0.hasPrefix("provider-start:") }).count < 2 {
+            await Task.yield()
+        }
+
+        let queue = SerialTranscriptionJobQueue()
+        queue.enqueue(
+            identityA,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { _ in Issue.record("A must remain current") },
+            operation: { running in
+                let result = try? await finalizerA.value(
+                    audioURL: running.audioURL,
+                    operation: { _ in
+                        Issue.record("A finalization must not run twice")
+                        return "duplicate-a"
+                    }
+                )
+                state.events.append("deliver:a:\(result ?? "error")")
+            }
+        )
+        queue.enqueue(
+            identityB,
+            isCurrent: { state.currentIdentities.contains($0) },
+            onDiscard: { _ in Issue.record("B must remain current") },
+            operation: { running in
+                let result = try? await finalizerB.value(
+                    audioURL: running.audioURL,
+                    operation: { _ in
+                        Issue.record("B finalization must not run twice")
+                        return "duplicate-b"
+                    }
+                )
+                state.events.append("deliver:b:\(result ?? "error")")
+            }
+        )
+
+        // B can finish its provider work while A is still finalizing, but FIFO
+        // delivery must not paste B first or bind B's text to A's identity.
+        await gateB.open()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(state.events.contains("provider-finish:b"))
+        #expect(!state.events.contains(where: { $0.hasPrefix("deliver:") }))
+
+        await gateA.open()
+        await queue.waitUntilIdle()
+        #expect(state.events.filter({ $0.hasPrefix("deliver:") }) == [
+            "deliver:a:result-a",
+            "deliver:b:result-b",
+        ])
+    }
+
+    @MainActor
+    @Test func streamingFinalizationIsOneShotAndRejectsAnotherAudioFile() async throws {
+        let finalizer = TranscriptionFinalizationTask()
+        let audioA = URL(fileURLWithPath: "/tmp/one-shot-a.wav")
+        let audioB = URL(fileURLWithPath: "/tmp/one-shot-b.wav")
+        var operationCount = 0
+
+        #expect(finalizer.begin(audioURL: audioA) { _ in
+            operationCount += 1
+            return "result-a"
+        })
+        #expect(!finalizer.begin(audioURL: audioA) { _ in
+            operationCount += 1
+            return "duplicate"
+        })
+        #expect(try await finalizer.value(
+            audioURL: audioA,
+            operation: { _ in "duplicate" }
+        ) == "result-a")
+        #expect(operationCount == 1)
+
+        do {
+            _ = try await finalizer.value(
+                audioURL: audioB,
+                operation: { _ in "wrong-audio" }
+            )
+            Issue.record("A finalizer must never accept B's audio URL")
+        } catch let error as TranscriptionFinalizationTask.FinalizationError {
+            #expect(error == .audioIdentityMismatch(
+                expected: audioA.lastPathComponent,
+                received: audioB.lastPathComponent
+            ))
+        } catch {
+            Issue.record("Unexpected finalization error: \(error)")
+        }
+    }
+
+    @MainActor
+    @Test func cancelingOneEagerFinalizationCannotProduceItsResult() async throws {
+        let finalizer = TranscriptionFinalizationTask()
+        let audioURL = URL(fileURLWithPath: "/tmp/canceled-final.wav")
+        let gate = TranscriptionQueueTestGate()
+        let state = TranscriptionQueueTestState()
+
+        #expect(finalizer.begin(audioURL: audioURL) { _ in
+            state.events.append("started")
+            await gate.wait()
+            try Task.checkCancellation()
+            return "must-not-deliver"
+        })
+        while state.events.isEmpty {
+            await Task.yield()
+        }
+
+        finalizer.cancel()
+        await gate.open()
+        do {
+            _ = try await finalizer.value(
+                audioURL: audioURL,
+                operation: { _ in "duplicate" }
+            )
+            Issue.record("Canceled finalization unexpectedly returned text")
+        } catch is CancellationError {
+            // Expected: cancellation of this session must stay local to its task.
+        } catch {
+            Issue.record("Unexpected cancellation error: \(error)")
+        }
+    }
+
+    @Test func assemblyAIStopFinalizationStartsBeforeItsSerialDeliveryTurn() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let engineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        let sessionSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionSession.swift"
+            ),
+            encoding: .utf8
+        )
+
+        let eagerStart = try #require(engineSource.range(
+            of: "job.transcriptionSession?.beginFinalization(audioURL: audioURL)"
+        ))
+        let serialEnqueue = try #require(engineSource.range(
+            of: "transcriptionJobQueue.enqueue(",
+            range: eagerStart.upperBound..<engineSource.endIndex
+        ))
+        #expect(eagerStart.lowerBound < serialEnqueue.lowerBound)
+        #expect(sessionSource.contains(
+            "eagerlyFinalizesAfterStop = model.provider == .assemblyAI"
+        ))
+
+        let startupWait = try #require(sessionSource.range(
+            of: "await startupTask.value"
+        ))
+        let providerCommit = try #require(sessionSource.range(
+            of: "streamingService.stopAndGetFinalText()",
+            range: startupWait.upperBound..<sessionSource.endIndex
+        ))
+        #expect(startupWait.lowerBound < providerCommit.lowerBound)
+    }
+
+    @MainActor
     @Test func resetCannotResumeAWaitingJobOrAuthorizeRunningJobDelivery() async throws {
         var registry = TranscriptionJobRegistry()
         let registeredA = registry.register(
