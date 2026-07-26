@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-26T19:05:28Z
+**Trigger:** Ethan's screenshot showed no Universal Pro 3 under Custom and he asked for Soniox, Universal, and other configured transcription models in one list.
+**Symptom:** AI Models > Custom showed only the Deepgram proxy, so connected Universal-3.5 Pro, Universal-2, and Soniox appeared to be missing even though they were configured and usable.
+**Root cause:** The third catalog tab was hard-coded to render only OpenAI-compatible CustomCloudModel endpoints; connected provider models were visible only by drilling into Cloud provider panels.
+**Fix:** Commit 772e1d6 renames the tab Configured and lists every model from providers with stored credentials alongside custom endpoints, sorting models used by any Mode first and marking Universal-3.5 Pro In use.
+**Commit:** 772e1d6602f0026e8e306a6d2bdb7d3081523e9d
+**Guard:** Mac Mini direct xcrun xctest named and passed all 65 tests including configuredCatalogListsEveryModelFromConnectedProviders after the canonical TestManager stall. Signed v2.0.265 is installed with CDHash 2a60d81bef187d9d714a8ca2528812ba172a6782, deep/strict signing and Automation=true; Computer Use visibly confirmed Universal-3.5 Pro, Soniox V5, Universal-2, and Deepgram in Configured.
+---
+
+
+---
 **Date:** 2026-07-26T00:05:14Z
 **Trigger:** Ethan asked to replay roughly 20 prior recordings, rank AssemblyAI against Soniox, and tell him which is better.
 **Symptom:** The provider choice needed same-audio evidence rather than vendor claims after AssemblyAI Universal-3.5 Pro max-accuracy became usable.
