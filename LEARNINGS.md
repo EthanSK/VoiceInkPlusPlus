@@ -25,6 +25,39 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-26T00:05:14Z
+**Trigger:** Ethan asked to replay roughly 20 prior recordings, rank AssemblyAI against Soniox, and tell him which is better.
+**Symptom:** The provider choice needed same-audio evidence rather than vendor claims after AssemblyAI Universal-3.5 Pro max-accuracy became usable.
+**Root cause:** On the latest 20 meaningful saved dictations, the models were often equivalent but had different short-utterance and latency tradeoffs; the corpus contained only three Vocabulary terms and did not materially stress proper-noun prompting.
+**Fix:** Keep the result as a measured comparison, not a universal winner: normalized text matched on 7/20; conservative review scored Soniox 4 clear wins, AssemblyAI 2, and 14 ties or audio-uncertain cases. Soniox database-recorded post-stop median was 265 ms versus AssemblyAI termination median 934 ms; AssemblyAI p95 was 1.797 s versus Soniox 3.890 s because Soniox had two very-short-clip outliers. AssemblyAI remains selected only because Ethan explicitly requested the live test.
+**Commit:** b4d6495
+**Guard:** Private report voiceink-realtime-stt-comparison-1785023509121.json is mode 0600 under /private/tmp and contains 20 successful universal-3-5-pro/max_accuracy/en/no-prompt comparisons. Do not publish transcripts or promote either model from this narrow corpus; treat unauditioned disagreements as ties and rerun a proper Vocabulary-heavy corpus before a durable default decision.
+---
+
+
+---
+**Date:** 2026-07-26T00:04:01Z
+**Trigger:** Ethan requested a same-recording quality and latency comparison and continued using VoiceInk++ during the long run.
+**Symptom:** A 20-recording Soniox-versus-AssemblyAI comparison stopped at sample 12 with Unauthorized Connection: Too many concurrent sessions while Ethan used VoiceInk++ live.
+**Root cause:** The account concurrency boundary can overlap the private comparison WebSocket with a real VoiceInk++ recording, and the first harness opened the next session immediately after close with no contention retry or report resume.
+**Fix:** Commit b4d6495 makes the private harness await WebSocket close, yield with bounded backoff only for the exact concurrency error, resume successful row IDs from an existing mode-0600 report, and exclude sub-half-second history artifacts.
+**Commit:** b4d6495
+**Guard:** The interrupted report resumed without retranscribing ten completed rows, yielded twice to a live VoiceInk++ session, then completed 20/20 with universal-3-5-pro, max_accuracy, en, Vocabulary keyterms, and no contextual prompt. Node syntax, dry-run corpus checks, skill validation, and diff checks pass.
+---
+
+
+---
+**Date:** 2026-07-26T00:04:01Z
+**Trigger:** Ethan authorized reusing the AssemblyAI key already configured on his Mac Mini and asked to use the new realtime model.
+**Symptom:** AssemblyAI Universal-3.5 Pro max-accuracy was implemented in v2.0.264, but the live Mac still used Soniox because its AssemblyAI credential and per-Mode selection were absent.
+**Root cause:** VoiceInk++ LOCAL_BUILD stores provider keys as UserDefaults Data, all seven modeConfigurationsV2 records override the top-level model, and WhisperPrompt.init rewrites an empty English TranscriptionPrompt to its stock greeting on launch.
+**Fix:** Securely piped the already-authorized AssemblyAI credential from the paired Mini without exposing it, proved universal-3-5-pro/max_accuracy/en with one saved-audio endpoint probe, switched all seven Modes plus CurrentTranscriptionModel, preserved every auto-send field, and neutralized the inherited sample as an explicit blank English custom prompt that AssemblyAI trims to nil.
+**Commit:** 5c22c13
+**Guard:** Installed signed v2.0.264 remained CDHash 38ff5592981cc6590c500ba3a8a3c326173b5f01 with Automation=true; post-restart defaults show 7/7 universal-3-5-pro realtime en with Enter preserved, and PID 97722 logged Streaming start requested model=Universal-3.5 Pro then a non-empty 122-character final. Never expose or record provider credentials.
+---
+
+
+---
 **Date:** 2026-07-25T22:25:00Z
 **Trigger:** Ethan asked whether a slightly slower but higher-quality real-time model could beat Soniox V5 while keeping post-stop waits bounded.
 **Symptom:** “Real-time” can be mistaken for a guarantee that stop latency never grows, and provider model names conceal whether VoiceInk++ actually supports their quality controls and Vocabulary.

@@ -813,6 +813,36 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Transcription provider configuration failures
 
+### Clearing only `TranscriptionPrompt` before relaunch
+
+- **State:** REJECTED.
+- **Temptation:** Write an empty `TranscriptionPrompt` preference before restarting VoiceInk++ so
+  AssemblyAI establishes a no-context baseline.
+- **Observed failure condition:** `WhisperPrompt.init()` always calls
+  `updateTranscriptionPrompt()`. For English, an empty value is replaced on launch by the inherited
+  stock greeting `Hello, how are you doing? Nice to meet you.`, so clearing only the derived
+  preference does not persist and silently enables irrelevant AssemblyAI contextual prompting.
+- **Use instead:** Back up preferences and store an explicit English custom prompt whose raw value
+  is non-empty whitespace. `WhisperPrompt` therefore selects it instead of the stock greeting,
+  while `AssemblyAIStreamingProvider` trims it to `nil` and omits the prompt. Verify the saved raw
+  prompt trims to zero characters. A future source fix may add a first-class explicit-empty state.
+- **Reconsider only if:** `WhisperPrompt` distinguishes an explicitly blank custom prompt from a
+  missing prompt, or AssemblyAI prompting is deliberately enabled with relevant reviewed context.
+
+### Running a saved-recording AssemblyAI comparison beside live dictation without contention recovery
+
+- **State:** REJECTED.
+- **Temptation:** Stream all saved recordings sequentially and assume closing each harness socket
+  is enough to avoid provider concurrency limits while Ethan continues using VoiceInk++.
+- **Observed failure condition:** The first 20-recording run reached sample 12, overlapped a real
+  VoiceInk++ AssemblyAI session, and failed with `Unauthorized Connection: Too many concurrent
+  sessions`; without resume it would have resent and recharged every prior recording.
+- **Use instead:** Await socket closure, yield with bounded backoff only for that exact transient
+  error, and resume successful row IDs from the same mode-0600 report. Live dictation always wins
+  contention; never stop or alter VoiceInk++ to make a benchmark finish.
+- **Reconsider only if:** The account's verified concurrency contract changes and repeated
+  simultaneous live-plus-harness sessions complete without rejection.
+
 ### Copying Deepgram's `en-GB` locale into Soniox
 
 - **State:** REJECTED.
