@@ -84,6 +84,26 @@ struct VoiceInkTests {
         #expect(!provider.models.contains { $0.name == "universal-3-pro" })
     }
 
+    @Test func configuredCatalogListsEveryModelFromConnectedProviders() {
+        let models = CustomProviderManagementView.configuredCloudModels(
+            providers: [
+                AssemblyAIProvider(),
+                SonioxProvider(),
+                DeepgramProvider()
+            ],
+            configuredProviderKeys: ["AssemblyAI", "Soniox"],
+            selectedModelNames: ["universal-3-5-pro"]
+        )
+
+        #expect(models.first?.name == "universal-3-5-pro")
+        #expect(Set(models.map(\.name)) == [
+            "universal-3-5-pro",
+            "universal-streaming",
+            "stt-async-v5"
+        ])
+        #expect(!models.contains { $0.provider == .deepgram })
+    }
+
     @Test func primaryModifierChordSuppressesOnlyTheCompletedPress() {
         let shortcut = Shortcut.modifierOnly(
             keyCode: nil,

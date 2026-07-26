@@ -16,7 +16,7 @@ enum ModelFilter: String, CaseIterable, Identifiable {
         case .cloud:
             return "Cloud"
         case .custom:
-            return "Custom"
+            return "Configured"
         }
     }
 }
@@ -29,6 +29,7 @@ struct ModelManagementView: View {
     @StateObject private var customModelManager = CustomCloudModelManager.shared
     @StateObject private var customAIProviderManager = CustomAIProviderManager.shared
     @ObservedObject private var warmupCoordinator = WhisperModelWarmupCoordinator.shared
+    @ObservedObject private var modeManager = ModeManager.shared
 
     @State private var selectedFilter: ModelFilter = .local
     @State private var activePanel: ModelManagementPanel?
@@ -181,6 +182,9 @@ struct ModelManagementView: View {
                 CustomProviderManagementView(
                     customModelManager: customModelManager,
                     customAIProviderManager: customAIProviderManager,
+                    cloudModels: configuredCloudModels,
+                    selectedModelNames: selectedTranscriptionModelNames,
+                    onManageCloudModel: openCloudModelProviderPanel,
                     onAddTranscriptionModel: {
                         openCustomTranscriptionModelPanel()
                     },
@@ -335,6 +339,41 @@ struct ModelManagementView: View {
             ($0.provider == .whisper || $0.provider == .nativeApple || $0.provider == .fluidAudio)
                 && transcriptionModelManager.isAvailableOnCurrentOS($0)
         }
+    }
+
+    private var selectedTranscriptionModelNames: Set<String> {
+        Set(modeManager.configurations.compactMap(\.selectedTranscriptionModelName))
+    }
+
+    private var configuredCloudModels: [CloudModel] {
+        let configuredProviderKeys = Set(
+            CloudProviderRegistry.allProviders.compactMap { provider in
+                APIKeyManager.shared.hasAPIKey(forProvider: provider.providerKey)
+                    ? provider.providerKey
+                    : nil
+            }
+        )
+
+        return CustomProviderManagementView.configuredCloudModels(
+            providers: CloudProviderRegistry.allProviders,
+            configuredProviderKeys: configuredProviderKeys,
+            selectedModelNames: selectedTranscriptionModelNames
+        )
+    }
+
+    private func openCloudModelProviderPanel(_ model: CloudModel) {
+        guard let provider = CloudProviderRegistry.provider(for: model.provider) else {
+            return
+        }
+
+        openCloudProviderPanel(
+            ProviderDescriptor(
+                displayName: provider.providerKey,
+                providerKey: provider.providerKey,
+                aiProvider: nil,
+                cloudProvider: provider
+            )
+        )
     }
 
     private func confirmDeleteLocalModel(_ model: any TranscriptionModel) {

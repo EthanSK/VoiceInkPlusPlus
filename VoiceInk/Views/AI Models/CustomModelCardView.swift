@@ -4,6 +4,7 @@ import AppKit
 // MARK: - Custom Model Card View
 struct CustomModelCardView: View {
     let model: CustomCloudModel
+    var isSelected: Bool = false
     var deleteAction: () -> Void
     var editAction: (CustomCloudModel) -> Void
     
@@ -68,7 +69,10 @@ struct CustomModelCardView: View {
     
     private var actionSection: some View {
         HStack(spacing: 8) {
-            modelStatusPill("Configured", systemImage: "checkmark.circle")
+            modelStatusPill(
+                isSelected ? "In use" : "Configured",
+                systemImage: isSelected ? "checkmark.circle.fill" : "checkmark.circle"
+            )
 
             Menu {
                 Button {

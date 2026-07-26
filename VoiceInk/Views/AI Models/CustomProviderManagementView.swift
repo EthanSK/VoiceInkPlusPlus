@@ -6,6 +6,9 @@ struct CustomProviderManagementView: View {
     @ObservedObject var customModelManager: CustomCloudModelManager
     @ObservedObject var customAIProviderManager: CustomAIProviderManager
 
+    let cloudModels: [CloudModel]
+    let selectedModelNames: Set<String>
+    let onManageCloudModel: (CloudModel) -> Void
     let onAddTranscriptionModel: () -> Void
     let onEditTranscriptionModel: (CustomCloudModel) -> Void
     let onDeleteTranscriptionModel: (CustomCloudModel) -> Void
@@ -15,29 +18,40 @@ struct CustomProviderManagementView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            customTranscriptionSection
+            configuredTranscriptionSection
             customEnhancementSection
         }
     }
 
-    private var customTranscriptionSection: some View {
+    private var configuredTranscriptionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(
-                title: "Custom Transcription Models",
-                subtitle: "Supports any provider that uses the same API format as OpenAI transcription.",
-                addHelp: "Add transcription model",
+                title: "Configured Transcription Models",
+                subtitle: "Connected cloud and custom models available for selection inside Modes.",
+                addHelp: "Add custom transcription model",
                 onAdd: onAddTranscriptionModel
             )
 
-            if customModelManager.customModels.isEmpty {
+            if cloudModels.isEmpty && customModelManager.customModels.isEmpty {
                 CustomProviderEmptyState(
                     systemImage: "waveform",
-                    title: "No Custom Transcription Models"
+                    title: "No Configured Transcription Models"
                 )
             } else {
+                ForEach(cloudModels) { model in
+                    ConfiguredCloudTranscriptionModelRow(
+                        model: model,
+                        isSelected: selectedModelNames.contains(model.name),
+                        onManage: {
+                            onManageCloudModel(model)
+                        }
+                    )
+                }
+
                 ForEach(customModelManager.customModels) { model in
                     CustomModelCardView(
                         model: model,
+                        isSelected: selectedModelNames.contains(model.name),
                         deleteAction: {
                             onDeleteTranscriptionModel(model)
                         },
@@ -78,6 +92,31 @@ struct CustomProviderManagementView: View {
         }
     }
 
+    static func configuredCloudModels(
+        providers: [any CloudProvider],
+        configuredProviderKeys: Set<String>,
+        selectedModelNames: Set<String>
+    ) -> [CloudModel] {
+        let normalizedConfiguredKeys = Set(configuredProviderKeys.map { $0.lowercased() })
+        let models = providers
+            .filter { normalizedConfiguredKeys.contains($0.providerKey.lowercased()) }
+            .flatMap(\.models)
+
+        return models.sorted { first, second in
+            let firstIsSelected = selectedModelNames.contains(first.name)
+            let secondIsSelected = selectedModelNames.contains(second.name)
+            if firstIsSelected != secondIsSelected {
+                return firstIsSelected
+            }
+
+            let displayComparison = first.displayName.localizedCaseInsensitiveCompare(second.displayName)
+            if displayComparison != .orderedSame {
+                return displayComparison == .orderedAscending
+            }
+            return first.name < second.name
+        }
+    }
+
     private func sectionHeader(
         title: LocalizedStringKey,
         subtitle: LocalizedStringKey,
@@ -93,6 +132,82 @@ struct CustomProviderManagementView: View {
         }
     }
 
+}
+
+private struct ConfiguredCloudTranscriptionModelRow: View {
+    let model: CloudModel
+    let isSelected: Bool
+    let onManage: () -> Void
+
+    private var providerKey: String {
+        CloudProviderRegistry.provider(for: model.provider)?.providerKey ?? model.provider.rawValue
+    }
+
+    private var descriptor: ProviderDescriptor {
+        ProviderDescriptor(
+            displayName: providerKey,
+            providerKey: providerKey,
+            aiProvider: nil,
+            cloudProvider: CloudProviderRegistry.provider(for: model.provider)
+        )
+    }
+
+    var body: some View {
+        Button(action: onManage) {
+            HStack(alignment: .top, spacing: 14) {
+                ProviderBrandIcon(
+                    descriptor: descriptor,
+                    fallbackSystemImage: "captions.bubble.fill",
+                    isSelected: isSelected,
+                    size: 30,
+                    iconSize: 16
+                )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    HStack(spacing: 12) {
+                        Label(model.name, systemImage: "cube")
+                        Label(providerKey, systemImage: "cloud")
+                        if model.supportsStreaming {
+                            Label("Realtime", systemImage: "waveform")
+                        }
+                        if model.name == AssemblyAIStreamingConnectionConfiguration.universal35ProModelName {
+                            Label("Max accuracy", systemImage: "scope")
+                        }
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                    Text(model.description)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    modelStatusPill(
+                        isSelected ? "In use" : "Connected",
+                        systemImage: isSelected ? "checkmark.circle.fill" : "checkmark.circle"
+                    )
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(AppMaterialCardBackground())
+        .help(String(format: String(localized: "Manage %@"), providerKey))
+    }
 }
 
 private struct CustomProviderEmptyState: View {
