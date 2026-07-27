@@ -38,8 +38,8 @@ either physical button.
 | --- | --- | --- | --- |
 | Idle | Primary button | Start a new recording; while exact delivery is enabled, tentatively capture a recording-start candidate only in case Next is pressed | Not yet final |
 | Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
-| Recording | Primary button twice within the VoiceInk++ pause decision window | Pause this same recording, stop microphone/WAV/stream input, and resume media; no delivery begins | Not yet final; existing tentative Next preview remains |
-| Paused | Primary button twice within the VoiceInk++ pause decision window | Resume this same recording and pause media again; no delivery begins | Not yet final; existing tentative Next preview remains |
+| Recording | Primary button twice within the VoiceInk++ pause decision window | Pause this same recording and stop microphone/WAV/stream input; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button twice within the VoiceInk++ pause decision window | Resume capture into this same recording; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
 | Paused | Primary button once | After the same decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
@@ -51,8 +51,11 @@ If a new recording is active while an older result is transcribing, the active r
 Pause is capture state inside the existing recording session, not a paste destination and not a
 fourth route. Words, music, and room audio while paused are excluded from both the saved WAV and a
 realtime provider stream. The realtime HUD remains visible with its last partial frozen, and the
-recorder waveform slot shows a pause symbol on every monitor. Media resumes on pause and is paused
-again on resume, including the paired recording activity messages used by the YouTube helper.
+recorder waveform slot shows a pause symbol on every monitor. Pause/resume never sends playback
+commands or YouTube-helper recording notifications: Ethan controls media himself during that
+interval. VoiceInk++ may still unmute system output while capture is paused and restore its optional
+output mute when capture resumes. Only recording start and final stop/cancel own the normal media
+pause/resume lifecycle.
 
 The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or exact delivery is temporarily disabled. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
 

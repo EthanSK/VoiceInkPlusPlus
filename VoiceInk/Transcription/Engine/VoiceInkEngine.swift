@@ -343,7 +343,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     return false
                 }
                 session.liveRecordingState = .paused
-                vippLog.info("recording pause toggle: session \(session.id.uuidString, privacy: .public) capture=paused media=resumed")
+                vippLog.info("recording pause toggle: session \(session.id.uuidString, privacy: .public) capture=paused playback=unchanged")
 
             case .paused:
                 try await recorder.resumeRecording()
@@ -354,7 +354,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     return false
                 }
                 session.liveRecordingState = .recording
-                vippLog.info("recording pause toggle: session \(session.id.uuidString, privacy: .public) capture=resumed media=paused")
+                vippLog.info("recording pause toggle: session \(session.id.uuidString, privacy: .public) capture=resumed playback=unchanged")
 
             default:
                 vippLog.info("recording pause toggle ignored for liveState=\(String(describing: previousState), privacy: .public)")

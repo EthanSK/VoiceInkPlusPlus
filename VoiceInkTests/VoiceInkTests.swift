@@ -349,6 +349,55 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func capturePauseResumeNeverControlsPlaybackOrYouTubeHelper() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("VoiceInk/Recorder.swift"),
+            encoding: .utf8
+        )
+        let pauseStart = try #require(source.range(
+            of: "    func pauseRecording() async throws {"
+        ))
+        let resumeStart = try #require(source.range(
+            of: "    func resumeRecording() async throws {",
+            range: pauseStart.upperBound..<source.endIndex
+        ))
+        let stopStart = try #require(source.range(
+            of: "    func stopRecording() async {",
+            range: resumeStart.upperBound..<source.endIndex
+        ))
+        let pauseBody = source[pauseStart.lowerBound..<resumeStart.lowerBound]
+        let resumeBody = source[resumeStart.lowerBound..<stopStart.lowerBound]
+        let startBody = source[source.startIndex..<pauseStart.lowerBound]
+        let stopBody = source[stopStart.lowerBound..<source.endIndex]
+        let pauseSuccessStart = try #require(pauseBody.range(
+            of: "        resetAudioMeter()"
+        ))
+        let pauseSuccessBody = pauseBody[pauseSuccessStart.lowerBound..<pauseBody.endIndex]
+
+        // Pausing may lift VoiceInk++'s system-output mute so Ethan can hear media
+        // he starts himself. Resuming may restore that mute. Neither transition
+        // owns playback or the external YouTube-helper recording lifecycle. A
+        // failed hardware pause may reassert the initial recording suppression,
+        // so the no-pauseMedia guard begins only after pause succeeds.
+        #expect(pauseBody.contains("mediaController.unmuteSystemAudio()"))
+        #expect(resumeBody.contains("muteSystemAudio()"))
+        #expect(!pauseBody.contains("playbackController."))
+        #expect(!resumeBody.contains("playbackController."))
+        #expect(!pauseSuccessBody.contains("pauseMedia()"))
+        #expect(!resumeBody.contains("pauseMedia()"))
+        #expect(!pauseBody.contains("RecordingActivityNotifier."))
+        #expect(!resumeBody.contains("RecordingActivityNotifier."))
+
+        // Normal recording start/final stop remain the sole paired boundaries.
+        #expect(startBody.contains("pauseMedia()"))
+        #expect(startBody.contains("RecordingActivityNotifier.postRecordingStarted()"))
+        #expect(stopBody.contains("playbackController.resumeMedia()"))
+        #expect(stopBody.contains("RecordingActivityNotifier.postRecordingStopped()"))
+    }
+
     @Test func nextTrackCancelsDeferredPrimaryStopBeforeItsOwnRoute() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

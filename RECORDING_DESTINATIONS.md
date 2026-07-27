@@ -22,8 +22,11 @@ still owns `recordingStart`, and the post-Primary second chance still owns
 While a recording is active, double-press the **Primary button** within VoiceInk++'s pause decision
 window—the shorter of the macOS double-click interval and 0.45 seconds—to pause microphone capture.
 VoiceInk++ stops AUHAL itself while leaving the same WAV and realtime provider session open, so no
-paused audio is written or streamed. Media and the paired YouTube helper resume. Double-press
-Primary again to restart capture into that same session and pause media again.
+paused audio is written or streamed. Media playback and the paired YouTube helper are left
+untouched; Ethan controls playback himself while paused. Double-press Primary again to restart
+capture into that same session without changing playback. VoiceInk++ may unmute system output while
+capture is paused and restore its optional output mute when capture resumes, but only recording
+start and final stop/cancel send the normal media/YouTube-helper pause and resume lifecycle.
 
 A single Primary press while recording or paused retains normal base-VoiceInk stop behavior after
 the short double-click decision window expires. The delay is necessary because the first press
@@ -66,8 +69,8 @@ tests repeatedly failed on the real destination apps.
 | Stop action | Paste destination |
 | --- | --- |
 | Primary/thumb/toggle button once while recording or paused | After the double-click interval, normal stop: base VoiceInk pastes into whichever system keyboard input is focused at delivery and uses that current Mode; it never invokes a saved input |
-| Primary/thumb/toggle button twice while recording | Pause capture and resume media without finalizing or choosing a delivery route |
-| Primary/thumb/toggle button twice while paused | Resume capture into the same session and pause media again |
+| Primary/thumb/toggle button twice while recording | Pause capture without changing media playback, finalizing, or choosing a delivery route |
+| Primary/thumb/toggle button twice while paused | Resume capture into the same session without changing media playback |
 | **Next button** while recording or paused | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next button** while the recorder bar is visible but no route is still eligible | VoiceInk++ consumes the press without changing the saved destination; it never advances media |

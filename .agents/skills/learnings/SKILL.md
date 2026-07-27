@@ -74,9 +74,11 @@ Keep these three routes distinct:
 Pause is capture state, not a fourth delivery route. The second Primary press cancels the pending
 single-press stop; pause/resume must not paste, change Mode, or change the tentative recording-start
 target. Gate callbacks before stopping AUHAL so paused audio enters neither WAV nor realtime
-streaming, keep the mirrored HUD visible with its frozen partial and pause indicator, resume media
-and the YouTube helper while paused, and pause them again on resume. Next while paused still stops
-through `recordingStart`.
+streaming, keep the mirrored HUD visible with its frozen partial and pause indicator, leave media
+playback and the YouTube helper untouched on both pause and resume, and let Ethan control playback
+himself during that interval. VoiceInk++ may lift and restore its optional system-output mute across
+pause/resume; only recording start and final stop/cancel own the media/YouTube-helper lifecycle.
+Next while paused still stops through `recordingStart`.
 
 Keep real-time provider partials inside the black recorder HUD. The streaming callback may update only
 the active session's `partialTranscript`; it must never create or maintain provisional text ranges in

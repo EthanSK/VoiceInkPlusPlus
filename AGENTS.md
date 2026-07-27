@@ -64,8 +64,11 @@ A Primary double-press while recording or paused is deliberately not a destinati
 the pending single-press stop and toggles microphone/WAV/realtime capture inside the same session.
 Pause/resume must not finalize, paste, change Mode, or change the tentative `recordingStart`
 destination. Paused audio must be excluded from both the saved WAV and streaming provider, media and
-the YouTube helper resume while paused and pause again on resume, and the mirrored HUD remains
-visible with a pause indication. Next while paused still stops through `recordingStart`.
+the YouTube helper must remain untouched on both pause and resume, and the mirrored HUD remains
+visible with a pause indication. Ethan controls playback himself while capture is paused.
+VoiceInk++ may lift and restore its own optional system-output mute across pause/resume, but only
+recording start and final stop/cancel own the media/YouTube-helper lifecycle. Next while paused still
+stops through `recordingStart`.
 
 The canonical second-chance scenario is:
 

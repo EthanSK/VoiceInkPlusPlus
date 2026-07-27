@@ -28,9 +28,11 @@ import Foundation
 /// RELATIONSHIP TO PlaybackController
 /// This is COMPLEMENTARY, not a replacement. PlaybackController still handles Spotify/Apple Music/
 /// MediaRemote. This notifier only adds the YouTube-via-extension path. We post from the SAME
-/// recorder lifecycle points as PlaybackController.pauseMedia()/resumeMedia() so the two stay in
-/// lockstep and we never double-handle the same source (YouTube → extension; everything else →
-/// PlaybackController).
+/// final recorder lifecycle points as PlaybackController.pauseMedia()/resumeMedia() so the two stay
+/// in lockstep and we never double-handle the same source (YouTube → extension; everything else →
+/// PlaybackController). Capture pause/resume inside one recording deliberately posts neither
+/// notification: Ethan controls playback himself during that interval, and the helper must not
+/// mistake a microphone pause for a completed recording.
 ///
 /// CANCEL / STOP
 /// At the `Recorder` layer, cancel and normal stop both funnel through `stopRecording()`, so both

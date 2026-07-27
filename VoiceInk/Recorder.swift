@@ -195,8 +195,13 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
-    /// Temporarily releases the microphone and media suppression while preserving
-    /// this recording's open WAV and realtime transcription session.
+    /// Temporarily releases the microphone while preserving this recording's open
+    /// WAV and realtime transcription session.
+    ///
+    /// Playback deliberately remains untouched. Recording start and final stop own
+    /// one media/YouTube-helper pause-resume episode; capture pause/resume must not
+    /// manufacture extra lifecycle edges that start or stop media Ethan controls.
+    /// We still lift VoiceInk++'s optional system-output mute while capture is paused.
     func pauseRecording() async throws {
         guard let currentRecorder = recorder else {
             throw CoreAudioRecorderError.audioUnitNotInitialized
@@ -233,17 +238,13 @@ class Recorder: NSObject, ObservableObject {
         audioRestorationTask = Task {
             guard !Task.isCancelled else { return }
             await mediaController.unmuteSystemAudio()
-            guard !Task.isCancelled else { return }
-            await playbackController.resumeMedia()
         }
-        // The YouTube helper owns only a recording-start/stop protocol. A pause is
-        // therefore a temporary stop, paired with a fresh start on resume.
-        RecordingActivityNotifier.postRecordingStopped()
-        logger.info("Recording capture paused; WAV and realtime session remain open")
+        logger.info("Recording capture paused; WAV/realtime session remain open and playback is unchanged")
     }
 
-    /// Continues capture into the same WAV/realtime session and reapplies the same
-    /// media suppression used at initial recording start.
+    /// Continues capture into the same WAV/realtime session without changing media
+    /// playback or notifying the YouTube helper. The optional output mute is restored
+    /// so manually controlled playback is not recorded through the microphone.
     func resumeRecording() async throws {
         audioRestorationTask?.cancel()
         audioRestorationTask = nil
@@ -265,9 +266,7 @@ class Recorder: NSObject, ObservableObject {
 
         startAudioMeterTimer()
         muteSystemAudio()
-        pauseMedia()
-        RecordingActivityNotifier.postRecordingStarted()
-        logger.info("Recording capture resumed into the existing WAV and realtime session")
+        logger.info("Recording capture resumed into the existing WAV/realtime session; playback is unchanged")
     }
 
     func stopRecording() async {
