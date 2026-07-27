@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-27T19:45:33Z
+**Trigger:** Ethan asked for Primary double-press pause/resume to leave YouTube and other media alone because he wants to control playback himself while capture is paused.
+**Symptom:** Pausing microphone capture posted `recordingStopped` and resumed `PlaybackController`, which could start YouTube or another paused source; resuming capture posted `recordingStarted` and paused playback again.
+**Root cause:** The original pause implementation modeled an in-session capture pause as a temporary recording stop followed by a new recording start, even though the WAV, realtime provider, destination, and HUD remain one continuous session.
+**Fix:** Commit 194c1dd removes playback-controller and YouTube-helper lifecycle actions from successful in-session pause/resume. VoiceInk++ may still lift its optional system-output mute while capture is paused and restore that mute when capture resumes; only actual recording start and final stop/cancel own the paired media/YouTube-helper lifecycle.
+**Commit:** 194c1dd5e8dc0fcb93ef75aa48040252aad14580
+**Guard:** Mac Mini canonical Debug Xcode test action compiled before the known TestManager stall; fresh direct `xcrun xctest` named and passed all 70 tests, including `capturePauseResumeNeverControlsPlaybackOrYouTubeHelper`, paused-audio gating, Primary isolation, realtime HUD-only, and both Next routes. Signed v2.0.267 is installed with PID 24561 and CDHash acff3194dd84b88c427f2169770c5409fcbe0aaf; deep/strict signing and Automation=true verify, and `/Applications/VoiceInk.app` remained byte-identical. A physical double-click/media observation remains pending and must confirm playback does not change on either transition.
+---
+
+
+---
 **Date:** 2026-07-26T19:39:25Z
 **Trigger:** Ethan reported that a rapid new recording after stopping the previous one sometimes did not paste, did not appear to transcribe, or pasted the older result.
 **Symptom:** Rapidly starting and stopping a new realtime recording while an older result was still finishing could leave delivery missing, delayed, or apparently paired with the older transcript.
