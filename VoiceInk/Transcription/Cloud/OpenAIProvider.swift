@@ -66,6 +66,12 @@ enum OpenAITranscriptionConfiguration {
     private static let keywordLimit = 100
     private static let promptCharacterLimit = 4_096
 
+    static var realtimeWebSocketURL: URL {
+        var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!
+        components.queryItems = [URLQueryItem(name: "intent", value: "transcription")]
+        return components.url!
+    }
+
     static func normalizedPrompt(_ prompt: String?) -> String? {
         let trimmed = (prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }

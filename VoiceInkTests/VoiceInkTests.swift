@@ -43,6 +43,11 @@ private final class TranscriptionQueueTestState {
 struct VoiceInkTests {
 
     @Test func openAILiveTranscribeUsesAccuracyContextAndStructuredHints() throws {
+        let realtimeURL = OpenAITranscriptionConfiguration.realtimeWebSocketURL
+        let queryItems = URLComponents(url: realtimeURL, resolvingAgainstBaseURL: false)?.queryItems
+        #expect(queryItems == [URLQueryItem(name: "intent", value: "transcription")])
+        #expect(realtimeURL.absoluteString.contains("gpt-live-transcribe") == false)
+
         let update = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
             language: "en",
             prompt: "Technical dictation about macOS applications.",

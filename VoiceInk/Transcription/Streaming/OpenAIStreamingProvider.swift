@@ -125,11 +125,10 @@ final class OpenAIStreamingProvider: ContextualStreamingTranscriptionProvider, @
             throw StreamingTranscriptionError.missingAPIKey
         }
 
-        var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!
-        components.queryItems = [URLQueryItem(name: "model", value: model.name)]
-        guard let url = components.url else {
-            throw StreamingTranscriptionError.connectionFailed("Invalid OpenAI Realtime URL")
-        }
+        // Transcription sessions use an intent-scoped Realtime connection. Putting
+        // gpt-live-transcribe in the URL makes it the session model and is rejected;
+        // the model belongs only in audio.input.transcription.model below.
+        let url = OpenAITranscriptionConfiguration.realtimeWebSocketURL
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
