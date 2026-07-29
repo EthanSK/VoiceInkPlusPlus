@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-29T17:57:44Z
+**Trigger:** Ethan reported that immediately starting another recording pasted or replaced it with the previous message and supplied the 18:47-18:48 history screenshot.
+**Symptom:** A rapid Primary A-stop then B-start appeared to paste A as B and suggested the previous transcript had been reused.
+**Root cause:** The correlated v2.0.268 run had distinct immutable WAVs and jobs: A stopped at 18:47:53.621, B started at 18:47:54.170, and A's 131-character final completed at 18:47:54.480 while B was recording. B's separate 4.441-second WAV was effectively silent (mean -42.9 dB, max -29.2 dB), produced zero committed segments, and its completed-audio fallback also returned empty. A was late-but-correct delivery; B never produced text.
+**Fix:** Investigation only: preserve FIFO delivery and the rule that starting B does not cancel A. Diagnose this symptom by correlating start/stop/final timestamps, immutable audio identity, audio level, and history status before changing job ownership or dropping an earlier Primary result.
+**Commit:** investigation-only
+**Guard:** The physical evidence showed four distinct WAV basenames and hashes around rows 5025-5028; existing eagerStreamingFinalsMayFinishInReverseButDeliverInRecordingOrder and one-shot audio-identity tests preserve ordered non-reused results. The managed live-delivery trace remains the acceptance tool for any future case where B contains real speech but receives A's digest.
+---
+
+
+---
 **Date:** 2026-07-29T17:04:57Z
 **Trigger:** When adding or repairing an OpenAI Realtime transcription provider, run .agents/skills/learnings/scripts/openai-transcription-probe.swift with synthetic PCM24k and WAV before building or changing the installed model.
 **Symptom:** GPT Live Transcribe was implemented and unit-tested, but the first real WebSocket session update was rejected before audio could stream.
