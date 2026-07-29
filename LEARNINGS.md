@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-29T18:17:23Z
+**Trigger:** Ethan reported that starting recording B before A finished caused the previous transcription to paste and asked for logging on the next occurrence.
+**Symptom:** A rapid-overlap report could not be diagnosed later because the managed delivery trace was ephemeral and omitted the full recording, streaming, and pipeline lineage.
+**Root cause:** The trace lived only under /tmp and retained delivery events without every immutable generation, sequence, recording-session, transcription, audio-file, final-length, and digest boundary needed to distinguish late job A from stale text delivered as job B.
+**Fix:** Commit 4561588 made live-delivery-trace.sh persist privacy-bounded daily mode-0600 logs for seven days and allowlisted the complete job/provider/delivery lifecycle while redacting provider error bodies and excluding transcript text.
+**Commit:** 4561588
+**Guard:** bash -n, git diff --check, quick_validate.py, a redaction fixture, verified 0700/0600 permissions, and a real complete generation 2 sequence 44 trace through pipeline removal with no transcript fields.
+---
+
+
+---
 **Date:** 2026-07-29T17:57:44Z
 **Trigger:** Ethan reported that immediately starting another recording pasted or replaced it with the previous message and supplied the 18:47-18:48 history screenshot.
 **Symptom:** A rapid Primary A-stop then B-start appeared to paste A as B and suggested the previous transcript had been reused.
