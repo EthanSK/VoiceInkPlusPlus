@@ -42,6 +42,78 @@ private final class TranscriptionQueueTestState {
 
 struct VoiceInkTests {
 
+    @Test func openAILiveTranscribeUsesAccuracyContextAndStructuredHints() throws {
+        let update = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
+            language: "en",
+            prompt: "Technical dictation about macOS applications.",
+            customVocabulary: ["VoiceInk++", "Codex", "codex", "bad<term>", "line\nbreak"]
+        )
+        let session = try #require(update["session"] as? [String: Any])
+        #expect(session["type"] as? String == "transcription")
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let format = try #require(input["format"] as? [String: Any])
+        let transcription = try #require(input["transcription"] as? [String: Any])
+
+        #expect(format["type"] as? String == "audio/pcm")
+        #expect(format["rate"] as? Int == 24_000)
+        #expect(input["turn_detection"] is NSNull)
+        #expect(transcription["model"] as? String == "gpt-live-transcribe")
+        #expect(transcription["delay"] as? String == "xhigh")
+        #expect(transcription["prompt"] as? String == "Technical dictation about macOS applications.")
+        #expect(transcription["languages"] as? [String] == ["en"])
+        #expect(transcription["keywords"] as? [String] == ["VoiceInk++", "Codex"])
+
+        let fields = OpenAITranscriptionConfiguration.completedAudioFields(
+            language: "en",
+            prompt: "Technical dictation about macOS applications.",
+            customVocabulary: ["VoiceInk++", "Codex"]
+        )
+        #expect(fields.contains { $0.name == "model" && $0.value == "gpt-transcribe" })
+        #expect(fields.contains { $0.name == "languages[]" && $0.value == "en" })
+        #expect(fields.filter { $0.name == "keywords[]" }.map(\.value) == ["VoiceInk++", "Codex"])
+        #expect(!fields.contains { $0.name == "language" })
+    }
+
+    @Test func openAIRealtimeResamplingIsStableAcrossAudioChunks() {
+        let samples = (0..<320).map { index in
+            Int16(clamping: (index * 173) - 20_000)
+        }
+        var source = Data()
+        for sample in samples {
+            var littleEndian = sample.littleEndian
+            withUnsafeBytes(of: &littleEndian) { source.append(contentsOf: $0) }
+        }
+
+        var singlePass = OpenAIRealtimePCMResampler()
+        var expected = singlePass.convert(source)
+        expected.append(singlePass.flush())
+
+        var chunked = OpenAIRealtimePCMResampler()
+        var actual = Data()
+        for range in [0..<137, 137..<401, 401..<source.count] {
+            actual.append(chunked.convert(source.subdata(in: range)))
+        }
+        actual.append(chunked.flush())
+
+        #expect(actual == expected)
+        #expect(actual.count == 480 * MemoryLayout<Int16>.size)
+    }
+
+    @Test func openAIProviderRegistersLiveTranscribeAsStreamingOnly() {
+        let provider = OpenAIProvider()
+        #expect(provider.providerKey == "OpenAI")
+        #expect(provider.isStreamingOnly)
+        #expect(provider.models.count == 1)
+        #expect(provider.models.first?.name == "gpt-live-transcribe")
+        #expect(provider.models.first?.supportsStreaming == true)
+        #expect(
+            CloudProviderRegistry.provider(for: .openAI)?.models.contains {
+                $0.name == "gpt-live-transcribe"
+            } == true
+        )
+    }
+
     @Test func assemblyAIUniversal35StreamingUsesMaxAccuracyAndContext() throws {
         let url = try #require(
             AssemblyAIStreamingConnectionConfiguration.connectionURL(
@@ -754,7 +826,7 @@ struct VoiceInkTests {
         ))
         #expect(eagerStart.lowerBound < serialEnqueue.lowerBound)
         #expect(sessionSource.contains(
-            "eagerlyFinalizesAfterStop = model.provider == .assemblyAI"
+            "eagerlyFinalizesAfterStop = model.provider == .assemblyAI || model.provider == .openAI"
         ))
 
         let startupWait = try #require(sessionSource.range(

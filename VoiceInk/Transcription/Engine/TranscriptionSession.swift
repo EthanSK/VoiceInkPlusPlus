@@ -159,11 +159,12 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         self.model = model
         self.context = context
-        // AssemblyAI limits concurrent realtime sockets. A stopped session must
-        // therefore commit/close promptly instead of waiting behind an older job's
-        // formatting, enhancement, or destination delivery. Other streaming
-        // providers retain the existing serial behavior until independently proven.
-        eagerlyFinalizesAfterStop = model.provider == .assemblyAI
+        // AssemblyAI limits concurrent realtime sockets, while OpenAI must commit the
+        // exact live audio turn before a later recorder can make its own partials look
+        // current. Both therefore close promptly at stop instead of waiting behind an
+        // older job's formatting, enhancement, or destination delivery. The immutable
+        // finalization task still preserves FIFO delivery and exact audio identity.
+        eagerlyFinalizesAfterStop = model.provider == .assemblyAI || model.provider == .openAI
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
 
         // Return callback immediately; WebSocket connects in background

@@ -52,3 +52,21 @@ protocol StreamingTranscriptionProvider: AnyObject {
     /// Stream of transcription events from the provider
     var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent> { get }
 }
+
+/// Providers whose session request needs the immutable per-recording prompt as well as
+/// the selected language opt into this refinement. The general provider protocol stays
+/// source-compatible with the existing adapters, while GPT Live Transcribe avoids
+/// rereading mutable UserDefaults after another recording or Mode has taken ownership.
+protocol ContextualStreamingTranscriptionProvider: StreamingTranscriptionProvider {
+    func connect(
+        model: any TranscriptionModel,
+        language: String?,
+        context: TranscriptionRequestContext
+    ) async throws
+}
+
+extension ContextualStreamingTranscriptionProvider {
+    func connect(model: any TranscriptionModel, language: String?) async throws {
+        try await connect(model: model, language: language, context: .currentDefaults)
+    }
+}
