@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-29T17:04:57Z
+**Trigger:** When adding or repairing an OpenAI Realtime transcription provider, run .agents/skills/learnings/scripts/openai-transcription-probe.swift with synthetic PCM24k and WAV before building or changing the installed model.
+**Symptom:** GPT Live Transcribe was implemented and unit-tested, but the first real WebSocket session update was rejected before audio could stream.
+**Root cause:** The Realtime connection URL incorrectly used gpt-live-transcribe as the session model. A transcription model belongs only at audio.input.transcription.model; the dedicated connection must use ?intent=transcription.
+**Fix:** Open the WebSocket at wss://api.openai.com/v1/realtime?intent=transcription, then send the transcription session.update with gpt-live-transcribe, 24 kHz PCM, xhigh delay, languages, prompt, and validated keywords. Keep gpt-transcribe on the file endpoint as the empty-live fallback.
+**Commit:** 33729ea847a338858329542d86454676178ba8dd
+**Guard:** A privacy-bounded synthetic live probe produced session.updated, 14-15 real deltas, and a non-empty completed transcript; the completed-WAV probe also accepted languages[] and keywords[] and returned non-empty text. Mac Mini direct xcrun xctest named and passed all 73 tests at 33729ea after the canonical TestManager stall. Signed v2.0.268 is installed with PID 99337, CDHash 592df3ac0104d33a22a913dc97f6e58e957ca371, deep/strict signing, Automation=true, all seven Modes on gpt-live-transcribe/realtime/en, and official VoiceInk unchanged. Physical microphone/HUD/final-delivery acceptance remains pending.
+---
+
+
+---
 **Date:** 2026-07-27T19:45:33Z
 **Trigger:** Ethan asked for Primary double-press pause/resume to leave YouTube and other media alone because he wants to control playback himself while capture is paused.
 **Symptom:** Pausing microphone capture posted `recordingStopped` and resumed `PlaybackController`, which could start YouTube or another paused source; resuming capture posted `recordingStarted` and paused playback again.

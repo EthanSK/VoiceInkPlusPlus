@@ -813,6 +813,21 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Transcription provider configuration failures
 
+### Opening GPT Live Transcribe as the Realtime session model
+
+- **State:** REJECTED by the live API on 2026-07-29.
+- **Temptation:** Connect to `wss://api.openai.com/v1/realtime?model=gpt-live-transcribe`
+  because the provider selected that model for live transcription.
+- **Observed failure condition:** The socket accepted authentication, but `session.update` failed:
+  `gpt-live-transcribe` is a transcription model and cannot be the Realtime session model.
+- **Do not substitute:** Opening the socket with `model=gpt-realtime-2.1` also fails because that
+  creates a realtime conversation session, which rejects a transcription-type session update.
+- **Use instead:** Connect to `wss://api.openai.com/v1/realtime?intent=transcription`; put
+  `gpt-live-transcribe` only in `audio.input.transcription.model`. Require the synthetic provider
+  probe to observe `session.updated`, at least one delta, and a non-empty completed event.
+- **Reconsider only if:** OpenAI's official protocol and a real API probe both prove a new connection
+  contract; changing only model availability or the in-session transcription payload is not enough.
+
 ### Clearing only `TranscriptionPrompt` before relaunch
 
 - **State:** REJECTED.
