@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-30T21:33:01Z
+**Trigger:** Ethan asked for one Markdown document that her agent can use to reproduce his VoiceInk++ setup
+**Symptom:** A friend cannot reproduce Ethan's GPT realtime setup from a settings export alone
+**Root cause:** VoiceInk++ exports intentionally omit provider credentials, per-Mode modeConfigurationsV2 overrides the global model picker, and GPT Live Transcribe is currently shipped on codex/gpt-live-transcribe rather than public main
+**Fix:** Added ETHAN_VOICEINK_SETUP.md with a secret-free start-to-finish handoff, exact inspected Mode/provider settings, branch pin, provider alternatives, mouse mapping, permissions, and acceptance tests
+**Commit:** a8366f0
+**Guard:** Credential-pattern scan, Markdown diff check, official OpenAI reference reachability, remote branch SHA verification, and per-Mode acceptance checklist
+---
+
+
+---
 **Date:** 2026-07-29T18:17:23Z
 **Trigger:** Ethan reported that starting recording B before A finished caused the previous transcription to paste and asked for logging on the next occurrence.
 **Symptom:** A rapid-overlap report could not be diagnosed later because the managed delivery trace was ephemeral and omitted the full recording, streaming, and pipeline lineage.
