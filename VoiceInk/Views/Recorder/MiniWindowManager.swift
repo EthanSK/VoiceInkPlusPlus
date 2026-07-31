@@ -1,9 +1,24 @@
 import SwiftUI
 import AppKit
 
+enum RecorderDisplayReusePolicy {
+    static func shouldReuse(
+        existingDisplayIDs: [CGDirectDisplayID],
+        currentDisplayIDs: [CGDirectDisplayID]
+    ) -> Bool {
+        !existingDisplayIDs.isEmpty && existingDisplayIDs == currentDisplayIDs
+    }
+
+    static func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+            .uint32Value
+    }
+}
+
 @MainActor
 class MiniWindowManager {
     private struct WindowEntry {
+        let displayID: CGDirectDisplayID
         let panel: MiniRecorderPanel
         let windowController: NSWindowController
     }
@@ -46,7 +61,29 @@ class MiniWindowManager {
     }
 
     func show() {
-        initializeWindows()
+        let screens = NSScreen.screens
+        let currentDisplayIDs = screens.compactMap {
+            RecorderDisplayReusePolicy.displayID(for: $0)
+        }
+        let existingDisplayIDs = windows.map(\.displayID)
+
+        // Recorder panels are deliberately mirrored across every monitor, but the
+        // SwiftUI trees are expensive: they observe the live waveform, streaming text,
+        // and every active transcription. Rebuilding all of them on every recording
+        // start regressed the upstream window-reuse optimization and made the HUD lag.
+        // Rebuild only when the physical display set actually changes.
+        guard currentDisplayIDs.count == screens.count,
+              RecorderDisplayReusePolicy.shouldReuse(
+                existingDisplayIDs: existingDisplayIDs,
+                currentDisplayIDs: currentDisplayIDs
+              ) else {
+            initializeWindows(screens: screens)
+            return
+        }
+
+        for (entry, screen) in zip(windows, screens) {
+            entry.panel.show(on: screen)
+        }
     }
 
     func hide() {
@@ -57,19 +94,26 @@ class MiniWindowManager {
         deinitializeWindows()
     }
 
-    private func initializeWindows() {
+    private func initializeWindows(screens: [NSScreen] = NSScreen.screens) {
         deinitializeWindows()
 
         // Mirror the recorder on every connected display. Each panel hosts its own
         // SwiftUI view hierarchy, but all of them observe the same engine/session
         // objects, so waveform, transcription state, and controls stay synchronized.
-        for screen in NSScreen.screens {
+        for screen in screens {
+            guard let displayID = RecorderDisplayReusePolicy.displayID(for: screen) else {
+                continue
+            }
             let metrics = MiniRecorderPanel.calculateWindowMetrics(for: screen)
             let panel = MiniRecorderPanel(contentRect: metrics)
             let hostingController = NSHostingController(rootView: makeView())
             panel.contentView = hostingController.view
             let windowController = NSWindowController(window: panel)
-            windows.append(WindowEntry(panel: panel, windowController: windowController))
+            windows.append(WindowEntry(
+                displayID: displayID,
+                panel: panel,
+                windowController: windowController
+            ))
             panel.show(on: screen)
         }
     }

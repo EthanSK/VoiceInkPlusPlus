@@ -95,13 +95,12 @@ layer rather than only the sender and Chrome extension: the menu app mapping, na
 app-to-Chrome forwarding whitelist, extension dispatch, and final state mutation must all agree.
 Require a reloaded live extension/native host and one correlated cross-process log before acceptance.
 
-Drive any connected voice-assistant listening suppression from the combined condition
-`voiceInkRecordingActive || youtubeVideoPlaying`. A consumer treats `recordingStarted` as
-recording-active and both ordinary and playback-preserving stop notifications as recording-inactive,
-and takes YouTube playback state from the existing extension bridge. Restore the listener only when
-both inputs are false, and mute only through a proven listener-specific app/service API. Never
-globally mute the macOS input, because that would also silence VoiceInk++. Treat the listener side as
-blocked rather than implemented when the exact connected assistant exposes no proven mute API.
+Keep voice-assistant listening suppression disabled. The ChatGPT Voice experiment never proved a
+non-activating mute API: `AXPress` did not change the control and pointer automation stole Ethan's
+mouse. Recording lifecycle notifications remain scoped to the proven YouTube pause/resume bridge;
+do not attach a mute consumer, poll ChatGPT Accessibility, move/click the pointer, or globally mute
+macOS input. Reconsider only when the assistant exposes a documented background API and Ethan
+explicitly asks to revisit it.
 
 Keep real-time provider partials inside the black recorder HUD. The streaming callback may update only
 the active session's `partialTranscript`; it must never create or maintain provisional text ranges in

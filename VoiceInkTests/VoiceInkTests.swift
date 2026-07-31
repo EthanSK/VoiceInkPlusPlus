@@ -42,6 +42,25 @@ private final class TranscriptionQueueTestState {
 
 struct VoiceInkTests {
 
+    @Test func recorderWindowsReuseStableDisplaySetAndRebuildOnChange() {
+        #expect(RecorderDisplayReusePolicy.shouldReuse(
+            existingDisplayIDs: [1, 2, 3],
+            currentDisplayIDs: [1, 2, 3]
+        ))
+        #expect(!RecorderDisplayReusePolicy.shouldReuse(
+            existingDisplayIDs: [],
+            currentDisplayIDs: [1, 2, 3]
+        ))
+        #expect(!RecorderDisplayReusePolicy.shouldReuse(
+            existingDisplayIDs: [1, 2, 3],
+            currentDisplayIDs: [1, 3]
+        ))
+        #expect(!RecorderDisplayReusePolicy.shouldReuse(
+            existingDisplayIDs: [1, 2, 3],
+            currentDisplayIDs: [2, 1, 3]
+        ))
+    }
+
     @Test func openAILiveTranscribeUsesAccuracyContextAndStructuredHints() throws {
         let realtimeURL = OpenAITranscriptionConfiguration.realtimeWebSocketURL
         let queryItems = URLComponents(url: realtimeURL, resolvingAgainstBaseURL: false)?.queryItems

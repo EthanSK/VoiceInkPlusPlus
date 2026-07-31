@@ -4,6 +4,7 @@ import AppKit
 @MainActor
 class NotchWindowManager {
     private struct WindowEntry {
+        let displayID: CGDirectDisplayID
         let panel: NotchRecorderPanel
         let windowController: NSWindowController
     }
@@ -47,7 +48,27 @@ class NotchWindowManager {
     }
 
     func show() {
-        initializeWindows()
+        let screens = NSScreen.screens
+        let currentDisplayIDs = screens.compactMap {
+            RecorderDisplayReusePolicy.displayID(for: $0)
+        }
+        let existingDisplayIDs = windows.map(\.displayID)
+
+        // Match MiniWindowManager's reuse boundary. Each notch panel owns a full
+        // SwiftUI recorder hierarchy, so recreating one per display on every start
+        // multiplies startup and animation work for no visible benefit.
+        guard currentDisplayIDs.count == screens.count,
+              RecorderDisplayReusePolicy.shouldReuse(
+                existingDisplayIDs: existingDisplayIDs,
+                currentDisplayIDs: currentDisplayIDs
+              ) else {
+            initializeWindows(screens: screens)
+            return
+        }
+
+        for (entry, screen) in zip(windows, screens) {
+            entry.panel.show(on: screen)
+        }
     }
 
     func hide() {
@@ -58,17 +79,24 @@ class NotchWindowManager {
         deinitializeWindows()
     }
 
-    private func initializeWindows() {
+    private func initializeWindows(screens: [NSScreen] = NSScreen.screens) {
         deinitializeWindows()
 
-        for screen in NSScreen.screens {
+        for screen in screens {
+            guard let displayID = RecorderDisplayReusePolicy.displayID(for: screen) else {
+                continue
+            }
             let metrics = NotchRecorderPanel.calculateWindowMetrics(for: screen)
             let panel = NotchRecorderPanel(contentRect: metrics.frame)
             let view = makeView(metrics.notchWidth, metrics.notchHeight)
             let hostingController = NotchRecorderHostingController(rootView: view)
             panel.contentView = hostingController.view
             let windowController = NSWindowController(window: panel)
-            windows.append(WindowEntry(panel: panel, windowController: windowController))
+            windows.append(WindowEntry(
+                displayID: displayID,
+                panel: panel,
+                windowController: windowController
+            ))
             panel.show(on: screen)
         }
     }

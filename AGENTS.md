@@ -81,14 +81,13 @@ If an explicit cancel occurs while transcription is in flight, retain a complete
 or the saved realtime HUD partial in clipboard plus history with a distinct retained-cancellation
 status; an empty cancellation remains an ordinary canceled record and performs no delivery.
 
-Any connected voice-assistant listening suppression must use the combined condition
-`voiceInkRecordingActive || youtubeVideoPlaying`. Treat `recordingStarted` as recording-active and
-both ordinary and playback-preserving stop/finalize/cancel notifications as recording-inactive; take
-YouTube playback state from the existing extension bridge. Restore listening only when both inputs
-are false. The consumer may mute only its own listener through a proven app/service API; never
-globally mute the macOS input, which would also silence VoiceInk++ itself. Do not guess an assistant
-process or control, and do not describe the integration as implemented until its listener-side API
-has been proven with the exact connected assistant.
+Voice-assistant listening suppression is disabled. The ChatGPT Voice experiment never proved a
+non-activating mute API: `AXPress` reported success without changing state, and the pointer-based
+fallback stole Ethan's mouse. Do not attach a mute consumer to VoiceInk++ recording notifications,
+poll ChatGPT Accessibility, move/click the pointer, or globally mute macOS input. The existing
+recording notifications remain solely for the proven YouTube pause/resume bridge. Reconsider
+listener suppression only if the target assistant exposes a documented background API and Ethan
+explicitly asks to revisit it.
 
 The canonical second-chance scenario is:
 

@@ -21,13 +21,16 @@ struct AudioVisualizer: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.016)) { context in
-            HStack(spacing: barSpacing) {
-                ForEach(0..<barCount, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: barWidth / 2)
-                        .fill(color.opacity(0.85))
-                        .frame(width: barWidth, height: barHeight(for: index, at: context.date))
-                }
+        // Recorder publishes a smoothed meter tick at 30 Hz. Use that same tick as
+        // the waveform clock instead of running an independent 60 Hz TimelineView on
+        // every connected monitor; the duplicate clocks were doing twice the work and
+        // could starve shortcut/UI tasks while GPT Live also updated the transcript.
+        let now = Date()
+        HStack(spacing: barSpacing) {
+            ForEach(0..<barCount, id: \.self) { index in
+                RoundedRectangle(cornerRadius: barWidth / 2)
+                    .fill(color.opacity(0.85))
+                    .frame(width: barWidth, height: barHeight(for: index, at: now))
             }
         }
     }

@@ -772,12 +772,12 @@ struct PasteDestinationIndicator: View {
 
 struct RecorderStatusDisplay: View {
     let currentState: RecordingState
-    let audioMeter: AudioMeter
+    @ObservedObject var recorder: Recorder
     let menuBarHeight: CGFloat?
 
-    init(currentState: RecordingState, audioMeter: AudioMeter, menuBarHeight: CGFloat? = nil) {
+    init(currentState: RecordingState, recorder: Recorder, menuBarHeight: CGFloat? = nil) {
         self.currentState = currentState
-        self.audioMeter = audioMeter
+        self.recorder = recorder
         self.menuBarHeight = menuBarHeight
     }
 
@@ -788,7 +788,10 @@ struct RecorderStatusDisplay: View {
             } else if currentState == .transcribing {
                 ProcessingStatusDisplay(mode: .transcribing, color: .white).transition(.opacity)
             } else if currentState == .recording {
-                AudioVisualizer(audioMeter: audioMeter, color: .white, isActive: true)
+                // Observe the 30 Hz audio meter only in this tiny waveform subtree.
+                // The parent recorder cards include streaming text, icons, controls,
+                // and layout animations and must not all redraw for every meter tick.
+                AudioVisualizer(audioMeter: recorder.audioMeter, color: .white, isActive: true)
                     .scaleEffect(y: menuBarHeight != nil ? min(1.0, (menuBarHeight! - 8) / 25) : 1.0, anchor: .center)
                     .transition(.opacity)
             } else if currentState == .paused {

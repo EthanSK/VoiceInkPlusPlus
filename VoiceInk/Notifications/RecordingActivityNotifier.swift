@@ -19,10 +19,11 @@ import Foundation
 ///   - `com.ethansk.voiceink.recordingStoppedPreservingPlayback` → posted when a genuine Primary
 ///     triple-click finalizes to the clipboard; consumers must end recording ownership without
 ///     issuing play, pause, or another playback mutation.
-/// A voice-assistant listener may also use these as recording-state edges, combined with the helper's
-/// live YouTube playback reports: mute while `recordingActive || youtubePlaying`, and restore only
-/// when both are false. That consumer must control only its own listener through a proven API; it
-/// must never globally mute the system input, which would also silence VoiceInk++.
+/// These notifications are intentionally scoped to the proven YouTube pause/resume bridge. The
+/// rejected ChatGPT Voice mute experiment must not attach another consumer here: neither AXPress nor
+/// targeted synthetic input changed that background control reliably, and the pointer workaround
+/// stole Ethan's mouse. Keep listener muting disabled unless ChatGPT exposes a documented,
+/// non-activating API and Ethan explicitly asks to revisit it.
 /// No payload is sent: the helper app already tracks which YouTube tab is playing (via its
 /// extension) and decides what to pause/resume. The helper's "only resume what we paused" guard
 /// means a `recordingStopped` will NOT start a video that wasn't already playing.

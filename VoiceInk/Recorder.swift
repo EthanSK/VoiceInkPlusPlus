@@ -366,7 +366,10 @@ class Recorder: NSObject, ObservableObject {
     private func startAudioMeterTimer() {
         audioMeterUpdateTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: audioMeterQueue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(17)) 
+        // Thirty frames per second is visually smooth for a 15-bar meter and keeps
+        // three mirrored SwiftUI panels from consuming a main-thread update every
+        // 17 ms. The visualizer intentionally uses this as its sole animation clock.
+        timer.schedule(deadline: .now(), repeating: .milliseconds(33))
         timer.setEventHandler { [weak self] in
             self?.updateAudioMeter()
         }

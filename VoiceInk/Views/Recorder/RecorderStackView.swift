@@ -40,7 +40,7 @@ import SwiftUI
 
 struct MiniRecorderStackView: View {
     @ObservedObject var engine: VoiceInkEngine
-    @ObservedObject var recorder: Recorder
+    let recorder: Recorder
     @ObservedObject var assistantSession: AssistantSession
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
@@ -156,7 +156,7 @@ struct MiniRecorderStackView: View {
 //   window height was extended to fit up to a few stacked chips beneath the pill.
 struct NotchRecorderStackView: View {
     @ObservedObject var engine: VoiceInkEngine
-    @ObservedObject var recorder: Recorder
+    let recorder: Recorder
     @ObservedObject var assistantSession: AssistantSession
     let notchWidth: CGFloat
     let notchHeight: CGFloat

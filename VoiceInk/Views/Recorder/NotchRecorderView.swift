@@ -2,7 +2,7 @@ import SwiftUI
 
 struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     @ObservedObject var stateProvider: S
-    @ObservedObject var recorder: Recorder
+    let recorder: Recorder
     @ObservedObject var assistantSession: AssistantSession
     let notchWidth: CGFloat
     let notchHeight: CGFloat
@@ -224,7 +224,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 Spacer(minLength: 0)
                 RecorderStatusDisplay(
                     currentState: stateProvider.recordingState,
-                    audioMeter: recorder.audioMeter,
+                    recorder: recorder,
                     menuBarHeight: notchHeight
                 )
 
