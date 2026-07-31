@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-31T23:44:49Z
+**Trigger:** Ethan stopped the proposed BlackHole setup and required an all-Apple, input-only virtual microphone that cannot affect speaker quality.
+**Symptom:** The draft Virtual Mics feature depended on a bundled third-party loopback driver even though the intended product boundary was a microphone-only gate with no system-output involvement.
+**Root cause:** A public Core Audio aggregate can publish combinations of existing subdevices, but Audio MIDI Setup cannot synthesize an app-fed microphone or transform one input stream. Making a new microphone visible system-wide still requires an audio device implementation; the safe direction is a VoiceInk++-owned Apple Core Audio input device, not a third-party system-output loopback.
+**Fix:** Closed Installer before authorization, verified no BlackHole HAL bundle or receipt existed and the Scarlett 18i8 remained the 48 kHz default input/output/system-output device, then removed the entire draft BlackHole implementation and bundled package from the working tree.
+**Commit:** investigation-only
+**Guard:** Treat any future virtual-mic transport as a system audio component even when it uses public Apple APIs. Do not install or advertise it until the device exposes no usable system-output route and physical tests prove that enabling, silencing, and disabling it leave the default device and rendered speaker audio unchanged.
+---
+
+
+---
 **Date:** 2026-07-31T22:54:32Z
 **Trigger:** Follow-up process audit after VoiceInk++ v2.0.271 was idle but the Mac still had fan/load symptoms.
 **Symptom:** VoiceInk++ itself stayed at 0% CPU, yet a cua_node child consumed roughly 160–175% CPU and 7% memory for more than twenty minutes.

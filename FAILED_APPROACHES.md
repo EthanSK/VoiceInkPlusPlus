@@ -689,6 +689,23 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Voice-assistant listener-mute failures
 
+### Third-party loopback driver plus aggregate microphone
+
+- **State:** REJECTED before installation.
+- **Failure:** The proposed BlackHole transport was a third-party loopback driver. Ethan explicitly
+  rejected that architecture because prior system-audio loopback software audibly changed his
+  output and he requires this feature to have no speaker/output role at all. The installer was
+  closed before authorization; no driver file or package receipt was installed, the experimental
+  VoiceInk++ source was removed, and the Scarlett 18i8 remained the 48 kHz default input, output,
+  and system output.
+- **Rule:** Never bundle, install, or silently revive BlackHole or another third-party loopback for
+  VoiceInk++ listener suppression. Audio MIDI Setup aggregate devices only combine existing Core
+  Audio devices; they do not create a software-fed microphone or insert a per-app silence gate.
+- **Reconsider only if:** Ethan explicitly reverses the third-party-driver decision. A separate
+  VoiceInk++-owned Apple Core Audio input device may be investigated, but it must expose no usable
+  speaker/system-output route, preserve the physical source format where possible, and be physically
+  proven not to change the default or rendered output before it is installed or advertised.
+
 ### ChatGPT Voice Accessibility polling and pointer fallback
 
 - **State:** REJECTED.
