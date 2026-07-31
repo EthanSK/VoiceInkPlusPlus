@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-31T22:54:32Z
+**Trigger:** Follow-up process audit after VoiceInk++ v2.0.271 was idle but the Mac still had fan/load symptoms.
+**Symptom:** VoiceInk++ itself stayed at 0% CPU, yet a cua_node child consumed roughly 160–175% CPU and 7% memory for more than twenty minutes.
+**Root cause:** The child belonged to this same Codex task's earlier one-off Computer Use inspection of ChatGPT Voice. Its session ID resolved only to this task's native rollout and its parent was this task's node_repl, so it was a stale inspection kernel rather than VoiceInk++, a mute consumer, or another agent's owned work.
+**Fix:** Terminated only the proven stale cua_node child. VoiceInk++ remained running and idle; the parent node_repl and Ethan's active applications were preserved.
+**Commit:** investigation-only
+**Guard:** During recorder-lag or fan diagnosis, inspect system-wide CPU as well as VoiceInk++ and group candidate helpers by PID, PPID, elapsed time, command, cwd, and session ID. Map a cua_node session back to the exact Codex rollout before stopping it; never kill an unattributed Computer Use kernel that may belong to another active task.
+---
+
+
+---
 **Date:** 2026-07-31T22:50:19Z
 **Trigger:** Ethan reported that VoiceInk++ had become globally laggy and raised the Mac's fans after the failed assistant-mute work, then asked to remove that path, restart cleanly, and check for zombie processes.
 **Symptom:** Showing and animating the mirrored recorder bar was sluggish even though the rest of the Mac remained responsive.
