@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-31T21:07:21Z
+**Trigger:** Urgent delegated report that VoiceInk++ was frozen on Transcribing and the current transcript must be recovered before any restart.
+**Symptom:** VoiceInk++ stayed on Transcribing with a beachball after GPT Live had already finalized the current transcript.
+**Root cause:** The AppleScript paste option called NSAppleScript.executeAndReturnError synchronously on MainActor; System Events timed out with Apple Event -1712 after 120 seconds, blocking the recorder UI and shortcut event tap while delivery—not transcription—was stuck.
+**Fix:** Commit 2d9aae2 routes AppleScript paste through BoundedAppleScriptRunner off-main with a two-second hard deadline, terminates the helper at expiry, logs bounded timing, and never retries an indeterminate paste; recovered transcript/history/clipboard were preserved before release.
+**Commit:** 2d9aae28a7ffbb9f4790677bad1d1f970aadc398
+**Guard:** Exact Mini canonical Xcode action compiled then stalled in TestManager; direct xcrun xctest named and passed all 81 tests including boundedAppleScriptRunnerKillsTimedOutHelper and appleScriptPasteUsesTheBoundedOffMainRunner. Signed v2.0.270 is installed with CDHash dacd6cc1288a0c0dc8706bac968aa8126a3a6a04, deep/strict signing and Automation=true; live mitigation remains pasteMethod=default/useAppleScriptPaste=0.
+---
+
+
+---
 **Date:** 2026-07-31T01:25:16Z
 **Trigger:** Ethan authorized the normal v2.0.269 release path and physical triple-click/cancellation validation.
 **Symptom:** Primary triple-click clipboard finalization and retained cancellation needed a uniquely versioned signed release plus a real helper path that could clear dictation ownership without resuming YouTube.
