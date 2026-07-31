@@ -91,10 +91,13 @@ any cancellable delayed restoration task. Explicit cancellation while transcript
 in flight is separate: forbid delivery, retain the strongest available provider result or saved HUD
 partial in clipboard plus history with a distinct status, and leave truly empty cancellation distinct.
 
-Drive any connected voice-assistant listening suppression from VoiceInk++ recording state, never
-from YouTube playback. A consumer treats `recordingStarted` as active and both ordinary and
-playback-preserving stop notifications as inactive, and mutes only its own listener through a proven
-app/service API. Never globally mute the macOS input, because that would also silence VoiceInk++.
+Drive any connected voice-assistant listening suppression from the combined condition
+`voiceInkRecordingActive || youtubeVideoPlaying`. A consumer treats `recordingStarted` as
+recording-active and both ordinary and playback-preserving stop notifications as recording-inactive,
+and takes YouTube playback state from the existing extension bridge. Restore the listener only when
+both inputs are false, and mute only through a proven listener-specific app/service API. Never
+globally mute the macOS input, because that would also silence VoiceInk++. Treat the listener side as
+blocked rather than implemented when the exact connected assistant exposes no proven mute API.
 
 Keep real-time provider partials inside the black recorder HUD. The streaming callback may update only
 the active session's `partialTranscript`; it must never create or maintain provisional text ranges in

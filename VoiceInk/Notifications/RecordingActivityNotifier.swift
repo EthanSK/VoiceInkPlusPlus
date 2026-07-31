@@ -19,9 +19,10 @@ import Foundation
 ///   - `com.ethansk.voiceink.recordingStoppedPreservingPlayback` → posted when a genuine Primary
 ///     triple-click finalizes to the clipboard; consumers must end recording ownership without
 ///     issuing play, pause, or another playback mutation.
-/// A voice-assistant listener may also use these as recording-state edges: started means mute its
-/// own listener, and either stop name means restore it. It must not infer state from YouTube
-/// playback or globally mute the system input, which would also silence VoiceInk++.
+/// A voice-assistant listener may also use these as recording-state edges, combined with the helper's
+/// live YouTube playback reports: mute while `recordingActive || youtubePlaying`, and restore only
+/// when both are false. That consumer must control only its own listener through a proven API; it
+/// must never globally mute the system input, which would also silence VoiceInk++.
 /// No payload is sent: the helper app already tracks which YouTube tab is playing (via its
 /// extension) and decides what to pause/resume. The helper's "only resume what we paused" guard
 /// means a `recordingStopped` will NOT start a video that wasn't already playing.
