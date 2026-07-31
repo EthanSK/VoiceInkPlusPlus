@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-31T00:14:57Z
+**Trigger:** Additive triple-click, partial-cancellation retention, playback-preservation, and recording-state assistant-mute requirements from task 019fb560-6dea-7ba0-9d94-0b20e6f9d458
+**Symptom:** Primary had only single-stop and double-pause outcomes, so there was no safe gesture that finalized to clipboard without delivery; canceling an in-flight transcription could also lose already-produced text.
+**Root cause:** Gesture state did not distinguish one continuous triple sequence from separate doubles, completion policy was coupled to paste destinations, and playback ownership clearing inside a cancellable delayed task could be skipped by a rapid next recording.
+**Fix:** Commit 13020841d799f260204838fe50ca8d24e4eafbcb adds per-session clipboard-only completion, serialized genuine triple-click handling, no Mode response/paste/Return, synchronous playback-ownership clearing plus a playback-preserving bridge edge, and canceledWithResult clipboard/history retention for provider finals or saved HUD partials.
+**Commit:** 13020841d799f260204838fe50ca8d24e4eafbcb
+**Guard:** Focused coordinator/cancellation/source-contract tests, parsing of every modified Swift file, git diff --check, and repository-skill validation pass locally; Mini Xcode execution and physical triple/playback/cancel acceptance remain required before release.
+---
+
+
+---
 **Date:** 2026-07-30T21:33:01Z
 **Trigger:** Ethan asked for one Markdown document that her agent can use to reproduce his VoiceInk++ setup
 **Symptom:** A friend cannot reproduce Ethan's GPT realtime setup from a settings export alone
