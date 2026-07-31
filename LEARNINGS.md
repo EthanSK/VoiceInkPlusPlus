@@ -25,6 +25,28 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-31T22:50:19Z
+**Trigger:** Ethan reported that VoiceInk++ had become globally laggy and raised the Mac's fans after the failed assistant-mute work, then asked to remove that path, restart cleanly, and check for zombie processes.
+**Symptom:** Showing and animating the mirrored recorder bar was sluggish even though the rest of the Mac remained responsive.
+**Root cause:** MiniWindowManager and NotchWindowManager destroyed and rebuilt a complete SwiftUI recorder hierarchy for every connected display on every recording start. AudioVisualizer also ran an independent 60 Hz TimelineView while Recorder already published its meter at 30 Hz, and broad recorder observation invalidated more of each mirrored hierarchy than the waveform needed.
+**Fix:** Commit a4e9fe1 reuses existing per-display panels while the ordered physical display IDs remain unchanged, rebuilds only when that display set changes, removes the independent 60 Hz clock, and confines the recorder's 30 Hz meter observation to RecorderStatusDisplay's waveform subtree. The same commit keeps the failed ChatGPT listener-mute consumer disabled and leaves the proven YouTube recording-lifecycle bridge intact.
+**Commit:** a4e9fe196c7b00640213a73d54b9ad80f758e868
+**Guard:** Mac Mini canonical Xcode test action compiled then stalled in TestManager; fresh direct xcrun xctest named and passed all 82 tests including recorderWindowsReuseStableDisplaySetAndRebuildOnChange. Signed v2.0.271 is installed with PID renewed, CDHash 347cd02c2f9c24632df631ab430c96552bfd7d7c, deep/strict signing and Automation=true; idle CPU is 0%, no mute-controller symbol or process is present, and physical recording-start/stop smoothness remains the final acceptance gate.
+---
+
+
+---
+**Date:** 2026-07-31T22:50:19Z
+**Trigger:** Ethan asked to check for and clean up zombie processes while diagnosing VoiceInk++ lag and fan activity.
+**Symptom:** The Mac had 2,553 defunct processes, which initially looked compatible with a leaking VoiceInk++ helper or failed mute experiment.
+**Root cause:** Process ownership showed every mass zombie was a child of Pioneer's stalled FwUpdateManagerd, not VoiceInk++, the YouTube bridge, or a mute controller. VoiceInk++ had no zombie children. One separate long-lived ChatGPT zombie remains unrelated to the mass leak.
+**Fix:** Terminating only the proven stalled Pioneer parent allowed launchd/process reaping to remove all 2,553 Pioneer zombies. Leave the unrelated ChatGPT process alone rather than restarting Ethan's active app for cosmetic cleanup.
+**Commit:** investigation-only
+**Guard:** Always group zombies by PPID and inspect the parent command before terminating anything; after cleanup require both the implicated parent and its defunct children to be absent, then recheck VoiceInk++ CPU/process ownership after relaunch.
+---
+
+
+---
 **Date:** 2026-07-31T21:07:21Z
 **Trigger:** Urgent delegated report that VoiceInk++ was frozen on Transcribing and the current transcript must be recovered before any restart.
 **Symptom:** VoiceInk++ stayed on Transcribing with a beachball after GPT Live had already finalized the current transcript.

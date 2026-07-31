@@ -687,6 +687,23 @@ No row may be promoted merely because a later build reused part of it.
 - **Rule:** Use a disposable page/card only. Prove the exact card/property/block and sibling safety;
   otherwise report not tested and fail closed.
 
+## Voice-assistant listener-mute failures
+
+### ChatGPT Voice Accessibility polling and pointer fallback
+
+- **State:** REJECTED.
+- **Failure:** `AXPress` could report success against the ChatGPT Voice mute control without changing
+  its state. The attempted pointer fallback then moved and clicked Ethan's real mouse, interrupting
+  his work. No documented non-activating listener API was found, and the experimental consumer was
+  never installed in the accepted VoiceInk++ or YouTube-helper artifacts.
+- **Rule:** Keep assistant-listener suppression disconnected from RecordingActivityNotifier and the
+  YouTube playback bridge. Never poll ChatGPT Accessibility, synthesize pointer movement/clicks, or
+  globally mute macOS input; global input mute would silence VoiceInk++ itself.
+- **Reconsider only if:** The exact assistant exposes a documented background API that controls only
+  its own listener, the API is proven without focus or pointer theft on a disposable surface, and
+  Ethan explicitly asks to revive the integration. The combined policy would then be
+  `voiceInkRecordingActive || youtubeVideoPlaying`, but that policy is not an implementation.
+
 ## Recorder HUD and feedback regressions
 
 ### Showing the HUD on only the activation monitor
