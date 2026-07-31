@@ -90,6 +90,10 @@ recording and bridge lifecycle without play/pause, and clear playback ownership 
 any cancellable delayed restoration task. Explicit cancellation while transcription/finalization is
 in flight is separate: forbid delivery, retain the strongest available provider result or saved HUD
 partial in clipboard plus history with a distinct status, and leave truly empty cancellation distinct.
+Whenever a new VoiceInk recording-lifecycle edge adds a helper bridge command, validate every relay
+layer rather than only the sender and Chrome extension: the menu app mapping, native host's explicit
+app-to-Chrome forwarding whitelist, extension dispatch, and final state mutation must all agree.
+Require a reloaded live extension/native host and one correlated cross-process log before acceptance.
 
 Drive any connected voice-assistant listening suppression from the combined condition
 `voiceInkRecordingActive || youtubeVideoPlaying`. A consumer treats `recordingStarted` as

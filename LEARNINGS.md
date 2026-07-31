@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-31T01:25:16Z
+**Trigger:** Ethan authorized the normal v2.0.269 release path and physical triple-click/cancellation validation.
+**Symptom:** Primary triple-click clipboard finalization and retained cancellation needed a uniquely versioned signed release plus a real helper path that could clear dictation ownership without resuming YouTube.
+**Root cause:** The VoiceInk implementation was complete, but the companion native host initially omitted finish-dictation-preserving-playback from its explicit app-to-Chrome forwarding whitelist; source tests alone could not prove the installed cross-process route.
+**Fix:** VoiceInk++ release commit dab647f ships build 269; helper commits 876fbda and c665e8f add the preserving stop lifecycle and native forwarding. The live combined helper artifact preserved the primary checkout's rapid-restart targeting work while leaving its tracked dirt untouched.
+**Commit:** dab647f29d9d42e53f1cc2ea678d02073e56afe5
+**Guard:** Mac Mini canonical Xcode action built then stalled in TestManager; fresh direct xcrun xctest named and passed all 79 tests. Signed v2.0.269 is installed with CDHash 0db84228c97b45f81867e3376004f7877950c97b, deep/strict signing and Automation=true. A real DistributedNotificationCenter-to-menu-app-to-native-host-to-Chrome smoke paused one live tab, then logged depthWas=1 depthNow=0, playbackCommand=none, playback-preserved, and no resume. Genuine G502 triple-click plus retained/empty cancellation remain physical acceptance gates.
+---
+
+
+---
 **Date:** 2026-07-31T00:14:57Z
 **Trigger:** Additive triple-click, partial-cancellation retention, playback-preservation, and recording-state assistant-mute requirements from task 019fb560-6dea-7ba0-9d94-0b20e6f9d458
 **Symptom:** Primary had only single-stop and double-pause outcomes, so there was no safe gesture that finalized to clipboard without delivery; canceling an in-flight transcription could also lose already-produced text.
