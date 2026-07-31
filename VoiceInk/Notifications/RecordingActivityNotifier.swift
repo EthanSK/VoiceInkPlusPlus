@@ -16,6 +16,12 @@ import Foundation
 /// thing both apps must agree on is the exact name string:
 ///   - `com.ethansk.voiceink.recordingStarted`  → posted when a dictation recording begins.
 ///   - `com.ethansk.voiceink.recordingStopped`  → posted when a dictation recording ends.
+///   - `com.ethansk.voiceink.recordingStoppedPreservingPlayback` → posted when a genuine Primary
+///     triple-click finalizes to the clipboard; consumers must end recording ownership without
+///     issuing play, pause, or another playback mutation.
+/// A voice-assistant listener may also use these as recording-state edges: started means mute its
+/// own listener, and either stop name means restore it. It must not infer state from YouTube
+/// playback or globally mute the system input, which would also silence VoiceInk++.
 /// No payload is sent: the helper app already tracks which YouTube tab is playing (via its
 /// extension) and decides what to pause/resume. The helper's "only resume what we paused" guard
 /// means a `recordingStopped` will NOT start a video that wasn't already playing.
@@ -46,6 +52,10 @@ enum RecordingActivityNotifier {
     /// Posted when a dictation recording stops/cancels (right where PlaybackController resumes).
     private static let recordingStoppedName = Notification.Name("com.ethansk.voiceink.recordingStopped")
 
+    private static let recordingStoppedPreservingPlaybackName = Notification.Name(
+        "com.ethansk.voiceink.recordingStoppedPreservingPlayback"
+    )
+
     /// Broadcast that recording has started. Fire-and-forget; if the helper app isn't running this
     /// is a harmless no-op (DistributedNotificationCenter just has no observers).
     static func postRecordingStarted() {
@@ -61,6 +71,18 @@ enum RecordingActivityNotifier {
     static func postRecordingStopped() {
         DistributedNotificationCenter.default().postNotificationName(
             recordingStoppedName,
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+    }
+
+    /// Balance a prior `recordingStarted` ownership edge without changing playback.
+    /// The YouTube bridge must clear its dictation depth/target but leave the current
+    /// video state untouched; this is intentionally distinct from ordinary stop.
+    static func postRecordingStoppedPreservingPlayback() {
+        DistributedNotificationCenter.default().postNotificationName(
+            recordingStoppedPreservingPlaybackName,
             object: nil,
             userInfo: nil,
             deliverImmediately: true

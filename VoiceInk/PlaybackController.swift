@@ -285,6 +285,18 @@ class PlaybackController: ObservableObject {
         await task.value
     }
 
+    /// Ends VoiceInk++'s ownership of a recording-time media pause without issuing
+    /// any playback command. The Primary triple-click clipboard gesture uses this:
+    /// whatever is playing or paused at that instant must remain exactly as it is.
+    /// Clearing both the remembered source and delayed task prevents a later normal
+    /// stop from replaying a stale source from this completed recording.
+    func abandonPausedMediaOwnership() {
+        resumeTask?.cancel()
+        resumeTask = nil
+        pausedSource = nil
+        logger.info("Abandoned recording-time media ownership without play/pause")
+    }
+
     // MARK: - Helpers
 
     private func isAppStillRunning(bundleId: String) -> Bool {

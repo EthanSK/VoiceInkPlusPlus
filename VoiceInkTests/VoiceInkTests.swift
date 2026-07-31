@@ -286,6 +286,162 @@ struct VoiceInkTests {
         #expect(!coordinator.hasPendingNormalStop)
     }
 
+    @Test func genuinePrimaryTriplePressFinishesToClipboard() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10
+        ) == .deferNormalStop(generation: 1))
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10.2
+        ) == .togglePause)
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 10.4
+        ) == .finishToClipboard)
+
+        // A fourth press/bounce inside the same multi-click window must not start
+        // a new recording after the clipboard-only finalization begins.
+        #expect(coordinator.registerPress(
+            recordingState: .idle,
+            eventTime: 10.45
+        ) == .ignoreCompletedGesture)
+    }
+
+    @Test func separatePrimaryDoublePressesNeverBecomeTriplePress() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 20
+        ) == .deferNormalStop(generation: 1))
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 20.2
+        ) == .togglePause)
+
+        // The gap ends the first macOS-bounded gesture. This is click one of a
+        // fresh double-click, not click three of the earlier one.
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 21
+        ) == .deferNormalStop(generation: 2))
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 21.2
+        ) == .togglePause)
+    }
+
+    @Test func canceledTranscriptionRecoveryPrefersFinishedTextThenHUDPartial() {
+        #expect(TranscriptionCancellationRecovery.resolve([
+            "  finished provider text  ",
+            "older HUD partial"
+        ]) == .recover("finished provider text"))
+        #expect(TranscriptionCancellationRecovery.resolve([
+            nil,
+            "  HUD partial survives  "
+        ]) == .recover("HUD partial survives"))
+        #expect(TranscriptionCancellationRecovery.resolve([
+            nil,
+            "  \n "
+        ]) == .noResult)
+    }
+
+    @Test func canceledTranscriptionStatusDistinguishesRetainedAndEmptyResults() {
+        let retained = Transcription(text: "", duration: 0)
+        retained.markAsCanceledTranscription(
+            preservingRecoveredText: "recover me"
+        )
+        #expect(retained.text == "recover me")
+        #expect(retained.transcriptionStatus ==
+            TranscriptionStatus.canceledWithResult.rawValue)
+
+        let empty = Transcription(text: "", duration: 0)
+        empty.markAsCanceledTranscription()
+        #expect(empty.text == Transcription.canceledTranscriptionText)
+        #expect(empty.transcriptionStatus == TranscriptionStatus.canceled.rawValue)
+    }
+
+    @Test func clipboardOnlyCompletionReturnsBeforeAnyPasteTargetResolution() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+            ),
+            encoding: .utf8
+        )
+        let clipboardBranch = try #require(source.range(
+            of: "        if completionDispositionNow == .clipboardOnly {"
+        ))
+        let pasteTargetResolution = try #require(source.range(
+            of: "        let pasteTargetForDelivery = await resolvePasteTarget()",
+            range: clipboardBranch.upperBound..<source.endIndex
+        ))
+        let clipboardBody = source[
+            clipboardBranch.lowerBound..<pasteTargetResolution.lowerBound
+        ]
+
+        #expect(clipboardBody.contains("ClipboardManager.copyToClipboard"))
+        #expect(clipboardBody.contains("paste=false autoSend=false"))
+        #expect(!clipboardBody.contains("delivery.deliver"))
+        #expect(!clipboardBody.contains("resolvePasteTarget"))
+
+        // `.respond` enhancement begins earlier than final delivery. Clipboard-only
+        // must suppress it there so the copied result remains the transcription.
+        #expect(source.contains(
+            "completionDispositionNow == .clipboardOnly &&\n" +
+            "                    outputForThisDelivery.outputMode == .respond"
+        ))
+        #expect(source.contains(
+            "if !skipPostProcessingNow,\n" +
+            "                   !suppressesModeResponse,"
+        ))
+    }
+
+    @Test func triplePressStopPreservesPlaybackAndUsesNoCancelPath() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let shortcutSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Shortcuts/RecordingShortcutManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let tripleStart = try #require(shortcutSource.range(
+            of: "        case .finishToClipboard:"
+        ))
+        let nextCase = try #require(shortcutSource.range(
+            of: "        case .ignoreCompletedGesture:",
+            range: tripleStart.upperBound..<shortcutSource.endIndex
+        ))
+        let tripleBody = shortcutSource[
+            tripleStart.lowerBound..<nextCase.lowerBound
+        ]
+        #expect(tripleBody.contains("finishRecordingToClipboard(modeId)"))
+        #expect(!tripleBody.contains("cancelRecording"))
+        #expect(!tripleBody.contains("toggleRecorderPanel"))
+
+        let recorderSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("VoiceInk/Recorder.swift"),
+            encoding: .utf8
+        )
+        #expect(recorderSource.contains(
+            "playbackController.abandonPausedMediaOwnership()"
+        ))
+        #expect(recorderSource.contains(
+            "RecordingActivityNotifier.postRecordingStoppedPreservingPlayback()"
+        ))
+    }
+
     @Test func primaryPauseDoublePressWindowCapsSlowSystemPreference() {
         #expect(
             PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
@@ -442,7 +598,7 @@ struct VoiceInkTests {
             range: pauseStart.upperBound..<source.endIndex
         ))
         let stopStart = try #require(source.range(
-            of: "    func stopRecording() async {",
+            of: "    func stopRecording(\n",
             range: resumeStart.upperBound..<source.endIndex
         ))
         let pauseBody = source[pauseStart.lowerBound..<resumeStart.lowerBound]

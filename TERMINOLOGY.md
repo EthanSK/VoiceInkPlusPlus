@@ -6,7 +6,7 @@ This is the canonical glossary for Ethan's mouse controls and recording destinat
 
 | Preferred term | Ethan may also say | Exact meaning |
 | --- | --- | --- |
-| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. The first press starts recording. While recording or paused, one press performs a normal stop after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds; two presses inside that window toggle capture pause/resume. In code, the shortcut uses `.toggle` mode. |
+| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. The first press starts recording. While recording or paused, one press performs a normal stop after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds; two presses inside that window toggle capture pause/resume; three consecutive presses in one gesture finalize to the clipboard without paste/Return. In code, the shortcut uses `.toggle` mode. |
 | **Next button** | forward button, secondary button, secondary mouse button, Next Track, Next Track media key/action/event, latch button, retarget button | The separate programmable mouse button mapped to the macOS Next Track media event (`NX_KEYTYPE_NEXT`). Its action depends on whether VoiceInk++ is recording or a normal-stop result is still loading. It is not the primary button and “secondary” does not mean macOS right-click. |
 
 In this repository, **toggle** without another qualifier means the primary button's start/stop lifecycle. It never means toggling a paste destination on or off. The short-lived Next-destination toggle experiment was deliberately reverted.
@@ -40,6 +40,7 @@ either physical button.
 | Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording | Primary button twice within the VoiceInk++ pause decision window | Pause this same recording and stop microphone/WAV/stream input; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
 | Paused | Primary button twice within the VoiceInk++ pause decision window | Resume capture into this same recording; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
+| Recording or paused | Primary button three times as one continuous click gesture | Wait for the double-click capture transition, then finalize normally to a persistent clipboard-only result; do not paste, Return, cancel/discard, or change media/YouTube playback | No paste destination; clipboard only |
 | Paused | Primary button once | After the same decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
@@ -56,6 +57,12 @@ commands or YouTube-helper recording notifications: Ethan controls media himself
 interval. VoiceInk++ may still unmute system output while capture is paused and restore its optional
 output mute when capture resumes. Only recording start and final stop/cancel own the normal media
 pause/resume lifecycle.
+
+Triple-click timing uses the same platform-bounded interval between consecutive presses. Once a
+double-click's interval has expired, the next press begins a fresh gesture; a later double-click
+therefore pauses/resumes normally and cannot become click three of the earlier double. The genuine
+triple's final stop balances VoiceInk/bridge recording ownership without issuing play or pause, so
+whatever video state exists immediately before click three remains unchanged.
 
 The recorder bar is the strict ownership boundary for the physical Next button. While any mirrored black recorder/transcription bar is visible, VoiceInk++ consumes the complete Next Track press even if the newest session already latched, crossed the delivery cutoff, or exact delivery is temporarily disabled. Only a press made after the recorder bar is hidden may reach Music, Spotify, or another media app. This prevents an attempted latch from unexpectedly becoming Next Song because of an internal timing race.
 

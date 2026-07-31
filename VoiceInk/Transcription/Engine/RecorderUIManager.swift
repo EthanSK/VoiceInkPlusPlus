@@ -309,6 +309,21 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         }
     }
 
+    /// Genuine Primary triple-click: finish the active recording through the
+    /// normal transcription pipeline, but select the session's clipboard-only
+    /// completion disposition. This never routes through cancel, paste, Return,
+    /// or app-specific exact delivery.
+    @discardableResult
+    func finishRecordingToClipboard(modeId: UUID? = nil) async -> Bool {
+        guard let engine,
+              isRecorderPanelVisible,
+              engine.recordingState.isRecordingOrPaused else {
+            return false
+        }
+        vippLog.info("finishRecordingToClipboard: genuine Primary triple-click")
+        return await engine.finishActiveRecordingToClipboard(modeId: modeId)
+    }
+
     func dismissRecorderPanel() async {
         guard let engine = engine else { return }
 

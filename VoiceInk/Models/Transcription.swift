@@ -6,6 +6,7 @@ enum TranscriptionStatus: String, Codable {
     case completed
     case failed
     case canceled
+    case canceledWithResult
 }
 
 @Model
@@ -64,12 +65,24 @@ final class Transcription {
     }
 
     func markAsCanceledTranscription(
+        preservingRecoveredText recoveredText: String? = nil,
         duration: TimeInterval? = nil,
         modelName: String? = nil
     ) {
-        text = Self.canceledTranscriptionText
+        let recovered = recoveredText?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let recovered, !recovered.isEmpty {
+            // Cancellation is still a no-delivery action, but words already produced
+            // by the provider (or shown in the realtime HUD) remain useful. Preserve
+            // exactly the clipboard value and give history a distinct status so this
+            // can never be mistaken for an empty/no-result cancellation.
+            text = recovered
+            transcriptionStatus = TranscriptionStatus.canceledWithResult.rawValue
+        } else {
+            text = Self.canceledTranscriptionText
+            transcriptionStatus = TranscriptionStatus.canceled.rawValue
+        }
         enhancedText = nil
-        transcriptionStatus = TranscriptionStatus.canceled.rawValue
         if let duration {
             self.duration = duration
         }

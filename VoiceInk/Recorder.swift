@@ -4,6 +4,11 @@ import CoreAudio
 import os
 import AppKit
 
+enum RecordingStopPlaybackDisposition: Equatable {
+    case restoreOwnedPlayback
+    case preserveCurrentPlayback
+}
+
 @MainActor
 class Recorder: NSObject, ObservableObject {
     private var recorder: CoreAudioRecorder?
@@ -269,7 +274,9 @@ class Recorder: NSObject, ObservableObject {
         logger.info("Recording capture resumed into the existing WAV/realtime session; playback is unchanged")
     }
 
-    func stopRecording() async {
+    func stopRecording(
+        playbackDisposition: RecordingStopPlaybackDisposition = .restoreOwnedPlayback
+    ) async {
         audioMuteTask?.cancel()
         audioMuteTask = nil
         mediaPauseTask?.cancel()
@@ -290,11 +297,23 @@ class Recorder: NSObject, ObservableObject {
         resetAudioMeter()
 
         audioRestorationTask?.cancel()
-        audioRestorationTask = Task {
+        if playbackDisposition == .preserveCurrentPlayback {
+            // Clear this recording's playback ownership synchronously. A rapid new
+            // recording cancels the delayed restoration task below; ownership must
+            // already be gone so that cancellation cannot leave a stale source for
+            // some later ordinary stop to resume.
+            playbackController.abandonPausedMediaOwnership()
+        }
+        audioRestorationTask = Task { [playbackDisposition] in
             guard !Task.isCancelled else { return }
             await mediaController.unmuteSystemAudio()
             guard !Task.isCancelled else { return }
-            await playbackController.resumeMedia()
+            switch playbackDisposition {
+            case .restoreOwnedPlayback:
+                await playbackController.resumeMedia()
+            case .preserveCurrentPlayback:
+                break
+            }
         }
 
         // Complementary to resumeMedia(): broadcast "recording stopped" so the external YouTube
@@ -302,7 +321,12 @@ class Recorder: NSObject, ObservableObject {
         // delayed audioRestorationTask) so the resume isn't subject to the audio-resumption delay.
         // The helper only resumes a tab it actually paused, so a spurious stop (e.g. reset on
         // launch) or a cancel is a safe no-op on the YouTube side. Cancel == stop at this layer.
-        RecordingActivityNotifier.postRecordingStopped()
+        switch playbackDisposition {
+        case .restoreOwnedPlayback:
+            RecordingActivityNotifier.postRecordingStopped()
+        case .preserveCurrentPlayback:
+            RecordingActivityNotifier.postRecordingStoppedPreservingPlayback()
+        }
 
         deviceManager.isRecordingActive = false
     }

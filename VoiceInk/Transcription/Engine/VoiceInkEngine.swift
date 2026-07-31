@@ -374,6 +374,28 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Finalizes the active recording as a one-shot clipboard result. This is the
+    /// genuine Primary triple-click route: it is neither cancel/discard nor any of
+    /// the three paste destinations. The session still transcribes normally, while
+    /// the pipeline's completion disposition guarantees no paste or auto-send.
+    @discardableResult
+    func finishActiveRecordingToClipboard(modeId: UUID? = nil) async -> Bool {
+        guard let active = activeRecordingSession,
+              active.liveRecordingState.isRecordingOrPaused,
+              !active.shouldCancel else {
+            vippLog.info("clipboard-only finish ignored because no active recording owns the mic")
+            return false
+        }
+
+        await toggleRecord(
+            modeId: modeId,
+            stopPasteDestination: .primaryCurrentInput,
+            completionDisposition: .clipboardOnly,
+            stopPlaybackDisposition: .preserveCurrentPlayback
+        )
+        return true
+    }
+
     // MARK: - Toggle Record
 
     // The single entry point for the record shortcut / record button. Behaviour:
@@ -386,7 +408,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
     func toggleRecord(
         modeId: UUID? = nil,
         isAssistantFollowUp: Bool = false,
-        stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput
+        stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput,
+        completionDisposition: RecordingCompletionDisposition = .normalDelivery,
+        stopPlaybackDisposition: RecordingStopPlaybackDisposition = .restoreOwnedPlayback
     ) async {
         // Mid-start re-press: the active session is still starting → cancel it.
         if let active = activeRecordingSession, active.liveRecordingState == .starting {
@@ -402,6 +426,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // that inline await is exactly what blocked the next start in the old engine.
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
+            active.completionDisposition = completionDisposition
             switch stopPasteDestination {
             case .recordingStart:
                 let focusedInput = active.recordingStartFocusedInput
@@ -430,17 +455,25 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // Publish the feedback token only after the selected route has owned
             // its per-session target. All mirrored recorder windows observe this
             // same session and therefore pulse in sync without re-reading focus.
-            active.signalDestinationAction(stopPasteDestination)
+            if completionDisposition == .normalDelivery {
+                active.signalDestinationAction(stopPasteDestination)
+            }
 
             vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) deliveryPolicy=\(stopPasteDestination.usesBaseCurrentInputDelivery ? "baseCurrentInput" : "exactNextLatch", privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
+            // The HUD partial is preview-only during normal delivery, but it is the
+            // only recoverable provider output if an explicit cancel interrupts live
+            // finalization before the provider returns a completed result.
+            active.recoverablePartialTranscript = active.partialTranscript
             active.partialTranscript = ""
             active.startID = UUID() // invalidate the start handshake token (it has fully started)
             recomputeDerivedState()
 
-            await recorder.stopRecording()
+            await recorder.stopRecording(
+                playbackDisposition: stopPlaybackDisposition
+            )
             // ── MEDIA RESUME-BETWEEN-SESSIONS NUANCE ──
             // recorder.stopRecording() schedules resumeMedia()/unmuteSystemAudio(). If the
             // user immediately starts session B, recorder.startRecording() will pauseMedia()/
@@ -1015,6 +1048,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
             skipPostProcessing: { [weak session] in
                 session?.skipPostProcessing == true
             },
+            completionDisposition: { [weak session] in
+                session?.completionDisposition ?? .normalDelivery
+            },
+            recoverablePartialTranscript: { [weak session] in
+                session?.recoverablePartialTranscript ?? ""
+            },
             // Per-session UI state: drive this session's card spinner (.enhancing etc.).
             onStateChange: { [weak self, weak session] state in
                 guard let session else { return }
@@ -1137,16 +1176,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // Cancel a SPECIFIC session. Behaviour depends on its phase:
     //   • .recording / .starting → stop the mic, save a "canceled" record, remove the card.
-    //   • .transcribing / .delivering → poison its pipeline id so its result is DISCARDED
-    //     (not pasted). The pipeline's defensive gates still deliver a finished 200 if text
-    //     is already in hand (see TranscriptionPipeline) — that's intentional: we never throw
-    //     away words the user already got transcribed. The card is removed when the pipeline
+    //   • .transcribing / .delivering → poison its pipeline id so normal delivery is
+    //     forbidden. The pipeline retains any finished result or saved realtime HUD partial
+    //     in history + clipboard, but never pastes or auto-sends it. An empty cancellation
+    //     remains a distinct ordinary canceled record. The card is removed when the pipeline
     //     unwinds; here we just flag + mark it cancelling.
     func cancelSession(_ session: RecordingSession) async {
         // VIPPDebug: poison point. For a recording session this is a clean discard; for an
         // in-flight one it inserts into canceledPipelineTranscriptionIDs which the pipeline's
-        // shouldCancel() gate reads to discard the result (subject to the "don't discard a
-        // finished 200" defensive gates).
+        // shouldCancel() gate reads to prevent delivery and retain any recoverable result.
         vippLog.info("cancelSession: \(session.id.uuidString, privacy: .public) phase=\(String(describing: session.phase), privacy: .public) liveState=\(String(describing: session.liveRecordingState), privacy: .public)")
 
         session.shouldCancel = true

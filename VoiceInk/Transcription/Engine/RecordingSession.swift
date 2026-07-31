@@ -26,6 +26,18 @@ enum RecordingPasteDestination: Equatable {
     }
 }
 
+/// One recording's post-transcription side-effect policy.
+///
+/// This is deliberately independent from `RecordingPasteDestination`: Primary and
+/// the two Next routes still own where a normal delivery goes. A genuine Primary
+/// triple-click chooses no paste destination at all. It completes the same audio and
+/// transcription pipeline, then leaves the usable result on the clipboard without
+/// issuing Command-V, Return, a custom command, or a recorder response.
+enum RecordingCompletionDisposition: Equatable {
+    case normalDelivery
+    case clipboardOnly
+}
+
 /// One user-confirmation pulse in the recorder bar. The token belongs to the
 /// recording session so every mirrored monitor panel sees the same action, and
 /// the icon is derived from the destination route at the moment it is chosen.
@@ -209,6 +221,21 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // enhancement/delivery step is honored. @Published so the recorder card's toggle button
     // re-renders its on/off (subdued vs amber) state the instant it flips.
     @Published var skipPostProcessing: Bool = false
+
+    // A genuine Primary triple-click sets this one-shot value before the session
+    // leaves `.recording`. It must travel with this exact session because another
+    // recording may already exist while this one finishes in the FIFO pipeline.
+    // Unlike the separate raw/skip toggle, clipboard-only completion still applies
+    // the session's normal formatting/enhancement; it changes only the final side
+    // effect so no destination app is touched.
+    var completionDisposition: RecordingCompletionDisposition = .normalDelivery
+
+    // Realtime partials normally exist only in the recorder HUD and are cleared when
+    // capture stops. Keep one private per-session snapshot so an explicit cancel while
+    // the provider is finalizing can retain words already shown to the user instead of
+    // replacing them with the generic canceled marker. This value is never delivered
+    // normally and never crosses into another recording's lineage.
+    var recoverablePartialTranscript: String = ""
 
     // The recorded audio file for this session. Set at record-start, consumed by the pipeline.
     var audioURL: URL?

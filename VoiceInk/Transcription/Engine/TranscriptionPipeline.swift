@@ -2,6 +2,26 @@ import Foundation
 import SwiftData
 import os
 
+/// Chooses whether an explicit in-flight cancellation has useful text to retain.
+/// Candidates are ordered from strongest (a finished provider/enhancement result)
+/// to weakest (the last realtime HUD partial). Keeping this reducer pure makes the
+/// empty-versus-recoverable contract testable without a provider or paste target.
+enum TranscriptionCancellationRecovery: Equatable {
+    case noResult
+    case recover(String)
+
+    static func resolve(_ candidates: [String?]) -> Self {
+        for candidate in candidates {
+            let trimmed = candidate?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return .recover(trimmed)
+            }
+        }
+        return .noResult
+    }
+}
+
 /// Handles the full post-recording pipeline:
 /// transcribe → filter → format → word-replace → AI enhance → deliver → save
 @MainActor
@@ -74,6 +94,10 @@ class TranscriptionPipeline {
         // short-circuit in TranscriptionDelivery.deliver and the resolve site in
         // VoiceInkEngine.runPipeline.
         skipPostProcessing: @escaping () -> Bool = { false },
+        completionDisposition: @escaping () -> RecordingCompletionDisposition = {
+            .normalDelivery
+        },
+        recoverablePartialTranscript: @escaping () -> String = { "" },
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
         // Hard lifecycle authorization is separate from the historical soft cancel
@@ -101,12 +125,47 @@ class TranscriptionPipeline {
         // closure's rewrite were ever lost downstream, this explicit flag forces the
         // raw-paste branch at delivery.
         let skipPostProcessingNow = skipPostProcessing()
+        let completionDispositionNow = completionDisposition()
+        let recoverablePartialTranscriptNow = recoverablePartialTranscript()
         if skipPostProcessingNow {
             vippLog.info("pipeline: skipPostProcessing RESOLVED=true → will bypass enhancement + force raw .paste (no mode script/respond) \(jobIdentity.logDescription, privacy: .public)")
         }
 
-        func finishCanceledTranscription() async {
+        func finishCanceledTranscription(recoveredText: String? = nil) async {
             await onCancel()
+
+            // A provider result already in hand outranks the last HUD partial. Never
+            // retain a synthesized failure string: when status is `.failed`, only a
+            // real finalText/override or the recording's HUD snapshot is eligible.
+            let storedTextCandidate = transcription.transcriptionStatus ==
+                TranscriptionStatus.failed.rawValue
+                ? nil
+                : transcription.text
+            let recovery = TranscriptionCancellationRecovery.resolve([
+                recoveredText,
+                finalText,
+                transcription.enhancedText,
+                storedTextCandidate == Transcription.canceledTranscriptionText
+                    ? nil
+                    : storedTextCandidate,
+                recoverablePartialTranscriptNow
+            ])
+            let retainedText: String?
+            switch recovery {
+            case .noResult:
+                retainedText = nil
+                vippLog.info("pipeline: cancellation retained no text because provider/HUD produced no usable result")
+            case .recover(let text):
+                retainedText = text
+                let copied = ClipboardManager.copyToClipboard(text)
+                vippLog.info("pipeline: cancellation retained result chars=\(text.count, privacy: .public) digest=\(TranscriptionLineageDigest.make(text), privacy: .public) clipboard=\(copied, privacy: .public)")
+                NotificationManager.shared.showNotification(
+                    title: copied
+                        ? String(localized: "Transcription canceled — available text copied to clipboard")
+                        : String(localized: "Transcription canceled — available text was saved in history"),
+                    type: copied ? .info : .error
+                )
+            }
 
             let canceledDuration: TimeInterval?
             if transcription.duration > 0 {
@@ -117,12 +176,19 @@ class TranscriptionPipeline {
             }
 
             transcription.markAsCanceledTranscription(
+                preservingRecoveredText: retainedText,
                 duration: canceledDuration,
                 modelName: transcription.transcriptionModelName ?? model.displayName
             )
 
             do {
                 try modelContext.save()
+                if retainedText != nil {
+                    NotificationCenter.default.post(
+                        name: .transcriptionCompleted,
+                        object: transcription
+                    )
+                }
             } catch {
                 logger.error("Failed to save canceled transcription: \(error, privacy: .public)")
             }
@@ -165,7 +231,9 @@ class TranscriptionPipeline {
                     vippLog.info("pipeline: POST-transcribe shouldCancel==true AND empty text → finishCanceled (no paste)")
                     await finishCanceledTranscription(); return
                 } else {
-                    vippLog.info("pipeline: POST-transcribe shouldCancel==true BUT text non-empty (chars=\(text.count, privacy: .public)) → DELIVER anyway (don't discard a finished 200)")
+                    vippLog.info("pipeline: POST-transcribe shouldCancel==true BUT text non-empty (chars=\(text.count, privacy: .public)) → retain to clipboard/history without delivery")
+                    await finishCanceledTranscription(recoveredText: text)
+                    return
                 }
             }
 
@@ -242,7 +310,15 @@ class TranscriptionPipeline {
                     outputForThisDelivery = resolvedOutputConfiguration
                 }
 
+                // Clipboard-only finalization must retain the actual transcript.
+                // A `.respond` Mode normally turns enhancement into an assistant
+                // response, so suppress that request here; returning before final
+                // delivery alone would be too late because enhancement starts now.
+                let suppressesModeResponse =
+                    completionDispositionNow == .clipboardOnly &&
+                    outputForThisDelivery.outputMode == .respond
                 let shouldRespondInRecorder = !skipPostProcessingNow &&
+                    !suppressesModeResponse &&
                     outputForThisDelivery.outputMode == .respond &&
                     resolvedEnhancementConfiguration?.isEnabled == true &&
                     resolvedEnhancementConfiguration.map { configuration in
@@ -264,6 +340,7 @@ class TranscriptionPipeline {
                 // already returns nil on skip, but gating here too makes the bypass independent
                 // of that and keeps both bypass points readable in one place.)
                 if !skipPostProcessingNow,
+                   !suppressesModeResponse,
                    let enhancementService,
                    let resolvedEnhancementConfiguration,
                    resolvedEnhancementConfiguration.isEnabled,
@@ -311,10 +388,11 @@ class TranscriptionPipeline {
         } catch {
             let errorDescription = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             // VIPPDebug: transcription threw. A URLError(.cancelled) here means the
-            // upload Task was torn down (the BrokenPipe-500 case at the proxy); any other
-            // error is a genuine network/decode failure. Either way the bar will hide
-            // with no paste — this line attributes which.
-            let isCancelled = (error as? URLError)?.code == .cancelled
+            // upload/finalization Task was torn down (including Swift CancellationError
+            // and URL cancellation); any other error is a genuine network/decode failure.
+            // Intentional cancellation may still retain a prior HUD/final result below.
+            let isCancelled = error is CancellationError ||
+                (error as? URLError)?.code == .cancelled
             vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
 
             let wasIntentionalCancellation = isCancelled && shouldCancel()
@@ -368,7 +446,9 @@ class TranscriptionPipeline {
                 await finishCanceledTranscription()
                 return
             } else {
-                vippLog.info("pipeline: PRE-delivery shouldCancel==true BUT finalText present → DELIVER anyway")
+                vippLog.info("pipeline: PRE-delivery shouldCancel==true BUT finalText present → retain to clipboard/history without delivery")
+                await finishCanceledTranscription(recoveredText: finalText)
+                return
             }
         }
 
@@ -378,6 +458,32 @@ class TranscriptionPipeline {
         // completed history record but forbids paste/command/response side effects.
         guard isDeliveryAuthorized() else {
             vippLog.notice("pipeline: DELIVERY REFUSED stale lineage finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+            saveTranscriptionAndPostCompletion()
+            return
+        }
+
+        // A genuine Primary triple-click is a completion gesture, not a fourth
+        // paste destination. Finish the ordinary transcription/format/enhancement
+        // work, then copy once and return before resolving any Accessibility target,
+        // mode output action, custom command, paste, or Return key.
+        if completionDispositionNow == .clipboardOnly {
+            FocusLockService.shared.clearLock()
+            SoundManager.shared.playStopSound()
+            let clipboardText = finalText?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue,
+               !clipboardText.isEmpty {
+                let copied = ClipboardManager.copyToClipboard(clipboardText)
+                NotificationManager.shared.showNotification(
+                    title: copied
+                        ? String(localized: "Transcription copied to clipboard")
+                        : String(localized: "Transcription completed, but couldn’t be copied to the clipboard"),
+                    type: copied ? .info : .error
+                )
+                vippLog.info("pipeline: clipboard-only completion chars=\(clipboardText.count, privacy: .public) digest=\(TranscriptionLineageDigest.make(clipboardText), privacy: .public) clipboard=\(copied, privacy: .public) paste=false autoSend=false")
+            } else {
+                vippLog.info("pipeline: clipboard-only completion had no completed usable text to copy")
+            }
             saveTranscriptionAndPostCompletion()
             return
         }

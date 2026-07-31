@@ -35,6 +35,20 @@ pastes, changes Mode, or changes the tentative recording-start destination. The 
 visible with its last partial frozen, and a pause symbol replaces the moving waveform on every
 mirrored recorder panel.
 
+A third consecutive Primary press inside that same click sequence turns the gesture into
+**finish to clipboard**. VoiceInk++ waits for the double-click capture transition to settle, stops
+and transcribes the same session, and leaves the final processed result on the clipboard. It does
+not paste, Return, cancel/discard, run the Mode's command/response, or resolve a saved input. It also
+balances recording ownership without sending a media/YouTube play or pause command. A later
+double-click after the platform-bounded interval is a fresh gesture and can never inherit an older
+double-click as its third press.
+
+An explicit cancel remains different from triple-click. Cancel during active microphone capture
+discards that recording as before. Cancel while transcription/finalization is already in flight
+forbids paste and auto-send, but preserves a completed provider result—or the last realtime HUD
+partial if that is all that exists—in both clipboard and history as `canceledWithResult`. If neither
+exists, VoiceInk++ saves the ordinary empty canceled record and does not overwrite the clipboard.
+
 ## Delivery engine switch
 
 VoiceInk++ temporarily defaults **Exact Saved-Input Delivery** to off while its background Codex
@@ -71,6 +85,7 @@ tests repeatedly failed on the real destination apps.
 | Primary/thumb/toggle button once while recording or paused | After the double-click interval, normal stop: base VoiceInk pastes into whichever system keyboard input is focused at delivery and uses that current Mode; it never invokes a saved input |
 | Primary/thumb/toggle button twice while recording | Pause capture without changing media playback, finalizing, or choosing a delivery route |
 | Primary/thumb/toggle button twice while paused | Resume capture into the same session without changing media playback |
+| Primary/thumb/toggle button three times in one genuine gesture | Finish the same session to the clipboard only, with no paste/Return and no playback mutation |
 | **Next button** while recording or paused | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next button** while the recorder bar is visible but no route is still eligible | VoiceInk++ consumes the press without changing the saved destination; it never advances media |

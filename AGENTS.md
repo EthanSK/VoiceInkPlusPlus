@@ -70,6 +70,23 @@ VoiceInk++ may lift and restore its own optional system-output mute across pause
 recording start and final stop/cancel own the media/YouTube-helper lifecycle. Next while paused still
 stops through `recordingStart`.
 
+A genuine Primary triple-click is also not a destination route. It is three consecutive presses in
+one macOS-bounded click sequence: the third press waits for the double-click pause transition, then
+finalizes that same session to a persistent clipboard-only result. It must not cancel/discard,
+paste, auto-send, run a Mode command/response, or resolve an Accessibility destination. It must
+preserve current media/YouTube playback exactly while balancing recorder/bridge ownership. A later
+double-click after the decision interval starts a fresh gesture and must never inherit the earlier
+double as click three; suppress only extra presses still inside an already-consumed triple gesture.
+If an explicit cancel occurs while transcription is in flight, retain a completed provider result
+or the saved realtime HUD partial in clipboard plus history with a distinct retained-cancellation
+status; an empty cancellation remains an ordinary canceled record and performs no delivery.
+
+Any connected voice-assistant listening suppression must follow VoiceInk++ recording state, not
+YouTube or other playback state. Treat `recordingStarted` as active and both ordinary and
+playback-preserving stop/finalize/cancel notifications as inactive. The consumer may mute only its
+own listener through a proven app/service API; never globally mute the macOS input, which would also
+silence VoiceInk++ itself. Do not guess an assistant process or control when the target is unspecified.
+
 The canonical second-chance scenario is:
 
 > normal stop → transcription begins → focus a new editable input → press Next Track once → optionally move to another app → finished text pastes into the newly selected input and uses that input app's configured auto-send → VoiceInk++ restores the later workspace when applicable.
