@@ -2743,6 +2743,52 @@ struct VoiceInkTests {
         #expect(!error.localizedDescription.contains(secret))
     }
 
+    @Test func boundedAppleScriptRunnerKillsTimedOutHelper() async {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        do {
+            _ = try await BoundedAppleScriptRunner.run(
+                source: "delay 5",
+                timeout: 0.1
+            )
+            Issue.record("Expected the delayed AppleScript helper to time out")
+        } catch let error as BoundedAppleScriptError {
+            guard case .timeout(let seconds) = error else {
+                Issue.record("Unexpected bounded AppleScript error: \(error)")
+                return
+            }
+            #expect(seconds == 0.1)
+        } catch {
+            Issue.record("Unexpected AppleScript runner error: \(error)")
+        }
+
+        #expect(ProcessInfo.processInfo.systemUptime - startedAt < 2.0)
+    }
+
+    @Test func appleScriptPasteUsesTheBoundedOffMainRunner() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paster = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/CursorPaster.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try #require(paster.range(
+            of: "    private static func pasteUsingAppleScript() async -> Bool {"
+        ))
+        let end = try #require(paster.range(
+            of: "    // MARK: - CGEvent paste",
+            range: start.upperBound..<paster.endIndex
+        ))
+        let body = paster[start.lowerBound..<end.lowerBound]
+
+        #expect(body.contains("BoundedAppleScriptRunner.run("))
+        #expect(body.contains("timeout: appleScriptPasteTimeout"))
+        #expect(!body.contains("executeAndReturnError"))
+        #expect(!body.contains("NSAppleScript"))
+    }
+
     @MainActor
     @Test func recorderIconPulseMapsPrimaryAndNextRoutesToSeparateIcons() {
         let session = RecordingSession()

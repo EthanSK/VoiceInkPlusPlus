@@ -37,6 +37,7 @@ class CursorPaster {
     private static let prePasteDelay: TimeInterval = 0.10
     private static let pasteShortcutEventDelay: TimeInterval = 0.01
     private static let minimumClipboardRestoreDelay: TimeInterval = 0.25
+    private static let appleScriptPasteTimeout: TimeInterval = 2.0
 
     static func pasteAtCursor(_ text: String) {
         Task {
@@ -123,7 +124,7 @@ class CursorPaster {
     ) async -> PasteResult {
         guard canPost() else { return .actionGuardRefused }
         if PasteMethod.current() == .appleScript {
-            return pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
+            return await pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
         } else {
             return await pasteFromClipboard(canPost: canPost)
         }
@@ -182,8 +183,6 @@ class CursorPaster {
         return script
     }
 
-    private static let pasteScriptKeystroke = makeScript("tell application \"System Events\" to keystroke \"v\" using command down")
-    private static let pasteScriptKeyCode   = makeScript("tell application \"System Events\" to key code 9 using command down")
     private static let enterScript = makeScript("tell application \"System Events\" to key code 36")
     private static let shiftEnterScript = makeScript("tell application \"System Events\" to key code 36 using shift down")
     private static let commandEnterScript = makeScript("tell application \"System Events\" to key code 36 using command down")
@@ -196,18 +195,30 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func pasteUsingAppleScript() -> Bool {
-        guard let script = layoutSwitchesToQWERTYOnCommand ? pasteScriptKeyCode : pasteScriptKeystroke else {
-            logger.error("AppleScript paste script is unavailable")
+    private static func pasteUsingAppleScript() async -> Bool {
+        let source = layoutSwitchesToQWERTYOnCommand
+            ? "tell application \"System Events\" to key code 9 using command down"
+            : "tell application \"System Events\" to keystroke \"v\" using command down"
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        logger.info("Bounded AppleScript paste started timeoutSeconds=\(appleScriptPasteTimeout, privacy: .public)")
+
+        do {
+            // System Events can wait for the full 120-second Apple Event timeout.
+            // Running the helper away from MainActor keeps the recorder and shortcut
+            // tap responsive; killing it at the deadline also prevents a stale paste
+            // from arriving in a different input after Ethan has continued working.
+            _ = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: appleScriptPasteTimeout
+            )
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            logger.info("Bounded AppleScript paste completed elapsed=\(elapsed, format: .fixed(precision: 3))s")
+            return true
+        } catch {
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            logger.error("Bounded AppleScript paste failed elapsed=\(elapsed, format: .fixed(precision: 3))s error=\(error.localizedDescription, privacy: .public)")
             return false
         }
-
-        var error: NSDictionary?
-        script.executeAndReturnError(&error)
-        if let error {
-            logger.error("AppleScript paste failed: \(String(describing: error), privacy: .public)")
-        }
-        return error == nil
     }
 
     // MARK: - CGEvent paste
