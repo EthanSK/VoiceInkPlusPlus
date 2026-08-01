@@ -847,6 +847,22 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Transcription provider configuration failures
 
+### Treating an OpenAI transcription prompt as a numeral-format switch
+
+- **State:** REJECTED by a physical `gpt-live-transcribe` test on 2026-08-01.
+- **Temptation:** Put examples such as “one, two, three” to “1, 2, 3” in
+  `TranscriptionPrompt` and describe the result as an OpenAI number-formatting setting.
+- **Observed failure condition:** OpenAI accepted the real `prompt` field, but the live transcript
+  still returned written number words. The documented prompt is contextual guidance, not a
+  guaranteed formatter, and the transcription API exposes no numeral-normalization boolean.
+- **Use instead:** Leave provider settings unchanged unless context itself is useful. If Ethan
+  requests deterministic digit symbols, implement an explicit opt-in post-transcription formatter
+  with tests for lists, uninterrupted digit strings, ordinals, quantities, dates, times, versions,
+  currencies, and ambiguous prose before enabling it.
+- **Reconsider only if:** OpenAI documents a dedicated numeral-normalization control and a live API
+  test proves the exact spoken-number cases, or a bounded VoiceInk++ formatter is implemented and
+  physically accepted.
+
 ### Opening GPT Live Transcribe as the Realtime session model
 
 - **State:** REJECTED by the live API on 2026-07-29.

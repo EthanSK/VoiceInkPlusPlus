@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-01T15:48:37Z
+**Trigger:** Ethan asked for spoken number words to become digit symbols and physically tested “one, two, three, four, five.”
+**Symptom:** VoiceInk++ still returned written number words after an English OpenAI transcription prompt was changed to request Arabic numerals.
+**Root cause:** OpenAI's `prompt` field is real contextual guidance for `gpt-live-transcribe` and `gpt-transcribe`, but the API exposes no numeral-normalization switch and does not guarantee output-format instructions. Treating the prompt as an enforceable formatting option was false confidence.
+**Fix:** Restored `TranscriptionPrompt` and `CustomLanguagePrompts.en` to their exact prior single-space values. Reliable numeral conversion requires an explicit VoiceInk++ post-transcription formatter with ambiguity tests, not a provider-setting claim.
+**Commit:** investigation-only
+**Guard:** Before changing live provider preferences, distinguish documented context hints from guaranteed controls and physically test the exact utterance. Never advertise prompt steering as deterministic numeral formatting.
+---
+
+
+---
 **Date:** 2026-07-31T23:44:49Z
 **Trigger:** Ethan stopped the proposed BlackHole setup and required an all-Apple, input-only virtual microphone that cannot affect speaker quality.
 **Symptom:** The draft Virtual Mics feature depended on a bundled third-party loopback driver even though the intended product boundary was a microphone-only gate with no system-output involvement.

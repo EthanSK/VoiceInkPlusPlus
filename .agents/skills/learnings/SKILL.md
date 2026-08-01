@@ -41,6 +41,11 @@ For a recorder stuck on **Transcribing**, diagnose the resolved provider before 
 
 For OpenAI GPT Live Transcribe work, use `scripts/openai-transcription-probe.swift` with synthetic PCM16 mono 24 kHz plus its WAV equivalent before building, installing, or changing active Modes. Require `session.updated`, at least one real delta, a non-empty completion, and a successful `gpt-transcribe` completed-audio fallback. The WebSocket connection is `wss://api.openai.com/v1/realtime?intent=transcription`; `gpt-live-transcribe` belongs only in `audio.input.transcription.model`. Never revive either rejected `?model=gpt-live-transcribe` or `?model=gpt-realtime-*` connection form. The probe reads the VoiceInk++ key from local secure preferences and must not print transcript contents or credentials.
 
+Treat OpenAI transcription `prompt` as contextual guidance, never as a guaranteed output formatter.
+The API exposes no numeral-normalization switch: a physical `gpt-live-transcribe` test ignored an
+explicit number-word-to-digit example. Preserve live preferences until a documented dedicated
+control is proven; deterministic numerals require a separately tested VoiceInk++ post-processor.
+
 For a requested Soniox-versus-AssemblyAI comparison using saved recordings, read
 [references/provider-realtime-ab-test.md](references/provider-realtime-ab-test.md)
 and use `scripts/compare-realtime-stt.mjs`. Dry-run the corpus first, require one
