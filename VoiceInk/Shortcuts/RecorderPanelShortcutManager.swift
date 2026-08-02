@@ -65,7 +65,7 @@ final class RecorderPanelShortcutManager: ObservableObject {
         var shortcuts = ShortcutStore.shortcuts(for: ShortcutAction.recorderPanelStoredActions)
 
         if ShortcutStore.shortcut(for: .cancelRecorder) == nil {
-            shortcuts[.recorderPanelEscape] = .key(keyCode: UInt16(kVK_Escape), modifierFlags: [])
+            shortcuts[.recorderPanelEscape] = .defaultRecorderCancel
         }
 
         if canUseModeShortcuts {
@@ -123,8 +123,9 @@ final class RecorderPanelShortcutManager: ObservableObject {
     //
     // FIX: a single Escape now (1) cancels/stops the recording, (2) tears down the
     // recorder overlay, and (3) leaves NO lingering confirm HUD — because we no
-    // longer show one. cancelRecording() → engine.cancelRecording() (discard, no
-    // paste, resume paused media) → dismissRecorderPanel() (orderOut, instant).
+    // longer show one. cancelRecording() → engine.cancelRecording() (retain the
+    // recoverable WAV/HUD draft, no paste, resume paused media) →
+    // dismissRecorderPanel() (orderOut, instant).
     //
     // IDEMPOTENT: a second Escape is a harmless no-op. handleRecorderPanelShortcut
     // already guards on `recorderUIManager.isRecorderPanelVisible`, which is false

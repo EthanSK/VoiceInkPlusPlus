@@ -32,11 +32,13 @@ struct ShortcutRecorder: View {
                         name: Self.shortcutRecordingDidStart,
                         object: recorderID
                     )
-                    clearShortcutBeforeRecording()
-                    recorder.start(action: action) { newShortcut in
-                        shortcut = newShortcut
-                        onShortcutChanged()
-                    }
+                    recorder.start(
+                        action: action,
+                        onCapture: { newShortcut in
+                            shortcut = newShortcut
+                        },
+                        onStoredShortcutChanged: onShortcutChanged
+                    )
                 }
             } label: {
                 ShortcutVisualization(
@@ -81,12 +83,6 @@ struct ShortcutRecorder: View {
         }
 
         return shortcut ?? defaultShortcut
-    }
-
-    private func clearShortcutBeforeRecording() {
-        ShortcutStore.setShortcut(nil, for: action)
-        shortcut = nil
-        onShortcutChanged()
     }
 
     private static let shortcutRecordingDidStart = Notification.Name("ShortcutRecorderRecordingDidStart")
@@ -165,30 +161,56 @@ final class ShortcutRecorderModel: ObservableObject {
 
     private var localMonitor: Any?
     private var onCapture: ((Shortcut) -> Void)?
+    private var onStoredShortcutChanged: (() -> Void)?
     private var activeAction: ShortcutAction?
+    private var originalPersistenceState: ShortcutStore.PersistenceState?
     private var pendingModifierShortcut: Shortcut?
     private var peakModifierFlags: NSEvent.ModifierFlags = []
 
     deinit {
         removeRecordingMonitor()
+        restoreOriginalShortcutIfCaptureStillOwnsTheClear()
     }
 
-    func start(action: ShortcutAction, onCapture: @escaping (Shortcut) -> Void) {
+    func start(
+        action: ShortcutAction,
+        onCapture: @escaping (Shortcut) -> Void,
+        onStoredShortcutChanged: @escaping () -> Void
+    ) {
         cancel()
 
         activeAction = action
         self.onCapture = onCapture
+        self.onStoredShortcutChanged = onStoredShortcutChanged
+        originalPersistenceState = ShortcutStore.persistenceState(for: action)
         isRecording = true
         previewShortcut = nil
+
+        // Shortcut capture must temporarily release the old global binding so trying to replace
+        // it cannot trigger the action. Keep its exact persistence state and restore it whenever
+        // capture is abandoned, rather than silently turning an aborted edit into a reset.
+        ShortcutStore.setShortcut(nil, for: action)
+        onStoredShortcutChanged()
         installRecordingMonitor()
     }
 
     func cancel() {
+        let action = isRecording ? activeAction : nil
+        let persistenceState = isRecording ? originalPersistenceState : nil
+        let storedShortcutChanged = onStoredShortcutChanged
+
         removeRecordingMonitor()
         resetRecordingState()
+
+        if Self.restoreOriginalShortcutIfCaptureStillOwnsTheClear(
+            action: action,
+            persistenceState: persistenceState
+        ) {
+            storedShortcutChanged?()
+        }
     }
 
-    private func finish(with shortcut: Shortcut) {
+    func finish(with shortcut: Shortcut) {
         guard let activeAction else {
             cancel()
             return
@@ -201,10 +223,12 @@ final class ShortcutRecorderModel: ObservableObject {
         }
 
         let capture = onCapture
+        let storedShortcutChanged = onStoredShortcutChanged
         removeRecordingMonitor()
         resetRecordingState()
 
         ShortcutStore.setShortcut(shortcut, for: activeAction)
+        storedShortcutChanged?()
         capture?(shortcut)
     }
 
@@ -212,9 +236,35 @@ final class ShortcutRecorderModel: ObservableObject {
         isRecording = false
         previewShortcut = nil
         onCapture = nil
+        onStoredShortcutChanged = nil
         activeAction = nil
+        originalPersistenceState = nil
         pendingModifierShortcut = nil
         peakModifierFlags = []
+    }
+
+    private func restoreOriginalShortcutIfCaptureStillOwnsTheClear() {
+        _ = Self.restoreOriginalShortcutIfCaptureStillOwnsTheClear(
+            action: activeAction,
+            persistenceState: originalPersistenceState
+        )
+    }
+
+    @discardableResult
+    private static func restoreOriginalShortcutIfCaptureStillOwnsTheClear(
+        action: ShortcutAction?,
+        persistenceState: ShortcutStore.PersistenceState?
+    ) -> Bool {
+        guard let action,
+              let persistenceState,
+              ShortcutStore.persistenceState(for: action) == .cleared else {
+            return false
+        }
+
+        // Import or another settings surface may replace the binding while capture is open. Only
+        // restore the snapshot while the temporary cleared state still proves this capture owns it.
+        ShortcutStore.restorePersistenceState(persistenceState, for: action)
+        return true
     }
 
     private func showErrorNotification(_ title: String) {

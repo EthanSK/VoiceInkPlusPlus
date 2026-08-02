@@ -73,6 +73,7 @@ struct GeneralBackup: Codable {
     let pasteLastEnhancementShortcut: ShortcutBackup?
     let retryLastTranscriptionShortcut: ShortcutBackup?
     let cancelRecorderShortcut: ShortcutBackup?
+    let cancelRecorderShortcutUsesDefault: Bool?
     let openHistoryWindowShortcut: ShortcutBackup?
     let quickAddToDictionaryShortcut: ShortcutBackup?
     let primaryRecordingShortcutRawValue: String?

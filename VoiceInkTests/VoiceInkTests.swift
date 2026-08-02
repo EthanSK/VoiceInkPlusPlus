@@ -42,6 +42,137 @@ private final class TranscriptionQueueTestState {
 
 struct VoiceInkTests {
 
+    @Test @MainActor func abandonedShortcutCaptureRestoresItsPreviousBinding() {
+        let action = ShortcutAction.mode(UUID())
+        let originalShortcut = Shortcut.key(
+            keyCode: UInt16(kVK_ANSI_R),
+            modifierFlags: [.command, .shift]
+        )
+        ShortcutStore.restorePersistenceState(.stored(originalShortcut), for: action)
+        defer { ShortcutStore.removeShortcutStorage(for: action) }
+
+        let recorder = ShortcutRecorderModel()
+        recorder.start(
+            action: action,
+            onCapture: { _ in },
+            onStoredShortcutChanged: {}
+        )
+
+        #expect(ShortcutStore.shortcut(for: action) == nil)
+        recorder.cancel()
+        #expect(ShortcutStore.shortcut(for: action) == originalShortcut)
+    }
+
+    @Test @MainActor func completedShortcutCaptureCommitsOnlyTheReplacement() throws {
+        let action = ShortcutAction.mode(UUID())
+        let originalShortcut = Shortcut.key(
+            keyCode: UInt16(kVK_F12),
+            modifierFlags: [.control, .shift]
+        )
+        ShortcutStore.restorePersistenceState(.stored(originalShortcut), for: action)
+        defer { ShortcutStore.removeShortcutStorage(for: action) }
+
+        let replacement = try #require(
+            [kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20]
+                .map { Shortcut.key(keyCode: UInt16($0), modifierFlags: []) }
+                .first { ShortcutValidator.validationError(for: $0, action: action) == nil }
+        )
+        let recorder = ShortcutRecorderModel()
+        recorder.start(
+            action: action,
+            onCapture: { _ in },
+            onStoredShortcutChanged: {}
+        )
+        recorder.finish(with: replacement)
+
+        #expect(ShortcutStore.shortcut(for: action) == replacement)
+        recorder.cancel()
+        #expect(ShortcutStore.shortcut(for: action) == replacement)
+    }
+
+    @Test @MainActor func abandonedShortcutCapturePreservesUnsetState() {
+        let action = ShortcutAction.mode(UUID())
+        ShortcutStore.removeShortcutStorage(for: action)
+        defer { ShortcutStore.removeShortcutStorage(for: action) }
+
+        let recorder = ShortcutRecorderModel()
+        recorder.start(
+            action: action,
+            onCapture: { _ in },
+            onStoredShortcutChanged: {}
+        )
+        recorder.cancel()
+
+        #expect(ShortcutStore.persistenceState(for: action) == .unset)
+    }
+
+    @Test @MainActor func abandonedShortcutCaptureDoesNotOverwriteANewerBinding() {
+        let action = ShortcutAction.mode(UUID())
+        let originalShortcut = Shortcut.key(keyCode: UInt16(kVK_F18), modifierFlags: [])
+        let replacementShortcut = Shortcut.key(keyCode: UInt16(kVK_F19), modifierFlags: [])
+        ShortcutStore.restorePersistenceState(.stored(originalShortcut), for: action)
+        defer { ShortcutStore.removeShortcutStorage(for: action) }
+
+        let recorder = ShortcutRecorderModel()
+        recorder.start(
+            action: action,
+            onCapture: { _ in },
+            onStoredShortcutChanged: {}
+        )
+        ShortcutStore.restorePersistenceState(.stored(replacementShortcut), for: action)
+        recorder.cancel()
+
+        #expect(ShortcutStore.shortcut(for: action) == replacementShortcut)
+    }
+
+    @Test @MainActor func shortcutCaptureDeinitRestoresItsPreviousBinding() {
+        let action = ShortcutAction.mode(UUID())
+        let originalShortcut = Shortcut.key(keyCode: UInt16(kVK_F17), modifierFlags: [])
+        ShortcutStore.restorePersistenceState(.stored(originalShortcut), for: action)
+        defer { ShortcutStore.removeShortcutStorage(for: action) }
+
+        var recorder: ShortcutRecorderModel? = ShortcutRecorderModel()
+        recorder?.start(
+            action: action,
+            onCapture: { _ in },
+            onStoredShortcutChanged: {}
+        )
+        #expect(ShortcutStore.persistenceState(for: action) == .cleared)
+
+        recorder = nil
+        #expect(ShortcutStore.shortcut(for: action) == originalShortcut)
+    }
+
+    @Test func cancelShortcutBackupDistinguishesDefaultFromLegacyAbsence() throws {
+        let customShortcut = Shortcut.key(
+            keyCode: UInt16(kVK_ANSI_X),
+            modifierFlags: [.control, .option]
+        )
+        let decodedDefault = try JSONDecoder().decode(
+            GeneralBackup.self,
+            from: Data(#"{"cancelRecorderShortcutUsesDefault":true}"#.utf8)
+        )
+
+        #expect(
+            BackupImporter.cancelRecorderShortcutPersistenceState(
+                usesDefault: decodedDefault.cancelRecorderShortcutUsesDefault,
+                shortcut: decodedDefault.cancelRecorderShortcut
+            ) == .cleared
+        )
+        #expect(
+            BackupImporter.cancelRecorderShortcutPersistenceState(
+                usesDefault: false,
+                shortcut: ShortcutBackup(customShortcut)
+            ) == .stored(customShortcut)
+        )
+        #expect(
+            BackupImporter.cancelRecorderShortcutPersistenceState(
+                usesDefault: nil,
+                shortcut: nil
+            ) == nil
+        )
+    }
+
     @Test func recorderWindowsReuseStableDisplaySetAndRebuildOnChange() {
         #expect(RecorderDisplayReusePolicy.shouldReuse(
             existingDisplayIDs: [1, 2, 3],

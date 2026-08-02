@@ -113,8 +113,11 @@ enum BackupImporter {
         if let retryShortcut = general.retryLastTranscriptionShortcut {
             ShortcutStore.setShortcut(retryShortcut.shortcut, for: .retryLastTranscription)
         }
-        if let cancelShortcut = general.cancelRecorderShortcut {
-            ShortcutStore.setShortcut(cancelShortcut.shortcut, for: .cancelRecorder)
+        if let cancelShortcutState = cancelRecorderShortcutPersistenceState(
+            usesDefault: general.cancelRecorderShortcutUsesDefault,
+            shortcut: general.cancelRecorderShortcut
+        ) {
+            ShortcutStore.restorePersistenceState(cancelShortcutState, for: .cancelRecorder)
         }
         if let historyShortcut = general.openHistoryWindowShortcut {
             ShortcutStore.setShortcut(historyShortcut.shortcut, for: .openHistoryWindow)
@@ -194,6 +197,23 @@ enum BackupImporter {
         }
 
         print("Successfully imported general settings.")
+    }
+
+    static func cancelRecorderShortcutPersistenceState(
+        usesDefault: Bool?,
+        shortcut: ShortcutBackup?
+    ) -> ShortcutStore.PersistenceState? {
+        if usesDefault == true {
+            return .cleared
+        }
+
+        if let shortcut {
+            return .stored(shortcut.shortcut)
+        }
+
+        // Older backups omitted a missing shortcut, so absence must keep the receiving Mac's
+        // existing value. New backups write usesDefault=true when Escape is the intended default.
+        return nil
     }
 
     @MainActor

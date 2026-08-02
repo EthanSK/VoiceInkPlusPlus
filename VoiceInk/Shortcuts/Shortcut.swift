@@ -66,6 +66,11 @@ struct Shortcut: Codable, Equatable {
         .modifierOnly(keyCode: UInt16(kVK_RightCommand), modifierFlags: [.command])
     }
 
+    static let defaultRecorderCancel = Self.key(
+        keyCode: UInt16(kVK_Escape),
+        modifierFlags: []
+    )
+
     static func fromLegacyShortcut(_ shortcut: LegacyKeyboardShortcut) -> Self {
         Self(
             kind: .key,

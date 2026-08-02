@@ -1,6 +1,5 @@
 import SwiftUI
 import Cocoa
-import Carbon.HIToolbox
 import LaunchAtLogin
 
 struct SettingsView: View {
@@ -19,7 +18,6 @@ struct SettingsView: View {
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
     @State private var showResetOnboardingAlert = false
     @State private var hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
-    @State private var cancelRecordingShortcutRecorderResetID = 0
 
     @State private var isMiddleClickExpanded = false
     @State private var isRestoreClipboardExpanded = false
@@ -95,22 +93,28 @@ struct SettingsView: View {
                     HStack(spacing: 8) {
                         ShortcutRecorder(
                             action: .cancelRecorder,
-                            defaultShortcut: Self.defaultCancelRecordingShortcut
+                            defaultShortcut: .defaultRecorderCancel
                         ) {
-                            hasCancelRecordingShortcut = true
+                            hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
                         }
-                            .id(cancelRecordingShortcutRecorderResetID)
                             .controlSize(.small)
 
-                        Button {
-                            ShortcutStore.setShortcut(nil, for: .cancelRecorder)
-                            hasCancelRecordingShortcut = false
-                            cancelRecordingShortcutRecorderResetID += 1
-                        } label: {
-                            Image(systemName: "arrow.counterclockwise")
+                        // Default Escape needs no reset action, so hiding the no-op slot keeps the
+                        // shortcut capsule aligned with the rows above it.
+                        if hasCancelRecordingShortcut {
+                            Button {
+                                ShortcutStore.setShortcut(nil, for: .cancelRecorder)
+                                hasCancelRecordingShortcut = false
+                            } label: {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .frame(width: 26, height: 26)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Reset Cancel Recording shortcut to default Escape")
+                            .help("Reset to default")
                         }
-                        .buttonStyle(.plain)
-                        .help("Reset to default")
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: ShortcutStore.shortcutDidChange)) { notification in
@@ -274,11 +278,6 @@ struct SettingsView: View {
             Text("You'll see the introduction screens again the next time you launch the app.")
         }
     }
-
-    private static let defaultCancelRecordingShortcut = Shortcut.key(
-        keyCode: UInt16(kVK_Escape),
-        modifierFlags: []
-    )
 
     @ViewBuilder
     private func shortcutModePicker(binding: Binding<RecordingShortcutManager.Mode>) -> some View {
