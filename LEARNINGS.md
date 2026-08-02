@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-02T17:52:15Z
+**Trigger:** Urgent report that signed v2.0.272 triple-click did not work and still felt too strict
+**Symptom:** A physical v2.0.272 Primary triple-click was reported as failing and the old trace could not explain individual press classification or prove the final clipboard boundary.
+**Root cause:** The correlated first failed cadence had click one to two at 0.197s but click two to the attempted third at 1.583s, beyond the verified 0.8s macOS continuation window, so it correctly began a fresh gesture. Later 0.237s and 0.277s continuations were recognized; the old allowlist nevertheless omitted clipboard-only completion metadata, making perceived failures ambiguous.
+**Fix:** Commit ce7cecb320b4b00d071ffb3af66bf8410d6dde96 ships v2.0.273 with one privacy-safe Primary gesture line per press, timeout/action/recovery/clipboard boundaries, and a managed gesture view command. It retains the 0.45s normal-stop window and 0.8s genuine-triple continuation because widening beyond the platform interval could let a later independent double inherit the prior double.
+**Commit:** ce7cecb320b4b00d071ffb3af66bf8410d6dde96
+**Guard:** Mini canonical Xcode action compiled then hit the known pre-execution TestManager stall; direct xcrun xctest named and passed all 86 tests including gesture timing, late-third restart, separate doubles, clipboard-only isolation, recovery, playback, and trace allowlisting. Signed v2.0.273 is installed as PID 99548 with CDHash 846a7a5ca4109a4467fd3aa838c039f90da65ba5, deep/strict valid, Automation=true, official VoiceInk unchanged; one physical traced G502 triple remains acceptance.
+---
+
+
+---
 **Date:** 2026-08-02T17:22:26Z
 **Trigger:** Additive safe triple-click exit request plus Ethan's report that click-three detection felt too strict
 **Symptom:** The installed v2.0.271 triple route finalized non-destructively, but its realtime HUD partial remained memory-only until provider completion, active-capture exit dropped that partial, automatic retention could later remove recovery audio, and click three reused the 0.45-second normal-stop cap.

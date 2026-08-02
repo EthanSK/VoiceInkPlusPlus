@@ -59,6 +59,21 @@ stop, click three uses the full macOS multi-click interval (verified as 0.8 seco
 This widens only the triple continuation and does not let a press after the platform interval inherit
 an earlier double-click.
 
+Physical Primary-gesture failures must be diagnosed from the privacy-safe live trace rather than by
+automating Ethan's G502. With the managed trace running, this command prints only gesture timing,
+state transitions, reducer decisions, recovery persistence, and clipboard-only completion metadata:
+
+```sh
+bash .agents/skills/learnings/scripts/live-delivery-trace.sh gesture 120
+```
+
+Each `primary gesture:` press line reports its monotonic timestamp, delta from click one/two/three,
+the 0.45-second normal-stop and system triple-continuation thresholds, phase before/after, observed
+versus classified press number, gesture generation, reset reason, recording/capture eligibility, and
+the chosen decision. It never stores transcript text, focused-app identity, paste destinations, or
+media state. A late attempted click three is explicit as
+`click3PastTripleWindowStartedFreshGesture`; it must not be guessed from the later pause/stop result.
+
 ## Delivery engine switch
 
 VoiceInk++ temporarily defaults **Exact Saved-Input Delivery** to off while its background Codex
