@@ -71,15 +71,21 @@ recording start and final stop/cancel own the media/YouTube-helper lifecycle. Ne
 stops through `recordingStart`.
 
 A genuine Primary triple-click is also not a destination route. It is three consecutive presses in
-one macOS-bounded click sequence: the third press waits for the double-click pause transition, then
-finalizes that same session to a persistent clipboard-only result. It must not cancel/discard,
+one macOS-bounded click sequence: first-to-second retains the normal-stop cap, while the third press
+uses the full system multi-click interval after the deferred stop is already canceled. The third
+press waits for the double-click pause transition, then finalizes that same session to a persistent
+clipboard-only result. Before asynchronous finalization begins, persist a recovery record containing
+the original WAV and last realtime HUD transcript/translation. It must not cancel/discard,
 paste, auto-send, run a Mode command/response, or resolve an Accessibility destination. It must
 preserve current media/YouTube playback exactly while balancing recorder/bridge ownership. A later
 double-click after the decision interval starts a fresh gesture and must never inherit the earlier
 double as click three; suppress only extra presses still inside an already-consumed triple gesture.
 If an explicit cancel occurs while transcription is in flight, retain a completed provider result
 or the saved realtime HUD partial in clipboard plus history with a distinct retained-cancellation
-status; an empty cancellation remains an ordinary canceled record and performs no delivery.
+status; an empty cancellation remains an ordinary canceled record and performs no delivery. An
+explicit exit during active capture must likewise retain the finalized WAV plus any realtime HUD
+text in History. Recovery records are excluded from automatic retention cleanup; only a separate,
+confirmed History deletion may permanently remove them.
 
 Voice-assistant listening suppression is disabled. The ChatGPT Voice experiment never proved a
 non-activating mute API: `AXPress` reported success without changing state, and the pointer-based

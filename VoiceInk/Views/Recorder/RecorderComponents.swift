@@ -254,27 +254,29 @@ struct RecorderCloseButton: View {
     }
 }
 
-// MARK: - Cancel (Discard) Button
+// MARK: - Stop Without Delivery Button
 //
 // VIPP (cancel-recording feature): a dedicated red "X" button that lives RIGHT NEXT
 // TO the record/stop control in every recorder panel. Ethan wants a one-tap way to
-// ABORT a recording (or an in-flight transcription) WITHOUT delivering/pasting any
+// EXIT a recording (or an in-flight transcription) WITHOUT delivering/pasting any
 // text — distinct from the normal Stop control, which finishes + transcribes + pastes.
+// Captured audio and any realtime HUD draft are retained in History; deletion is a
+// separate explicit action there.
 //
 // WHY a separate component (not the grey RecorderCloseButton):
 //   - RecorderCloseButton is grey + only shown for the assistant-idle "close" affordance.
-//     Reusing it would visually conflate "discard this recording" with "dismiss the
+//     Reusing it would visually conflate "stop without delivery" with "dismiss the
 //     assistant panel". This button is RED so it reads unambiguously as a destructive
 //     abort, and it's always adjacent to Stop while a recording/transcription is live.
 //
 // WIRING: the tap calls the `action` closure, which the panels route to
 // RecorderUIManager.cancelRecording() → VoiceInkEngine.cancelRecording(). That path:
-//   • aborts/poisons any in-flight transcription pipeline so its result is DISCARDED,
-//     never pasted (see requestRecordingCancellation / canceledPipelineTranscriptionIDs),
+//   • stops/poisons any in-flight delivery so it is never pasted while retaining a
+//     completed result or realtime HUD draft in History,
 //   • stops audio capture via recorder.stopRecording(), which is the SAME stop path
 //     normal Stop uses and therefore resumes paused Spotify/Music (playbackController
 //     .resumeMedia()) + unmutes system audio,
-//   • clears the partial transcript + recorded file, returns state to .idle,
+//   • persists the partial transcript + recorded file, returns state to .idle,
 //   • then dismisses the recorder panel.
 // It is idempotent/safe if pressed when nothing is active (the engine's .idle/.busy
 // branch just resets state).
@@ -303,8 +305,8 @@ struct RecorderCancelButton: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help("Cancel recording (discard, no paste)")
-        .accessibilityLabel(Text("Cancel recording"))
+        .help("Stop and save draft (no paste)")
+        .accessibilityLabel(Text("Stop and save recording draft"))
     }
 }
 

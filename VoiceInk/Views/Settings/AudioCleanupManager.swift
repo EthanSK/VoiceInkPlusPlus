@@ -55,7 +55,8 @@ class AudioCleanupManager {
                 let descriptor = FetchDescriptor<Transcription>(
                     predicate: #Predicate<Transcription> { transcription in
                         transcription.timestamp < cutoffDate &&
-                        transcription.audioFileURL != nil
+                        transcription.audioFileURL != nil &&
+                        transcription.preservesOriginalAudioForRecovery == false
                     }
                 )
 
@@ -108,7 +109,8 @@ class AudioCleanupManager {
                 let descriptor = FetchDescriptor<Transcription>(
                     predicate: #Predicate<Transcription> { transcription in
                         transcription.timestamp < cutoffDate &&
-                        transcription.audioFileURL != nil
+                        transcription.audioFileURL != nil &&
+                        transcription.preservesOriginalAudioForRecovery == false
                     }
                 )
 

@@ -39,7 +39,8 @@ struct TranscriptionHistoryView: View {
             if !searchText.isEmpty {
                 descriptor.predicate = #Predicate<Transcription> { transcription in
                     (transcription.text.localizedStandardContains(searchText) ||
-                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)) &&
+                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false) ||
+                    (transcription.realtimeDraftText?.localizedStandardContains(searchText) ?? false)) &&
                     transcription.timestamp < timestamp
                 }
             } else {
@@ -50,7 +51,8 @@ struct TranscriptionHistoryView: View {
         } else if !searchText.isEmpty {
             descriptor.predicate = #Predicate<Transcription> { transcription in
                 transcription.text.localizedStandardContains(searchText) ||
-                (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
+                (transcription.enhancedText?.localizedStandardContains(searchText) ?? false) ||
+                (transcription.realtimeDraftText?.localizedStandardContains(searchText) ?? false)
             }
         }
         
@@ -489,7 +491,8 @@ struct TranscriptionHistoryView: View {
             if !searchText.isEmpty {
                 allDescriptor.predicate = #Predicate<Transcription> { transcription in
                     transcription.text.localizedStandardContains(searchText) ||
-                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
+                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false) ||
+                    (transcription.realtimeDraftText?.localizedStandardContains(searchText) ?? false)
                 }
             }
 

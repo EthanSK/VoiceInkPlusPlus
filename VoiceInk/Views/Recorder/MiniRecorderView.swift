@@ -6,8 +6,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     @ObservedObject var assistantSession: AssistantSession
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
-    // Cancel ("X"): discard the active recording/transcription with NO paste + resume
-    // paused media. Routed up to RecorderUIManager.cancelRecording().
+    // Exit ("X"): stop without paste, save captured audio/HUD draft in History, and
+    // resume paused media. Permanent deletion is a separate History action.
     let onCancelTapped: () -> Void
     let onAssistantFollowUp: (String) -> Void
 
@@ -59,8 +59,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     // The cancel ("X") button is reachable whenever there is something to abort:
-    // while RECORDING (discard the audio) AND while a transcription is IN-FLIGHT
-    // (.transcribing/.enhancing — abort delivery before it pastes) and during the
+    // while RECORDING (save a local draft) AND while a transcription is IN-FLIGHT
+    // (.transcribing/.enhancing — stop delivery before it pastes) and during the
     // brief .starting handshake. Hidden at .idle/.busy where there's nothing to
     // cancel (the assistant close-button affordance covers idle dismissal instead).
     private var shouldShowCancelButton: Bool {

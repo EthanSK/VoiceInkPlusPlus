@@ -38,7 +38,8 @@ struct InlineHistoryView: View {
             if !searchText.isEmpty {
                 descriptor.predicate = #Predicate<Transcription> { transcription in
                     (transcription.text.localizedStandardContains(searchText) ||
-                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)) &&
+                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false) ||
+                    (transcription.realtimeDraftText?.localizedStandardContains(searchText) ?? false)) &&
                     transcription.timestamp < timestamp
                 }
             } else {
@@ -49,7 +50,8 @@ struct InlineHistoryView: View {
         } else if !searchText.isEmpty {
             descriptor.predicate = #Predicate<Transcription> { transcription in
                 transcription.text.localizedStandardContains(searchText) ||
-                (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
+                (transcription.enhancedText?.localizedStandardContains(searchText) ?? false) ||
+                (transcription.realtimeDraftText?.localizedStandardContains(searchText) ?? false)
             }
         }
 
@@ -419,7 +421,8 @@ struct InlineHistoryView: View {
             if !searchText.isEmpty {
                 allDescriptor.predicate = #Predicate<Transcription> { transcription in
                     transcription.text.localizedStandardContains(searchText) ||
-                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
+                    (transcription.enhancedText?.localizedStandardContains(searchText) ?? false) ||
+                    (transcription.realtimeDraftText?.localizedStandardContains(searchText) ?? false)
                 }
             }
 
@@ -457,7 +460,7 @@ private struct HistoryCardRow: View {
     private var displayText: String {
         switch selectedTab {
         case .original:
-            return transcription.text
+            return transcription.historyDisplayText
         case .enhanced:
             return transcription.enhancedText ?? ""
         }
@@ -488,7 +491,7 @@ private struct HistoryCardRow: View {
                         .foregroundColor(.secondary)
 
                     if !isExpanded {
-                        Text(transcription.enhancedText ?? transcription.text)
+                        Text(transcription.enhancedText ?? transcription.historyDisplayText)
                             .font(.system(size: 13))
                             .lineLimit(2)
                             .foregroundColor(.primary)
@@ -553,6 +556,29 @@ private struct HistoryCardRow: View {
             .overlay(alignment: .bottomTrailing) {
                 CopyIconButton(textToCopy: displayText)
                     .padding(8)
+            }
+
+            if let draft = transcription.recoverableRealtimeDraftText,
+               draft != transcription.historyDisplayText
+                .trimmingCharacters(in: .whitespacesAndNewlines) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Live draft at exit")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    Text(draft)
+                        .font(.system(size: 13))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: AppTheme.Radius.card, style: .continuous)
+                                .fill(AppTheme.Surface.subtle)
+                        )
+                        .overlay(alignment: .bottomTrailing) {
+                            CopyIconButton(textToCopy: draft)
+                                .padding(8)
+                        }
+                }
             }
 
             if hasAudioFile, let urlString = transcription.audioFileURL,

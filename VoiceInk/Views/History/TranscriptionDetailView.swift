@@ -18,10 +18,23 @@ struct TranscriptionDetailView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     MessageBubble(
-                        label: "Original",
-                        text: transcription.text,
+                        label: transcription.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                            transcription.text == Transcription.canceledTranscriptionText
+                            ? "Live draft at exit"
+                            : "Original",
+                        text: transcription.historyDisplayText,
                         isEnhanced: false
                     )
+
+                    if let draft = transcription.recoverableRealtimeDraftText,
+                       draft != transcription.historyDisplayText
+                        .trimmingCharacters(in: .whitespacesAndNewlines) {
+                        MessageBubble(
+                            label: "Live draft at exit",
+                            text: draft,
+                            isEnhanced: false
+                        )
+                    }
 
                     if let enhancedText = transcription.enhancedText {
                         MessageBubble(
@@ -38,6 +51,17 @@ struct TranscriptionDetailView: View {
                let url = URL(string: urlString) {
                 VStack(spacing: 0) {
                     Divider()
+
+                    if transcription.preservesOriginalAudioForRecovery {
+                        Label(
+                            "Saved locally — replay or retranscribe this original audio any time",
+                            systemImage: "tray.and.arrow.down.fill"
+                        )
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                    }
 
                     AudioPlayerView(url: url, transcription: transcription, onInfoTap: onInfoTap)
                         .padding(.horizontal, 10)

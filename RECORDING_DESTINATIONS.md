@@ -37,17 +37,27 @@ mirrored recorder panel.
 
 A third consecutive Primary press inside that same click sequence turns the gesture into
 **finish to clipboard**. VoiceInk++ waits for the double-click capture transition to settle, stops
-and transcribes the same session, and leaves the final processed result on the clipboard. It does
+and transcribes the same session, immediately saves the original WAV plus the last realtime HUD
+transcript/translation as a local `recoverableDraft`, and leaves the final processed result on the clipboard. It does
 not paste, Return, cancel/discard, run the Mode's command/response, or resolve a saved input. It also
 balances recording ownership without sending a media/YouTube play or pause command. A later
 double-click after the platform-bounded interval is a fresh gesture and can never inherit an older
 double-click as its third press.
 
 An explicit cancel remains different from triple-click. Cancel during active microphone capture
-discards that recording as before. Cancel while transcription/finalization is already in flight
-forbids paste and auto-send, but preserves a completed provider result—or the last realtime HUD
-partial if that is all that exists—in both clipboard and history as `canceledWithResult`. If neither
-exists, VoiceInk++ saves the ordinary empty canceled record and does not overwrite the clipboard.
+leaves the active UI without delivery but saves the finalized WAV and any realtime HUD text in
+History. Cancel while transcription/finalization is already in flight forbids paste and auto-send,
+but preserves a completed provider result—or the last realtime HUD partial if that is all that
+exists—in both clipboard and history as `canceledWithResult`. If neither exists, VoiceInk++ saves
+the ordinary empty canceled record and does not overwrite the clipboard. These recovery records are
+excluded from automatic audio/transcription cleanup; permanent deletion requires the separate
+confirmed History action.
+
+The normal single-stop decision still uses the shorter of the macOS double-click interval and 0.45
+seconds, so ordinary dictation stays responsive. After click two has already canceled that pending
+stop, click three uses the full macOS multi-click interval (verified as 0.8 seconds on 2026-08-02).
+This widens only the triple continuation and does not let a press after the platform interval inherit
+an earlier double-click.
 
 ## Delivery engine switch
 

@@ -235,7 +235,8 @@ struct NotchRecorderStackView: View {
 // MARK: - Transcribing Chip
 
 // Compact card for a background (non-base/non-pill) session that is transcribing. Shows a
-// spinner + label + a per-card cancel "X" that discards THAT session's result. Observes the
+// spinner + label + a per-card cancel "X" that stops delivery for THAT session while
+// retaining any completed/HUD result in History. Observes the
 // session so its label/spinner reflect its live state (transcribing → enhancing).
 struct TranscribingChip: View {
     enum Style { case mini, notch }
@@ -267,7 +268,7 @@ struct TranscribingChip: View {
                 context: .pendingPaste
             ) // A session moved behind a newer recording still owns its target, so its compact chip must keep showing that target until delivery finishes.
 
-            // Per-card cancel — discards THIS session only.
+            // Per-card cancel — stops THIS session's delivery only; recovery stays local.
             RecorderCancelButton(action: onCancel)
                 .scaleEffect(0.82)
         }

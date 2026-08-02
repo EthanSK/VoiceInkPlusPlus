@@ -497,6 +497,16 @@ struct PrimaryRecordingPressCoordinator {
         min(systemDoubleClickInterval, maximumPauseDoublePressInterval)
     }
 
+    /// Once click two has already canceled the deferred normal stop, there is no
+    /// stop-latency cost to honoring the user's real macOS multi-click interval for
+    /// click three. Ethan's current system interval is 0.8s; using the 0.45s normal-
+    /// stop cap for this continuation made a deliberate triple unnecessarily harsh.
+    static func triplePressContinuationInterval(
+        systemDoubleClickInterval: TimeInterval
+    ) -> TimeInterval {
+        systemDoubleClickInterval
+    }
+
     enum Decision: Equatable {
         case startOrCancelImmediately
         case deferNormalStop(generation: Int)
@@ -511,14 +521,24 @@ struct PrimaryRecordingPressCoordinator {
         let generation: Int
     }
 
-    let doublePressInterval: TimeInterval
+    let normalStopDecisionInterval: TimeInterval
+    let triplePressContinuationInterval: TimeInterval
     private var nextGeneration = 0
     private var pendingStop: PendingStop?
     private var completedDoublePressAt: TimeInterval?
     private var completedTriplePressAt: TimeInterval?
 
     init(doublePressInterval: TimeInterval) {
-        self.doublePressInterval = doublePressInterval
+        self.normalStopDecisionInterval = doublePressInterval
+        self.triplePressContinuationInterval = doublePressInterval
+    }
+
+    init(
+        normalStopDecisionInterval: TimeInterval,
+        triplePressContinuationInterval: TimeInterval
+    ) {
+        self.normalStopDecisionInterval = normalStopDecisionInterval
+        self.triplePressContinuationInterval = triplePressContinuationInterval
     }
 
     var hasPendingNormalStop: Bool {
@@ -531,7 +551,7 @@ struct PrimaryRecordingPressCoordinator {
     ) -> Decision {
         if let completedTriplePressAt {
             let elapsed = eventTime - completedTriplePressAt
-            if elapsed >= 0, elapsed <= doublePressInterval {
+            if elapsed >= 0, elapsed <= normalStopDecisionInterval {
                 // Treat a fourth/bounce press as part of the already consumed
                 // multi-click gesture. Never start another recording or stop path.
                 return .ignoreCompletedGesture
@@ -547,7 +567,7 @@ struct PrimaryRecordingPressCoordinator {
         if let pendingStop {
             let elapsed = eventTime - pendingStop.eventTime
             self.pendingStop = nil
-            if elapsed >= 0, elapsed <= doublePressInterval {
+            if elapsed >= 0, elapsed <= normalStopDecisionInterval {
                 completedDoublePressAt = eventTime
                 return .togglePause
             }
@@ -561,7 +581,7 @@ struct PrimaryRecordingPressCoordinator {
         if let completedDoublePressAt {
             let elapsed = eventTime - completedDoublePressAt
             self.completedDoublePressAt = nil
-            if elapsed >= 0, elapsed <= doublePressInterval {
+            if elapsed >= 0, elapsed <= triplePressContinuationInterval {
                 completedTriplePressAt = eventTime
                 return .finishToClipboard
             }
@@ -688,6 +708,9 @@ final class RecordingShortcutModeHandler {
         shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut? = { _ in nil },
         primaryDoublePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
             systemDoubleClickInterval: NSEvent.doubleClickInterval
+        ),
+        primaryTriplePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.triplePressContinuationInterval(
+            systemDoubleClickInterval: NSEvent.doubleClickInterval
         )
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
@@ -699,7 +722,8 @@ final class RecordingShortcutModeHandler {
         self.cancelRecording = cancelRecording
         self.shortcutForAction = shortcutForAction
         self.primaryPressCoordinator = PrimaryRecordingPressCoordinator(
-            doublePressInterval: primaryDoublePressInterval
+            normalStopDecisionInterval: primaryDoublePressInterval,
+            triplePressContinuationInterval: primaryTriplePressInterval
         )
     }
 
@@ -1033,7 +1057,7 @@ final class RecordingShortcutModeHandler {
         modeId: UUID?
     ) {
         primaryStopDecisionTask?.cancel()
-        let delay = primaryPressCoordinator.doublePressInterval
+        let delay = primaryPressCoordinator.normalStopDecisionInterval
         vippLog.info("shortcut: Primary first recording-time press deferred for \(delay, privacy: .public)s awaiting possible pause double-press")
         primaryStopDecisionTask = Task { @MainActor [weak self] in
             let nanoseconds = UInt64(delay * 1_000_000_000)

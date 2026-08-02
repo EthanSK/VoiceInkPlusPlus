@@ -19,8 +19,8 @@ class NotchWindowManager {
         assistantSession: AssistantSession,
         onRecordButtonTapped: @escaping () -> Void,
         onCloseTapped: @escaping () -> Void,
-        // onCancelTapped: fired by the red "X" → discard the recording/transcription
-        // (no paste) and resume paused media. Routed to RecorderUIManager.cancelRecording().
+        // onCancelTapped: red "X" → stop without paste, retain audio/HUD draft in
+        // History, and resume paused media. Permanent deletion remains explicit.
         onCancelTapped: @escaping () -> Void,
         onAssistantFollowUp: @escaping (String) -> Void,
         // onCancelSession: per-card cancel for a SPECIFIC background transcribing session

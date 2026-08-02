@@ -463,9 +463,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
-            // The HUD partial is preview-only during normal delivery, but it is the
-            // only recoverable provider output if an explicit cancel interrupts live
-            // finalization before the provider returns a completed result.
+            // Realtime remains HUD-only while capture is live. At the irreversible
+            // stop boundary, however, persist the last HUD text beside the original
+            // WAV before starting asynchronous finalization. This is local recovery
+            // state only: it never creates or mutates a destination-app draft. A
+            // genuine Primary triple-click therefore leaves a reopenable draft even
+            // if the provider or app exits before the final clipboard result arrives.
             active.recoverablePartialTranscript = active.partialTranscript
             active.partialTranscript = ""
             active.startID = UUID() // invalidate the start handshake token (it has fully started)
@@ -484,15 +487,29 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             if let audioURL = active.audioURL {
                 if !active.shouldCancel {
-                    // Build the pending Transcription record and enqueue the pipeline.
+                    // Build and save the recoverable record before enqueueing the
+                    // asynchronous pipeline. `.recoverableDraft` distinguishes a
+                    // durable audio/HUD snapshot from an empty legacy pending row;
+                    // normal completion will replace it with `.completed`.
+                    let hasRealtimeDraft = !active.recoverablePartialTranscript
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
                     let transcription = makeRecordingTranscription(
                         for: audioURL,
                         text: "",
                         duration: 0,
-                        transcriptionStatus: .pending
+                        realtimeDraftText: active.recoverablePartialTranscript,
+                        preservesOriginalAudioForRecovery: completionDisposition == .clipboardOnly,
+                        transcriptionStatus: completionDisposition == .clipboardOnly || hasRealtimeDraft
+                            ? .recoverableDraft
+                            : .pending
                     )
                     modelContext.insert(transcription)
-                    try? modelContext.save()
+                    do {
+                        try modelContext.save()
+                    } catch {
+                        logger.error("Failed to persist stopped recording draft before transcription: \(error, privacy: .public)")
+                    }
                     NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
 
                     active.pipelineTranscriptionID = transcription.id
@@ -1192,8 +1209,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         switch session.phase {
         case .recording:
-            // Mic owner. Stop capture, persist a canceled record, drop the card.
+            // Mic owner. Leaving the active UI is not permanent deletion. Snapshot
+            // any realtime HUD words, finalize the WAV, and persist both in History;
+            // the user can replay/retranscribe there and only History's explicit
+            // delete action removes the file.
             session.startID = UUID() // invalidate start handshake
+            session.recoverablePartialTranscript = session.partialTranscript
+            session.partialTranscript = ""
             session.clearContext()
             await recorder.stopRecording()
             await finishCanceledRecording(session)
@@ -1258,18 +1280,24 @@ class VoiceInkEngine: NSObject, ObservableObject {
         await finishRecorderSession()
     }
 
-    // Persist a "canceled" Transcription record for a session whose recording was aborted.
+    // Persist a no-delivery recording exit. The red X leaves the active UI but does not
+    // delete captured work: original audio and any realtime HUD draft remain in History.
+    // Permanent deletion is the separate, confirmed History action.
     private func finishCanceledRecording(_ session: RecordingSession) async {
         guard let audioURL = session.audioURL,
               FileManager.default.fileExists(atPath: audioURL.path)
         else { return }
 
         let duration = await AudioFileMetadata.duration(for: audioURL)
+        let draft = session.recoverablePartialTranscript
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let transcription = makeRecordingTranscription(
             for: audioURL,
-            text: Transcription.canceledTranscriptionText,
+            text: draft.isEmpty ? Transcription.canceledTranscriptionText : draft,
             duration: duration,
-            transcriptionStatus: .canceled
+            realtimeDraftText: draft,
+            preservesOriginalAudioForRecovery: true,
+            transcriptionStatus: draft.isEmpty ? .canceled : .canceledWithResult
         )
 
         modelContext.insert(transcription)
@@ -1286,6 +1314,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         for audioURL: URL,
         text: String,
         duration: TimeInterval,
+        realtimeDraftText: String? = nil,
+        preservesOriginalAudioForRecovery: Bool = false,
         transcriptionStatus: TranscriptionStatus
     ) -> Transcription {
         let modeMetadata = currentModeMetadata()
@@ -1299,6 +1329,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             )?.model.displayName,
             modeName: modeMetadata.name,
             modeEmoji: modeMetadata.emoji,
+            realtimeDraftText: realtimeDraftText,
+            preservesOriginalAudioForRecovery: preservesOriginalAudioForRecovery,
             transcriptionStatus: transcriptionStatus
         )
     }

@@ -130,10 +130,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                             await self?.dismissRecorderPanel()
                         }
                     },
-                    // Cancel ("X") button → discard the active recording/transcription
-                    // with NO paste, then resume any paused media. cancelRecording()
-                    // is the existing clean teardown path (engine.cancelRecording →
-                    // recorder.stopRecording → resumeMedia) followed by dismiss.
+                    // Exit ("X") button → stop with NO paste, retain original audio
+                    // plus any realtime HUD draft in History, then resume paused media.
+                    // Only History's explicit delete action permanently removes it.
                     onCancelTapped: { [weak self] in
                         Task { @MainActor in
                             await self?.cancelRecording()
@@ -169,9 +168,8 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                             await self?.dismissRecorderPanel()
                         }
                     },
-                    // Cancel ("X") button → discard the active recording/transcription
-                    // with NO paste, then resume any paused media. Same clean teardown
-                    // path as the notch panel above.
+                    // Exit ("X") button → stop with NO paste, save a recoverable local
+                    // draft, then resume paused media. Same path as the notch panel.
                     onCancelTapped: { [weak self] in
                         Task { @MainActor in
                             await self?.cancelRecording()

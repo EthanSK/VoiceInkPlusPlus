@@ -127,12 +127,31 @@ class TranscriptionPipeline {
         let skipPostProcessingNow = skipPostProcessing()
         let completionDispositionNow = completionDisposition()
         let recoverablePartialTranscriptNow = recoverablePartialTranscript()
+        if transcription.recoverableRealtimeDraftText == nil,
+           !recoverablePartialTranscriptNow
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty {
+            // Backstop the stop-boundary save for queued/legacy callers. This is a
+            // VoiceInk-local draft snapshot only; it must never be used as permission
+            // to resolve, paste into, or mutate another app while recording.
+            transcription.snapshotRealtimeDraft(recoverablePartialTranscriptNow)
+            do {
+                try modelContext.save()
+            } catch {
+                logger.error("Failed to persist realtime recovery draft at pipeline start: \(error, privacy: .public)")
+            }
+        }
         if skipPostProcessingNow {
             vippLog.info("pipeline: skipPostProcessing RESOLVED=true → will bypass enhancement + force raw .paste (no mode script/respond) \(jobIdentity.logDescription, privacy: .public)")
         }
 
         func finishCanceledTranscription(recoveredText: String? = nil) async {
             await onCancel()
+
+            // An explicit no-delivery exit retains its original recording until the
+            // user separately deletes it from History. Automatic audio/zero-retention
+            // sweeps must not turn a recoverable cancellation into silent data loss.
+            transcription.preservesOriginalAudioForRecovery = true
 
             // A provider result already in hand outranks the last HUD partial. Never
             // retain a synthesized failure string: when status is `.failed`, only a

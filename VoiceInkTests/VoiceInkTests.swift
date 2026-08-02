@@ -373,18 +373,83 @@ struct VoiceInkTests {
     }
 
     @Test func canceledTranscriptionStatusDistinguishesRetainedAndEmptyResults() {
-        let retained = Transcription(text: "", duration: 0)
+        let retained = Transcription(
+            text: "",
+            duration: 0,
+            realtimeDraftText: "  HUD draft  "
+        )
         retained.markAsCanceledTranscription(
             preservingRecoveredText: "recover me"
         )
         #expect(retained.text == "recover me")
         #expect(retained.transcriptionStatus ==
             TranscriptionStatus.canceledWithResult.rawValue)
+        #expect(retained.recoverableRealtimeDraftText == "HUD draft")
 
         let empty = Transcription(text: "", duration: 0)
         empty.markAsCanceledTranscription()
         #expect(empty.text == Transcription.canceledTranscriptionText)
         #expect(empty.transcriptionStatus == TranscriptionStatus.canceled.rawValue)
+    }
+
+    @Test func realtimeDraftProvidesHistoryRecoveryUntilFinalTextExists() {
+        let draft = Transcription(
+            text: "",
+            duration: 4.2,
+            audioFileURL: URL(fileURLWithPath: "/tmp/recoverable.wav").absoluteString,
+            realtimeDraftText: "  words already visible in the HUD  ",
+            preservesOriginalAudioForRecovery: true,
+            transcriptionStatus: .recoverableDraft
+        )
+
+        #expect(draft.recoverableRealtimeDraftText == "words already visible in the HUD")
+        #expect(draft.historyDisplayText == "words already visible in the HUD")
+        #expect(draft.transcriptionStatus == TranscriptionStatus.recoverableDraft.rawValue)
+        #expect(draft.audioFileURL?.hasSuffix("recoverable.wav") == true)
+        #expect(draft.preservesOriginalAudioForRecovery)
+
+        draft.text = "provider-final text"
+        draft.transcriptionStatus = TranscriptionStatus.completed.rawValue
+        #expect(draft.historyDisplayText == "provider-final text")
+        #expect(draft.recoverableRealtimeDraftText == "words already visible in the HUD")
+    }
+
+    @Test func stoppedRecordingPersistsRealtimeDraftBeforePipelineEnqueue() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        let snapshot = try #require(source.range(
+            of: "active.recoverablePartialTranscript = active.partialTranscript"
+        ))
+        let enqueue = try #require(source.range(
+            of: "enqueueTranscription(for: active, transcription: transcription)",
+            range: snapshot.upperBound..<source.endIndex
+        ))
+        let stopBody = source[snapshot.lowerBound..<enqueue.upperBound]
+
+        #expect(stopBody.contains(
+            "realtimeDraftText: active.recoverablePartialTranscript"
+        ))
+        #expect(stopBody.contains(
+            "preservesOriginalAudioForRecovery: completionDisposition == .clipboardOnly"
+        ))
+        #expect(stopBody.contains(".recoverableDraft"))
+        #expect(stopBody.contains("try modelContext.save()"))
+
+        let cancelSnapshot = try #require(source.range(
+            of: "session.recoverablePartialTranscript = session.partialTranscript"
+        ))
+        let canceledPersistence = try #require(source.range(
+            of: "await finishCanceledRecording(session)",
+            range: cancelSnapshot.upperBound..<source.endIndex
+        ))
+        #expect(cancelSnapshot.lowerBound < canceledPersistence.lowerBound)
     }
 
     @Test func clipboardOnlyCompletionReturnsBeforeAnyPasteTargetResolution() throws {
@@ -472,6 +537,63 @@ struct VoiceInkTests {
                 systemDoubleClickInterval: 0.3
             ) == 0.3
         )
+        #expect(
+            PrimaryRecordingPressCoordinator.triplePressContinuationInterval(
+                systemDoubleClickInterval: 0.8
+            ) == 0.8
+        )
+    }
+
+    @Test func thirdPrimaryPressUsesSystemIntervalWithoutDelayingNormalStop() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            normalStopDecisionInterval: 0.45,
+            triplePressContinuationInterval: 0.8
+        )
+
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10
+        ) == .deferNormalStop(generation: 1))
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10.3
+        ) == .togglePause)
+        // 0.6s after click two would have failed under the old 0.45s reuse,
+        // but is one genuine continuation under Ethan's 0.8s macOS setting.
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 10.9
+        ) == .finishToClipboard)
+
+        var slowFirstPair = PrimaryRecordingPressCoordinator(
+            normalStopDecisionInterval: 0.45,
+            triplePressContinuationInterval: 0.8
+        )
+        #expect(slowFirstPair.registerPress(
+            recordingState: .recording,
+            eventTime: 20
+        ) == .deferNormalStop(generation: 1))
+        #expect(slowFirstPair.registerPress(
+            recordingState: .recording,
+            eventTime: 20.6
+        ) == .performOverdueNormalStop)
+
+        var separateGesture = PrimaryRecordingPressCoordinator(
+            normalStopDecisionInterval: 0.45,
+            triplePressContinuationInterval: 0.8
+        )
+        #expect(separateGesture.registerPress(
+            recordingState: .recording,
+            eventTime: 30
+        ) == .deferNormalStop(generation: 1))
+        #expect(separateGesture.registerPress(
+            recordingState: .recording,
+            eventTime: 30.2
+        ) == .togglePause)
+        #expect(separateGesture.registerPress(
+            recordingState: .paused,
+            eventTime: 31.01
+        ) == .deferNormalStop(generation: 2))
     }
 
     @Test func errorNotificationClearsExpandedRealtimeMiniRecorder() {

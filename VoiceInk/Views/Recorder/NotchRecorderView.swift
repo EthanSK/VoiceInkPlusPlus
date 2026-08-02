@@ -8,8 +8,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     let notchHeight: CGFloat
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
-    // Cancel ("X"): discard the active recording/transcription with NO paste + resume
-    // paused media. Routed up to RecorderUIManager.cancelRecording().
+    // Exit ("X"): stop without paste, save captured audio/HUD draft in History, and
+    // resume paused media. Permanent deletion is a separate History action.
     let onCancelTapped: () -> Void
     let onAssistantFollowUp: (String) -> Void
 
@@ -102,8 +102,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     // Cancel ("X") visibility — mirrors the mini panel: reachable while RECORDING
-    // (discard audio) and while a transcription is IN-FLIGHT (.transcribing/.enhancing,
-    // abort before paste) plus the brief .starting handshake. Hidden at .idle/.busy.
+    // (save a local draft) and while a transcription is IN-FLIGHT (.transcribing/.enhancing,
+    // stop before paste) plus the brief .starting handshake. Hidden at .idle/.busy.
     private var shouldShowCancelButton: Bool {
         switch stateProvider.recordingState {
         case .starting, .recording, .paused, .transcribing, .enhancing:

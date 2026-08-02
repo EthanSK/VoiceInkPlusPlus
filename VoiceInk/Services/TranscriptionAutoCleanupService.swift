@@ -70,6 +70,11 @@ class TranscriptionAutoCleanupService {
             return
         }
 
+        guard !transcription.preservesOriginalAudioForRecovery else {
+            logger.notice("Preserving explicit recovery draft from automatic zero-retention cleanup")
+            return
+        }
+
         if let urlString = transcription.audioFileURL,
            let url = URL(string: urlString) {
             do {
@@ -106,7 +111,8 @@ class TranscriptionAutoCleanupService {
 
             let descriptor = FetchDescriptor<Transcription>(
                 predicate: #Predicate<Transcription> { transcription in
-                    transcription.timestamp < cutoffDate
+                    transcription.timestamp < cutoffDate &&
+                    transcription.preservesOriginalAudioForRecovery == false
                 }
             )
             let items = try backgroundContext.fetch(descriptor)

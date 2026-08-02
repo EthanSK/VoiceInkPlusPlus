@@ -3,6 +3,7 @@ import SwiftData
 
 enum TranscriptionStatus: String, Codable {
     case pending
+    case recoverableDraft
     case completed
     case failed
     case canceled
@@ -31,6 +32,17 @@ final class Transcription {
     @Attribute(originalName: "powerModeEmoji")
     var modeEmoji: String?
     var transcriptionStatus: String?
+    /// Last provider text shown in the realtime recorder HUD before capture ended.
+    ///
+    /// This is deliberately VoiceInk-local recovery data, not destination-app draft
+    /// state. Persisting it beside `audioFileURL` means a clipboard-only triple-click,
+    /// explicit no-delivery exit, provider failure, or app interruption still leaves
+    /// both the original WAV and the words already visible to the user in History.
+    var realtimeDraftText: String?
+    /// Triple-click and explicit no-delivery exits promise a recoverable local draft.
+    /// Automatic retention jobs must not delete their original WAV or history row;
+    /// only a separate explicit user deletion may clear them.
+    var preservesOriginalAudioForRecovery: Bool = false
 
     init(text: String,
          duration: TimeInterval,
@@ -45,6 +57,8 @@ final class Transcription {
          aiRequestUserMessage: String? = nil,
          modeName: String? = nil,
          modeEmoji: String? = nil,
+         realtimeDraftText: String? = nil,
+         preservesOriginalAudioForRecovery: Bool = false,
          transcriptionStatus: TranscriptionStatus = .pending) {
         self.id = UUID()
         self.text = text
@@ -61,7 +75,34 @@ final class Transcription {
         self.aiRequestUserMessage = aiRequestUserMessage
         self.modeName = modeName
         self.modeEmoji = modeEmoji
+        self.realtimeDraftText = Self.normalizedDraftText(realtimeDraftText)
+        self.preservesOriginalAudioForRecovery = preservesOriginalAudioForRecovery
         self.transcriptionStatus = transcriptionStatus.rawValue
+    }
+
+    var recoverableRealtimeDraftText: String? {
+        Self.normalizedDraftText(realtimeDraftText)
+    }
+
+    /// History must never render a recoverable draft as a blank row while a final
+    /// provider result is pending or was interrupted. A real final/canceled result
+    /// remains authoritative; the realtime snapshot is the local fallback.
+    var historyDisplayText: String {
+        let stored = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stored.isEmpty, stored != Self.canceledTranscriptionText {
+            return stored
+        }
+        return recoverableRealtimeDraftText ?? text
+    }
+
+    func snapshotRealtimeDraft(_ text: String?) {
+        realtimeDraftText = Self.normalizedDraftText(text)
+    }
+
+    private static func normalizedDraftText(_ text: String?) -> String? {
+        let normalized = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let normalized, !normalized.isEmpty else { return nil }
+        return normalized
     }
 
     func markAsCanceledTranscription(
