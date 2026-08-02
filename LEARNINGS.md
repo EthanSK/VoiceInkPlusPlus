@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-02T22:25:47Z
+**Trigger:** Ethan said the Cancel Recording reset control was misaligned and asked Fable 5 to review the whole mechanism for bugs
+**Symptom:** Default Escape showed a trailing no-op reset icon that displaced the shortcut capsule; starting any shortcut edit also erased the old binding before a replacement was accepted, and a settings backup made with default Escape could not reset a custom binding during import
+**Root cause:** ShortcutRecorder cleared persistent storage to suspend the live global binding but treated cancellation as UI-only, the reset row kept an intrinsic-size plain icon even when no custom value existed, UI and runtime duplicated the Escape default, and the optional backup field could not distinguish an old absent field from an explicitly default value
+**Fix:** Commit 3dbd788 makes shortcut capture transactional across cancel, validation failure, view exit, deinit, and concurrent settings writes; restoration preserves unset/cleared/stored persistence without re-validating an already accepted binding. It also gives UI/runtime one `Shortcut.defaultRecorderCancel`, exports explicit default intent backward-compatibly, hides the no-op reset slot at default, and gives the visible custom-state reset a centered 26-point hit target plus an Accessibility label
+**Commit:** 3dbd788eea56a289c6a3b220fb60e8c75a7a685c
+**Guard:** Fable 5 and a separate Codex review independently found the lifecycle defects. The Mac Mini canonical action first exposed unavailable development signing, the supported local-signing action compiled and then hit the known pre-execution TestManager stall, and direct xcrun xctest named and passed all 91 tests including six shortcut reset/persistence tests and the Primary modifier reducer. Signed v2.0.275 was installed with PID 12772, CDHash 670ec8894f71633fb59e010805527aa26125b723, deep/strict validity, Automation=true, and official VoiceInk byte-identical. Computer Use physically verified default-row alignment, temporary Control-Option-F20 assignment, aborted-edit restoration, visible reset alignment/accessibility, and final restoration to default Escape
+---
+
+---
 **Date:** 2026-08-02T19:40:54Z
 **Trigger:** Ethan said the triple-click works and requested removal of unnecessary logging
 **Symptom:** Primary triple-click worked physically, but the temporary per-press diagnostic trace remained enabled after diagnosis

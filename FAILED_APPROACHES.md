@@ -721,6 +721,24 @@ No row may be promoted merely because a later build reused part of it.
   Ethan explicitly asks to revive the integration. The combined policy would then be
   `voiceInkRecordingActive || youtubeVideoPlaying`, but that policy is not an implementation.
 
+## Shortcut settings failures
+
+### Clearing persistent shortcut storage for capture without a transaction
+
+- **State:** REJECTED after physical v2.0.275 verification.
+- **Attempt:** `ShortcutRecorder` removed the existing stored shortcut before opening its local key
+  monitor so the old global binding could not fire while the user recorded a replacement.
+- **Observed failure condition:** Escape, another recorder starting, view disappearance, validation
+  failure, or model teardown canceled only the local capture. The earlier binding stayed deleted and
+  the cleared tombstone remained; Cancel Recording then silently appeared to have been reset to its
+  default Escape behavior.
+- **Use instead:** Snapshot the exact unset/cleared/stored persistence state, temporarily clear the
+  live binding, commit only a validated replacement, and restore the snapshot on every abandoned
+  path while the capture still owns the cleared state. Do not overwrite a newer import/settings
+  write, and do not re-validate a value that was already accepted before capture.
+- **Reconsider only if:** shortcut monitoring gains a proven non-persistent suspension API that
+  prevents the old global binding from firing during capture without mutating stored preferences.
+
 ## Recorder HUD and feedback regressions
 
 ### Showing the HUD on only the activation monitor
