@@ -544,7 +544,7 @@ struct VoiceInkTests {
         )
     }
 
-    @Test func thirdPrimaryPressUsesSystemIntervalWithoutDelayingNormalStop() {
+    @Test func thirdPrimaryPressUsesSystemIntervalWithoutDelayingNormalStop() throws {
         var coordinator = PrimaryRecordingPressCoordinator(
             normalStopDecisionInterval: 0.45,
             triplePressContinuationInterval: 0.8
@@ -564,6 +564,15 @@ struct VoiceInkTests {
             recordingState: .paused,
             eventTime: 10.9
         ) == .finishToClipboard)
+        let acceptedThird = try #require(coordinator.lastDiagnostic)
+        #expect(acceptedThird.observedPressNumber == 3)
+        #expect(acceptedThird.classifiedPressNumber == 3)
+        #expect(acceptedThird.phaseBefore == "awaitingThird")
+        #expect(acceptedThird.phaseAfter == "completedTriple")
+        #expect(acceptedThird.resetReason == "none")
+        #expect(abs((acceptedThird.delta ?? -1) - 0.6) < 0.0001)
+        #expect(acceptedThird.logDescription.contains("tripleWindow=0.800"))
+        #expect(acceptedThird.logDescription.contains("captureStatePermitted=true"))
 
         var slowFirstPair = PrimaryRecordingPressCoordinator(
             normalStopDecisionInterval: 0.45,
@@ -594,6 +603,27 @@ struct VoiceInkTests {
             recordingState: .paused,
             eventTime: 31.01
         ) == .deferNormalStop(generation: 2))
+        let rejectedLateThird = try #require(separateGesture.lastDiagnostic)
+        #expect(rejectedLateThird.observedPressNumber == 3)
+        #expect(rejectedLateThird.classifiedPressNumber == 1)
+        #expect(rejectedLateThird.resetReason == "click3PastTripleWindowStartedFreshGesture")
+        #expect(abs((rejectedLateThird.delta ?? -1) - 0.81) < 0.0001)
+        #expect(rejectedLateThird.decision == .deferNormalStop(generation: 2))
+    }
+
+    @Test func liveTraceExposesPrivacySafePrimaryGestureDiagnostics() throws {
+        let script = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                ".agents/skills/learnings/scripts/live-delivery-trace.sh"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(script.contains("'primary gesture:'"))
+        #expect(script.contains("pipeline: clipboard-only completion"))
+        #expect(script.contains("show_primary_gesture_trace"))
+        #expect(script.contains("Primary gesture diagnostics from %s"))
+        #expect(!script.contains("transcript contents" + " are included"))
     }
 
     @Test func errorNotificationClearsExpandedRealtimeMiniRecorder() {

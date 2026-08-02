@@ -127,6 +127,9 @@ class TranscriptionPipeline {
         let skipPostProcessingNow = skipPostProcessing()
         let completionDispositionNow = completionDisposition()
         let recoverablePartialTranscriptNow = recoverablePartialTranscript()
+        if completionDispositionNow == .clipboardOnly {
+            vippLog.info("primary gesture: pipeline disposition=clipboardOnly hudDraftChars=\(recoverablePartialTranscriptNow.count, privacy: .public) paste=false autoSend=false")
+        }
         if transcription.recoverableRealtimeDraftText == nil,
            !recoverablePartialTranscriptNow
             .trimmingCharacters(in: .whitespacesAndNewlines)

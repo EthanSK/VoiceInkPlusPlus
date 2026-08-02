@@ -18,7 +18,7 @@ LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
 PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService")))'
 
 usage() {
-  printf 'usage: %s start|status|stop|show [line-count]\n' "$0" >&2
+  printf 'usage: %s start|status|stop|show|gesture [line-count]\n' "$0" >&2
 }
 
 trace_file_for_day() {
@@ -268,6 +268,7 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: transcribe START'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: transcribe SUCCESS'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: DELIVERY REFUSED'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: clipboard-only completion'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: about to DELIVER'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery RETURNED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'paste:'*|\
@@ -276,6 +277,7 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'record start:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'Next stop:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'shortcut:'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'primary gesture:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'focuslock:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'cancelSession:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'resetRecordingSession:'*|\
@@ -464,12 +466,39 @@ show_trace() {
   cat "${files[@]}" | tail -n "$lines"
 }
 
+show_primary_gesture_trace() {
+  local lines="${1:-120}"
+  local files=()
+  case "$lines" in
+    ''|*[!0-9]*) printf 'line-count must be an integer\n' >&2; exit 2 ;;
+  esac
+  if [ "$lines" -lt 1 ] || [ "$lines" -gt 5000 ]; then
+    printf 'line-count must be between 1 and 5000\n' >&2
+    exit 2
+  fi
+  prepare_trace_log_directory
+  shopt -s nullglob
+  files=("$TRACE_LOG_DIR"/trace-????-??-??.log)
+  shopt -u nullglob
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf 'no trace exists in %s\n' "$TRACE_LOG_DIR"
+    return 0
+  fi
+  printf 'Primary gesture diagnostics from %s\n' "$TRACE_LOG_DIR"
+  {
+    grep -E \
+      'primary gesture:|shortcut: genuine Primary triple-click|pipeline: clipboard-only completion' \
+      "${files[@]}" || true
+  } | tail -n "$lines"
+}
+
 COMMAND="${1:-}"
 case "$COMMAND" in
   start) [ "$#" -eq 1 ] || { usage; exit 2; }; start_trace ;;
   status) [ "$#" -eq 1 ] || { usage; exit 2; }; status_trace ;;
   stop) [ "$#" -eq 1 ] || { usage; exit 2; }; stop_trace ;;
   show) [ "$#" -le 2 ] || { usage; exit 2; }; show_trace "${2:-200}" ;;
+  gesture) [ "$#" -le 2 ] || { usage; exit 2; }; show_primary_gesture_trace "${2:-120}" ;;
   __run) run_trace ;;
   *) usage; exit 2 ;;
 esac

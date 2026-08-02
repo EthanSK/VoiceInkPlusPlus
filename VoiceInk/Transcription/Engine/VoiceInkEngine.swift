@@ -507,8 +507,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     modelContext.insert(transcription)
                     do {
                         try modelContext.save()
+                        if completionDisposition == .clipboardOnly {
+                            vippLog.info("primary gesture: recovery draft persisted=true audio=true hudChars=\(active.recoverablePartialTranscript.count, privacy: .public) status=\(String(describing: transcription.transcriptionStatus), privacy: .public)")
+                        }
                     } catch {
                         logger.error("Failed to persist stopped recording draft before transcription: \(error, privacy: .public)")
+                        if completionDisposition == .clipboardOnly {
+                            vippLog.error("primary gesture: recovery draft persisted=false audio=true hudChars=\(active.recoverablePartialTranscript.count, privacy: .public)")
+                        }
                     }
                     NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
 
