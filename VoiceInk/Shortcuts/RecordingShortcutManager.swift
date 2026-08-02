@@ -516,53 +516,6 @@ struct PrimaryRecordingPressCoordinator {
         case performOverdueNormalStop
     }
 
-    /// Privacy-safe evidence for one Primary key-down classification. The trace
-    /// deliberately contains only monotonic timing, gesture state, and reducer
-    /// decisions—never dictated text, focused-app identity, paste targets, or media
-    /// state. Keeping it in the pure coordinator lets the physical G502 route explain
-    /// exactly why a press became click one/two/three without UI automation.
-    struct Diagnostic: Equatable {
-        let eventTime: TimeInterval
-        let delta: TimeInterval?
-        let deltaReference: String
-        let normalStopDecisionInterval: TimeInterval
-        let triplePressContinuationInterval: TimeInterval
-        let phaseBefore: String
-        let phaseAfter: String
-        let observedPressNumber: Int
-        let classifiedPressNumber: Int
-        let generation: Int
-        let resetReason: String
-        let recordingState: String
-        let recordingStatePermittedGesture: Bool
-        let decision: Decision
-
-        var logDescription: String {
-            let deltaDescription = delta.map {
-                String(format: "%.3f", $0)
-            } ?? "none"
-            let eventTimeDescription = String(format: "%.3f", eventTime)
-            let normalWindowDescription = String(
-                format: "%.3f",
-                normalStopDecisionInterval
-            )
-            let tripleWindowDescription = String(
-                format: "%.3f",
-                triplePressContinuationInterval
-            )
-            return "eventTime=\(eventTimeDescription) " +
-                "delta=\(deltaDescription) deltaFrom=\(deltaReference) " +
-                "normalWindow=\(normalWindowDescription) " +
-                "tripleWindow=\(tripleWindowDescription) " +
-                "phase=\(phaseBefore)->\(phaseAfter) " +
-                "observedPress=\(observedPressNumber) classifiedPress=\(classifiedPressNumber) " +
-                "generation=\(generation) reset=\(resetReason) " +
-                "recordingState=\(recordingState) " +
-                "captureStatePermitted=\(recordingStatePermittedGesture) " +
-                "decision=\(String(describing: decision))"
-        }
-    }
-
     private struct PendingStop {
         let eventTime: TimeInterval
         let generation: Int
@@ -574,7 +527,6 @@ struct PrimaryRecordingPressCoordinator {
     private var pendingStop: PendingStop?
     private var completedDoublePressAt: TimeInterval?
     private var completedTriplePressAt: TimeInterval?
-    private(set) var lastDiagnostic: Diagnostic?
 
     init(doublePressInterval: TimeInterval) {
         self.normalStopDecisionInterval = doublePressInterval
@@ -593,117 +545,48 @@ struct PrimaryRecordingPressCoordinator {
         pendingStop != nil
     }
 
-    var diagnosticPhase: String {
-        if pendingStop != nil { return "awaitingSecond" }
-        if completedDoublePressAt != nil { return "awaitingThird" }
-        if completedTriplePressAt != nil { return "completedTriple" }
-        return "idle"
-    }
-
-    var diagnosticGeneration: Int {
-        diagnosticPhase == "idle" ? 0 : nextGeneration
-    }
-
-    func pendingStopEventTime(generation: Int) -> TimeInterval? {
-        guard pendingStop?.generation == generation else { return nil }
-        return pendingStop?.eventTime
-    }
-
     mutating func registerPress(
         recordingState: RecordingState,
         eventTime: TimeInterval
     ) -> Decision {
-        let phaseBefore = diagnosticPhase
-        var delta: TimeInterval?
-        var deltaReference = "none"
-        var observedPressNumber = 1
-        var classifiedPressNumber = 1
-        var resetReason = "none"
-        var resolvedDecision: Decision?
-        defer {
-            if let resolvedDecision {
-                lastDiagnostic = Diagnostic(
-                    eventTime: eventTime,
-                    delta: delta,
-                    deltaReference: deltaReference,
-                    normalStopDecisionInterval: normalStopDecisionInterval,
-                    triplePressContinuationInterval: triplePressContinuationInterval,
-                    phaseBefore: phaseBefore,
-                    phaseAfter: diagnosticPhase,
-                    observedPressNumber: observedPressNumber,
-                    classifiedPressNumber: classifiedPressNumber,
-                    generation: diagnosticGeneration,
-                    resetReason: resetReason,
-                    recordingState: String(describing: recordingState),
-                    recordingStatePermittedGesture: recordingState.isRecordingOrPaused,
-                    decision: resolvedDecision
-                )
-            }
-        }
-
         if let completedTriplePressAt {
             let elapsed = eventTime - completedTriplePressAt
-            delta = elapsed
-            deltaReference = "click3"
             if elapsed >= 0, elapsed <= normalStopDecisionInterval {
                 // Treat a fourth/bounce press as part of the already consumed
                 // multi-click gesture. Never start another recording or stop path.
-                observedPressNumber = 4
-                classifiedPressNumber = 4
-                resolvedDecision = .ignoreCompletedGesture
-                return resolvedDecision!
+                return .ignoreCompletedGesture
             }
             self.completedTriplePressAt = nil
-            resetReason = "completedGestureWindowExpired"
         }
 
         guard recordingState.isRecordingOrPaused else {
             resetGesture()
-            if phaseBefore != "idle" {
-                resetReason = "captureStateNotGestureEligible"
-            }
-            resolvedDecision = .startOrCancelImmediately
-            return resolvedDecision!
+            return .startOrCancelImmediately
         }
 
         if let pendingStop {
             let elapsed = eventTime - pendingStop.eventTime
-            delta = elapsed
-            deltaReference = "click1"
-            observedPressNumber = 2
             self.pendingStop = nil
             if elapsed >= 0, elapsed <= normalStopDecisionInterval {
                 completedDoublePressAt = eventTime
-                classifiedPressNumber = 2
-                resolvedDecision = .togglePause
-                return resolvedDecision!
+                return .togglePause
             }
             completedDoublePressAt = nil
             // The sleep task should normally have committed this already. If the
             // MainActor was delayed, fail toward the promised single-stop action
             // instead of silently converting a slow pair into a pause.
-            classifiedPressNumber = 1
-            resetReason = "click2PastNormalWindow"
-            resolvedDecision = .performOverdueNormalStop
-            return resolvedDecision!
+            return .performOverdueNormalStop
         }
 
         if let completedDoublePressAt {
             let elapsed = eventTime - completedDoublePressAt
-            delta = elapsed
-            deltaReference = "click2"
-            observedPressNumber = 3
             self.completedDoublePressAt = nil
             if elapsed >= 0, elapsed <= triplePressContinuationInterval {
                 completedTriplePressAt = eventTime
-                classifiedPressNumber = 3
-                resolvedDecision = .finishToClipboard
-                return resolvedDecision!
+                return .finishToClipboard
             }
             // The prior double-click gesture ended. This press is click one of a
             // fresh gesture, not click three of the old one.
-            classifiedPressNumber = 1
-            resetReason = "click3PastTripleWindowStartedFreshGesture"
         }
 
         nextGeneration += 1
@@ -711,8 +594,7 @@ struct PrimaryRecordingPressCoordinator {
             eventTime: eventTime,
             generation: nextGeneration
         )
-        resolvedDecision = .deferNormalStop(generation: nextGeneration)
-        return resolvedDecision!
+        return .deferNormalStop(generation: nextGeneration)
     }
 
     mutating func consumeDeferredStop(generation: Int) -> Bool {
@@ -723,7 +605,6 @@ struct PrimaryRecordingPressCoordinator {
 
     mutating func cancelPendingStop() {
         resetGesture()
-        lastDiagnostic = nil
     }
 
     private mutating func resetGesture() {
@@ -1103,15 +984,10 @@ final class RecordingShortcutModeHandler {
         eventTime: TimeInterval,
         modeId: UUID?
     ) async {
-        let stateAtPress = recordingState()
-        let actionHandlerAvailable = canHandleShortcutAction()
         let decision = primaryPressCoordinator.registerPress(
-            recordingState: stateAtPress,
+            recordingState: recordingState(),
             eventTime: eventTime
         )
-        if let diagnostic = primaryPressCoordinator.lastDiagnostic {
-            vippLog.info("primary gesture: press \(diagnostic.logDescription, privacy: .public) actionHandlerAvailable=\(actionHandlerAvailable, privacy: .public)")
-        }
 
         switch decision {
         case .startOrCancelImmediately:
@@ -1129,10 +1005,7 @@ final class RecordingShortcutModeHandler {
         case .togglePause:
             primaryStopDecisionTask?.cancel()
             primaryStopDecisionTask = nil
-            guard actionHandlerAvailable else {
-                vippLog.info("primary gesture: action rejected decision=togglePause reason=actionHandlerUnavailable recordingState=\(String(describing: self.recordingState()), privacy: .public)")
-                return
-            }
+            guard canHandleShortcutAction() else { return }
             // The third click of a genuine triple can arrive while CoreAudio's
             // pause/resume call is still off-MainActor. Retain this exact operation
             // so clipboard finalization can await it instead of racing stopRecording
@@ -1146,7 +1019,6 @@ final class RecordingShortcutModeHandler {
             if primaryPauseAction?.id == actionID {
                 primaryPauseAction = nil
             }
-            vippLog.info("primary gesture: action completed decision=togglePause success=\(didToggle, privacy: .public) stateBefore=\(String(describing: stateAtPress), privacy: .public) stateAfter=\(String(describing: self.recordingState()), privacy: .public)")
             vippLog.info("shortcut: Primary double-press pause toggle success=\(didToggle, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
 
         case .finishToClipboard:
@@ -1158,15 +1030,11 @@ final class RecordingShortcutModeHandler {
                     primaryPauseAction = nil
                 }
             }
-            let stateBeforeFinish = recordingState()
-            let finishActionAvailable = canHandleShortcutAction()
-            guard stateBeforeFinish.isRecordingOrPaused,
-                  finishActionAvailable else {
-                vippLog.info("primary gesture: action rejected decision=finishToClipboard recordingState=\(String(describing: stateBeforeFinish), privacy: .public) captureStatePermitted=\(stateBeforeFinish.isRecordingOrPaused, privacy: .public) actionHandlerAvailable=\(finishActionAvailable, privacy: .public)")
+            guard recordingState().isRecordingOrPaused,
+                  canHandleShortcutAction() else {
                 return
             }
             let didFinish = await finishRecordingToClipboard(modeId)
-            vippLog.info("primary gesture: action completed decision=finishToClipboard success=\(didFinish, privacy: .public) paste=false autoSend=false playback=preserved")
             vippLog.info("shortcut: genuine Primary triple-click clipboard-only finish success=\(didFinish, privacy: .public) paste=false autoSend=false playback=preserved")
 
         case .ignoreCompletedGesture:
@@ -1199,27 +1067,14 @@ final class RecordingShortcutModeHandler {
                 return
             }
 
-            guard let self, !Task.isCancelled else {
-                return
-            }
-
-            let expirationTime = ProcessInfo.processInfo.systemUptime
-            let firstPressTime = self.primaryPressCoordinator.pendingStopEventTime(
-                generation: generation
-            )
-            let consumed = self.primaryPressCoordinator.consumeDeferredStop(
-                generation: generation
-            )
-            let stateAtExpiration = self.recordingState()
-            let recorderVisible = self.isRecorderVisible()
-            let actionHandlerAvailable = self.canHandleShortcutAction()
-            let elapsed = firstPressTime.map { expirationTime - $0 } ?? -1
-            self.vippLog.info("primary gesture: timeout generation=\(generation, privacy: .public) eventTime=\(expirationTime, format: .fixed(precision: 3), privacy: .public) delta=\(elapsed, format: .fixed(precision: 3), privacy: .public) normalWindow=\(delay, format: .fixed(precision: 3), privacy: .public) consumed=\(consumed, privacy: .public) recordingState=\(String(describing: stateAtExpiration), privacy: .public) captureStatePermitted=\(stateAtExpiration.isRecordingOrPaused, privacy: .public) recorderVisible=\(recorderVisible, privacy: .public) actionHandlerAvailable=\(actionHandlerAvailable, privacy: .public) decision=\(consumed ? "normalStop" : "superseded")")
-
-            guard consumed,
-                  stateAtExpiration.isRecordingOrPaused,
-                  recorderVisible,
-                  actionHandlerAvailable else {
+            guard let self,
+                  !Task.isCancelled,
+                  self.primaryPressCoordinator.consumeDeferredStop(
+                      generation: generation
+                  ),
+                  self.recordingState().isRecordingOrPaused,
+                  self.isRecorderVisible(),
+                  self.canHandleShortcutAction() else {
                 return
             }
 
@@ -1230,14 +1085,9 @@ final class RecordingShortcutModeHandler {
     }
 
     func cancelPendingPrimaryStopDecision() {
-        let phaseBefore = primaryPressCoordinator.diagnosticPhase
-        let generation = primaryPressCoordinator.diagnosticGeneration
         primaryStopDecisionTask?.cancel()
         primaryStopDecisionTask = nil
         primaryPressCoordinator.cancelPendingStop()
-        if phaseBefore != "idle" {
-            vippLog.info("primary gesture: reset reason=externalLifecycleReset phase=\(phaseBefore, privacy: .public)->idle generation=\(generation, privacy: .public)")
-        }
     }
 
     func handleKeyUp(
