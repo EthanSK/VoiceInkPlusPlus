@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-02T19:40:54Z
+**Trigger:** Ethan said the triple-click works and requested removal of unnecessary logging
+**Symptom:** Primary triple-click worked physically, but the temporary per-press diagnostic trace remained enabled after diagnosis
+**Root cause:** The detailed timestamp, delta, classification, and completion instrumentation was diagnostic-only and no longer needed once Ethan confirmed the real G502 gesture worked
+**Fix:** Removed the temporary Primary gesture trace events, trace-view command, diagnostic-only test, and temporary tracing documentation while preserving the accepted triple-click classifier, recovery draft, clipboard-only completion, and playback behavior
+**Commit:** 4be3b3535b6546a89d219232160c0bb4ab03b3e6
+**Guard:** Ethan physically confirmed the gesture before cleanup; the Mini direct xctest fallback executed all 85 named tests; signed v2.0.274 was installed with the diagnostic string absent and Automation entitlement intact
+---
+
+
+---
 **Date:** 2026-08-02T17:57:21Z
 **Trigger:** Ethan's physical v2.0.273 triple-click report and request to compare current, historical, and possible G502 obstruction evidence
 **Symptom:** Ethan reported that the first physical v2.0.273 Primary triple-click did not work, raising concern that the G502 or an obstruction had dropped a press.
