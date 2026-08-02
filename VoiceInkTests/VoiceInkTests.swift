@@ -612,6 +612,9 @@ struct VoiceInkTests {
     }
 
     @Test func liveTraceExposesPrivacySafePrimaryGestureDiagnostics() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let script = try String(
             contentsOf: repositoryRoot.appendingPathComponent(
                 ".agents/skills/learnings/scripts/live-delivery-trace.sh"
