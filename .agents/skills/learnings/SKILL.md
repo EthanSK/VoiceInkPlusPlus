@@ -57,7 +57,7 @@ For a realtime stop that pastes nothing or appears to skip Return, separate tran
 
 ## Normalize the two mouse controls before reasoning
 
-- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording or paused, one press performs a base VoiceInk normal stop after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds—into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`); two presses inside that window toggle capture pause/resume without finalizing; a genuine continuous triple-click finishes the session to the clipboard without paste, auto-send, Mode command/response, or playback mutation. It owns no exact input or destination Mode.
+- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording or paused, one press performs a base VoiceInk normal stop after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds—into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`); two presses inside that window toggle capture pause/resume without finalizing. Once click two has canceled the pending stop, click three uses the full macOS multi-click interval and finishes the session to a recoverable local audio/HUD draft plus final clipboard text, without paste, auto-send, Mode command/response, or playback mutation. It owns no exact input or destination Mode.
 - **Next button** is the preferred name for the separate forward/secondary control. **Forward button**, macOS **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases.
 - Unqualified **toggle** means the primary button's start/stop lifecycle and corresponding shortcut mode. Never reinterpret it as a Next-button destination toggle. Commit `671b4c7` tried that and was deliberately reverted by `bed22b7`.
 - **Second chance** names only the post-primary-stop, still-transcribing retarget route. **Latch** means preserve/replace one session's destination; it never means toggle the destination off.
@@ -75,7 +75,7 @@ Keep these three routes distinct:
 | --- | --- |
 | Primary button once while recording or paused | After the double-click decision window, base VoiceInk normal stop into the system keyboard input focused at final delivery (`primaryCurrentInput`); never capture, reuse, or fall back to `recordingStart` |
 | Primary button twice while recording or paused | Toggle capture pause/resume inside the same session; no finalization or destination decision |
-| Primary button three times in one continuous gesture | Finish/transcribe the same session to the clipboard only; never paste, auto-send, run a Mode command/response, cancel/discard, or alter playback |
+| Primary button three times in one continuous gesture | Persist original WAV plus last realtime HUD text in History, then finish/transcribe the same session to the clipboard only; never paste, auto-send, run a Mode command/response, cancel/discard, or alter playback |
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still transcribing and before post-processing | Second chance: replace that newest pending session's input and complete Mode atomically (`focusedDuringTranscription`) |
 
@@ -88,13 +88,19 @@ himself during that interval. VoiceInk++ may lift and restore its optional syste
 pause/resume; only recording start and final stop/cancel own the media/YouTube-helper lifecycle.
 Next while paused still stops through `recordingStart`.
 
-Treat a genuine triple-click as one platform-bounded sequence. Await any in-flight pause transition,
-then finalize once with a per-session clipboard-only completion policy. A later double-click after the
-interval is a fresh gesture and must never inherit the earlier double as click three. Balance the
-recording and bridge lifecycle without play/pause, and clear playback ownership synchronously before
-any cancellable delayed restoration task. Explicit cancellation while transcription/finalization is
-in flight is separate: forbid delivery, retain the strongest available provider result or saved HUD
-partial in clipboard plus history with a distinct status, and leave truly empty cancellation distinct.
+Treat a genuine triple-click as one platform-bounded sequence. Keep first-to-second capped so a
+normal stop stays responsive, but after click two has canceled that deferred stop, honor the full
+system multi-click interval for click three. Await any in-flight pause transition, then finalize once
+with a per-session clipboard-only completion policy. Before asynchronous finalization is enqueued,
+save a History record that references the finalized WAV and stores the last realtime HUD text. Mark
+triple-click and explicit no-delivery exits as recovery-pinned so automatic audio and zero-retention
+cleanup cannot remove them; only confirmed History deletion is permanent. A later double-click after
+the platform interval is a fresh gesture and must never inherit the earlier double as click three.
+Balance the recording and bridge lifecycle without play/pause, and clear playback ownership
+synchronously before any cancellable delayed restoration task. Explicit cancellation while
+transcription/finalization is in flight is separate: forbid delivery, retain the strongest available
+provider result or saved HUD partial in clipboard plus history with a distinct status, and leave truly
+empty cancellation distinct. An active-capture exit also finalizes and retains its WAV plus HUD draft.
 Whenever a new VoiceInk recording-lifecycle edge adds a helper bridge command, validate every relay
 layer rather than only the sender and Chrome extension: the menu app mapping, native host's explicit
 app-to-Chrome forwarding whitelist, extension dispatch, and final state mutation must all agree.

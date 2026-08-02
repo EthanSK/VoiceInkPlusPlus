@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-02T17:22:26Z
+**Trigger:** Additive safe triple-click exit request plus Ethan's report that click-three detection felt too strict
+**Symptom:** The installed v2.0.271 triple route finalized non-destructively, but its realtime HUD partial remained memory-only until provider completion, active-capture exit dropped that partial, automatic retention could later remove recovery audio, and click three reused the 0.45-second normal-stop cap.
+**Root cause:** Transcription had no persisted realtime-draft or recovery-pinning fields, active cancellation saved only a generic canceled row, cleanup did not distinguish explicitly recoverable exits, and PrimaryRecordingPressCoordinator used one interval for both stop latency and triple continuation.
+**Fix:** Commit bc97a14 persists the finalized WAV plus normalized realtime HUD text before pipeline enqueue, exposes the draft and replay/retranscribe recovery in History, pins triple/explicit no-delivery records against automatic cleanup, and keeps first-to-second at 0.45 seconds while click three honors the full macOS interval (verified 0.8 seconds).
+**Commit:** bc97a14fd892c45dae6880f5bcdf89a480a26f89
+**Guard:** Mac Mini canonical local-signing Xcode action compiled then hit the known TestManager stall; fresh direct xcrun xctest named and passed all 85 tests, including realtimeDraftProvidesHistoryRecoveryUntilFinalTextExists, stoppedRecordingPersistsRealtimeDraftBeforePipelineEnqueue, thirdPrimaryPressUsesSystemIntervalWithoutDelayingNormalStop, separate-double, clipboard-only, playback, Primary-isolation, Next, and commercial-free guards. Signed v2.0.272 is installed with PID 17271, CDHash a4dca38135d88ef652748cb79c73fd71260e3487, deep/strict signing, Automation=true, and official VoiceInk byte-identical. A genuine physical G502 triple plus reopen/replay/retranscribe observation remains the user acceptance gate.
+---
+
+
+---
 **Date:** 2026-08-01T15:48:37Z
 **Trigger:** Ethan asked for spoken number words to become digit symbols and physically tested “one, two, three, four, five.”
 **Symptom:** VoiceInk++ still returned written number words after an English OpenAI transcription prompt was changed to request Arabic numerals.
