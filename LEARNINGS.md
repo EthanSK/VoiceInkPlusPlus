@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-02T17:57:21Z
+**Trigger:** Ethan's physical v2.0.273 triple-click report and request to compare current, historical, and possible G502 obstruction evidence
+**Symptom:** Ethan reported that the first physical v2.0.273 Primary triple-click did not work, raising concern that the G502 or an obstruction had dropped a press.
+**Root cause:** The privacy-safe live trace proved no press was missing: click one to two was 0.270s and click two to three was 0.280s, all three were classified in one generation with reset=none, and the gesture completed recovery persistence plus a 9-character clipboard-only result. Because the route deliberately does not paste or press Return, successful completion can appear visually inactive.
+**Fix:** No timing or gesture code changed. Accepted the exact signed v2.0.273 trace as physical proof of the genuine-triple path and retained the 0.45s first-to-second plus 0.8s second-to-third contract.
+**Commit:** ce7cecb320b4b00d071ffb3af66bf8410d6dde96
+**Guard:** Require primary gesture press lines for observed/classified 1/2/3 with reset=none, finishToClipboard, recovery draft persisted, pipeline disposition=clipboardOnly, and clipboard-only completion; do not infer missing hardware input when all boundaries are present.
+---
+
+
+---
 **Date:** 2026-08-02T17:52:15Z
 **Trigger:** Urgent report that signed v2.0.272 triple-click did not work and still felt too strict
 **Symptom:** A physical v2.0.272 Primary triple-click was reported as failing and the old trace could not explain individual press classification or prove the final clipboard boundary.
