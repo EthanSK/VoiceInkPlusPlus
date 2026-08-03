@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-03T22:45:09Z
+**Trigger:** Ethan asked that an earlier result never press Enter after he has already started another recording because the new recording is probably an addition.
+**Symptom:** If Ethan pressed Primary to start recording B during recording A's final paste-to-Return window, A could still press Return before B's microphone handshake began, even though B was intended as a continuation.
+**Root cause:** When A acquired the mutually exclusive delivery lease first, B's synchronous start reservation correctly waited behind that lease, but the Primary auto-send resolver considered only already-registered transcription jobs. B therefore existed as a waiting capture owner yet was invisible at A's final Return boundary.
+**Fix:** Commit 83ab1a8 makes a capture reservation waiting behind an older delivery lease explicit continuation intent: A may paste but suppresses Return with pendingRecordingStart, the later eligible Primary tail sends once, and failed/canceled/non-Primary tails never trigger a compensating Return. Commit 3693952 updates the structural release-order guard. Signed VoiceInk++ v2.0.278 is installed.
+**Commit:** 83ab1a8
+**Guard:** The Mac Mini canonical Xcode action compiled then stalled before named execution; fresh direct xcrun xctest named and passed all 112 tests, including pending-start suppression, the exact delivery-first/start-reservation race, FIFO A/B/C, Primary isolation, and both Next routes. Installed build 278 passes deep/strict signing with CDHash b4b0c02ae25ab8ca0b1c9bb5c22adcf9bf97f65c, Automation=true, audio-input=true, and official VoiceInk unchanged. Physical rapid A-stop then B-start acceptance remains required.
+---
+
+
+---
 **Date:** 2026-08-03T21:07:28Z
 **Trigger:** Ethan requested a queue so rapid Primary recordings paste in order and only the last queued result presses Enter, then physically accepted v2.0.277.
 **Symptom:** Rapid normal Primary recordings could finish together but needed to paste every result in FIFO order without submitting an earlier partial cohort; Ethan initially thought A was missing, then confirmed the near-end batch drain worked and preferred it.

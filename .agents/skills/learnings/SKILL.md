@@ -85,6 +85,9 @@ each earlier member, and let only the newest eligible queued Primary tail use it
 auto-send. Next/retarget, clipboard-only, cancellation, raw/skip, command/response, assistant, and
 non-paste routes break the cohort. If a predecessor or expected tail fails, warn and fail closed;
 never issue a delayed compensating Return because Primary owns no exact destination to submit safely.
+The synchronous start reservation counts as continuation intent even when an older delivery lease
+was acquired first: if Ethan has pressed Start again before Return-down, suppress that older Return
+while the new microphone handshake waits.
 
 Pause is capture state, not a fourth delivery route. The second Primary press cancels the pending
 single-press stop; pause/resume must not paste, change Mode, or change the tentative recording-start
