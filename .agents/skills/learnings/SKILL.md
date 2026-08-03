@@ -79,6 +79,13 @@ Keep these three routes distinct:
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still transcribing and before post-processing | Second chance: replace that newest pending session's input and complete Mode atomically (`focusedDuringTranscription`) |
 
+Consecutive normal Primary delivery jobs form one FIFO paste cohort when a later recording starts
+before the earlier job has delivered. Drain every successful transcript in order, suppress Return on
+each earlier member, and let only the newest eligible queued Primary tail use its current Mode's
+auto-send. Next/retarget, clipboard-only, cancellation, raw/skip, command/response, assistant, and
+non-paste routes break the cohort. If a predecessor or expected tail fails, warn and fail closed;
+never issue a delayed compensating Return because Primary owns no exact destination to submit safely.
+
 Pause is capture state, not a fourth delivery route. The second Primary press cancels the pending
 single-press stop; pause/resume must not paste, change Mode, or change the tentative recording-start
 target. Gate callbacks before stopping AUHAL so paused audio enters neither WAV nor realtime

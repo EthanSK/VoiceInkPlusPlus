@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-03T21:07:28Z
+**Trigger:** Ethan requested a queue so rapid Primary recordings paste in order and only the last queued result presses Enter, then physically accepted v2.0.277.
+**Symptom:** Rapid normal Primary recordings could finish together but needed to paste every result in FIFO order without submitting an earlier partial cohort; Ethan initially thought A was missing, then confirmed the near-end batch drain worked and preferred it.
+**Root cause:** The active-recording delivery barrier prevented stale delivery during a newer capture, but each completed Primary job still independently owned its configured auto-send; preserving FIFO text while sending exactly once required explicit cohort-level send ownership at the paste/Return boundary.
+**Fix:** Commit 3cf5578 adds FIFO Primary delivery cohorts across TranscriptionJobQueue, TranscriptionPipeline, TranscriptionDelivery, and VoiceInkEngine: earlier eligible jobs paste with Return suppressed, the newest eligible tail sends once, unrelated routes break the cohort, and failures never trigger a compensating Return. Signed VoiceInk++ v2.0.277 was installed.
+**Commit:** 3cf5578
+**Guard:** Mac Mini canonical Xcode action compiled but stalled in TestManager; the fresh direct xcrun xctest fallback named and passed all 110 tests. Physical v2.0.277 trace sequences 3/4 showed queuedSuccessor/effectiveKey=none/tailSequence=4 for A, effectiveKey=enter for B, exactly one Return at 22:04:17.082, no compensating Return or unresolved warning, and Ethan accepted the near-end batch drain.
+---
+
+
+---
 **Date:** 2026-08-03T00:29:00Z
 **Trigger:** Ethan reproduced the previous transcript delivering after immediately starting a new recording.
 **Symptom:** Starting recording B while recording A was still transcribing could let A paste or auto-send during B, making the previous result appear to belong to the new dictation.
