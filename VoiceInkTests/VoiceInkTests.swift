@@ -1294,6 +1294,361 @@ struct VoiceInkTests {
         #expect(registry.contains(identityB))
     }
 
+    @Test func transcriptionJobRegistryReturnsEveryNewerIdentityInFIFOOrder() throws {
+        var registry = TranscriptionJobRegistry()
+        var identities: [TranscriptionJobIdentity] = []
+        for index in 0..<3 {
+            let registered = registry.register(
+                recordingSessionID: UUID(),
+                transcriptionID: UUID(),
+                audioURL: URL(fileURLWithPath: "/tmp/primary-queue-\(index).wav")
+            )
+            identities.append(try #require(registered))
+        }
+
+        #expect(registry.newerIdentities(after: identities[0]) == [
+            identities[1], identities[2],
+        ])
+        registry.remove(identities[1])
+        #expect(registry.newerIdentities(after: identities[0]) == [
+            identities[2],
+        ])
+
+        registry.invalidateAll()
+        #expect(registry.newerIdentities(after: identities[0]).isEmpty)
+        #expect(registry.newerIdentities(after: TranscriptionJobIdentity(
+            generation: 999,
+            enqueueSequence: 999,
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/not-registered.wav")
+        )).isEmpty)
+    }
+
+    @Test func twoQueuedPrimaryPastesGiveAutoSendOnlyToTheTail() {
+        let first = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .enter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 2,
+                    isEligiblePrimaryPaste: true
+                ),
+            ]
+        )
+        let tail = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .enter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: []
+        )
+
+        #expect(first.originalKey == .enter)
+        #expect(first.effectiveKey == .none)
+        #expect(first.isSuppressed)
+        #expect(first.queuedTailSequence == 2)
+        #expect(first.consecutiveSuccessorCount == 1)
+        #expect(tail.effectiveKey == .enter)
+        #expect(!tail.isSuppressed)
+    }
+
+    @Test func threeQueuedPrimaryPastesGiveAutoSendOnlyToTheNewestTail() {
+        let first = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .commandEnter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 2,
+                    isEligiblePrimaryPaste: true
+                ),
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 3,
+                    isEligiblePrimaryPaste: true
+                ),
+            ]
+        )
+        let second = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .shiftEnter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 3,
+                    isEligiblePrimaryPaste: true
+                ),
+            ]
+        )
+        let third = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .commandEnter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: []
+        )
+
+        #expect(first.effectiveKey == .none)
+        #expect(first.queuedTailSequence == 3)
+        #expect(first.consecutiveSuccessorCount == 2)
+        #expect(second.effectiveKey == .none)
+        #expect(second.queuedTailSequence == 3)
+        #expect(third.effectiveKey == .commandEnter)
+    }
+
+    @Test func registryAndPolicyProduceFIFOAutoSendSequenceForABC() throws {
+        var registry = TranscriptionJobRegistry()
+        var identities: [TranscriptionJobIdentity] = []
+        for index in 0..<3 {
+            let registered = registry.register(
+                recordingSessionID: UUID(),
+                transcriptionID: UUID(),
+                audioURL: URL(fileURLWithPath: "/tmp/queue-integration-\(index).wav")
+            )
+            identities.append(try #require(registered))
+        }
+
+        var effectiveKeys: [AutoSendKey] = []
+        for identity in identities {
+            let successors = registry.newerIdentities(after: identity).map {
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: $0.enqueueSequence,
+                    isEligiblePrimaryPaste: true
+                )
+            }
+            effectiveKeys.append(PrimaryQueuedAutoSendPolicy.resolve(
+                originalKey: .enter,
+                currentIsEligiblePrimaryPaste: true,
+                newerCandidates: successors
+            ).effectiveKey)
+            registry.remove(identity)
+        }
+
+        #expect(effectiveKeys == [.none, .none, .enter])
+        #expect(registry.isEmpty)
+    }
+
+    @Test func queuedPrimaryPolicyPreservesSingleAndDisabledAutoSend() {
+        let single = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .shiftEnter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: []
+        )
+        let disabled = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .none,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 2,
+                    isEligiblePrimaryPaste: true
+                ),
+            ]
+        )
+
+        #expect(single == .unchanged(.shiftEnter))
+        #expect(disabled.originalKey == .none)
+        #expect(disabled.effectiveKey == .none)
+        #expect(!disabled.isSuppressed)
+        #expect(disabled.queuedTailSequence == 2)
+        #expect(disabled.consecutiveSuccessorCount == 1)
+    }
+
+    @Test func unrelatedOrCanceledSuccessorBreaksPrimaryAutoSendCohort() {
+        let exactNextOrCanceledSuccessor = PrimaryQueuedAutoSendCandidate(
+            enqueueSequence: 2,
+            isEligiblePrimaryPaste: false
+        )
+        let laterPrimary = PrimaryQueuedAutoSendCandidate(
+            enqueueSequence: 3,
+            isEligiblePrimaryPaste: true
+        )
+        let resolution = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .enter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [exactNextOrCanceledSuccessor, laterPrimary]
+        )
+
+        // Never skip across a Next route, cancellation, failed/reset lineage,
+        // clipboard-only exit, raw mode, response, command, or assistant flow.
+        #expect(resolution == .unchanged(.enter))
+    }
+
+    @Test func ineligibleCurrentDeliveryCanNeverSuppressItsAutoSend() {
+        let resolution = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .commandEnter,
+            currentIsEligiblePrimaryPaste: false,
+            newerCandidates: [
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 2,
+                    isEligiblePrimaryPaste: true
+                ),
+            ]
+        )
+
+        #expect(resolution == .unchanged(.commandEnter))
+    }
+
+    @Test func queuedPrimaryTrackerClearsWhenALaterPrimaryAutoSendActuallyPosts() {
+        var tracker = PrimaryQueuedAutoSendTracker()
+        let firstResolution = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .enter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: 2,
+                    isEligiblePrimaryPaste: true
+                ),
+            ]
+        )
+        tracker.observeSuccessfulPrimaryPaste(
+            sequence: 1,
+            resolution: firstResolution
+        )
+        #expect(tracker.suppressedSequences == [1])
+        #expect(tracker.expectedTailSequence == 2)
+
+        // Sequence 2 may cancel or retarget and never reach Primary. If a later
+        // Primary sequence 3 successfully posts Return, it is the only evidence that
+        // the outstanding queue cohort received a real submission action.
+        tracker.observePrimaryAutoSendIssued(sequence: 3)
+        #expect(tracker.suppressedSequences.isEmpty)
+        #expect(tracker.expectedTailSequence == nil)
+    }
+
+    @Test func cancellationDuringPrimaryPasteSettlementSuppressesReturn() {
+        let resolution = PrimaryQueuedAutoSendResolution.canceledCurrent(.enter)
+
+        #expect(resolution.originalKey == .enter)
+        #expect(resolution.effectiveKey == .none)
+        #expect(resolution.isSuppressed)
+        #expect(!resolution.isQueuedSuppression)
+        #expect(resolution.suppressionReason == .currentCanceled)
+        #expect(resolution.queuedTailSequence == nil)
+    }
+
+    @Test func queuedPrimaryTrackerSurfacesOrphanOnlyAfterRegistryDrains() {
+        var tracker = PrimaryQueuedAutoSendTracker()
+        tracker.observeSuccessfulPrimaryPaste(
+            sequence: 10,
+            resolution: PrimaryQueuedAutoSendResolution(
+                originalKey: .commandEnter,
+                effectiveKey: .none,
+                queuedTailSequence: 12,
+                consecutiveSuccessorCount: 2,
+                suppressionReason: .queuedSuccessor
+            )
+        )
+
+        #expect(tracker.takeUnresolvedIfQueueDrained(
+            hasRegisteredJobs: true
+        ).isEmpty)
+        #expect(tracker.takeUnresolvedIfQueueDrained(
+            hasRegisteredJobs: false
+        ) == [10])
+        #expect(tracker.takeUnresolvedIfQueueDrained(
+            hasRegisteredJobs: false
+        ).isEmpty)
+    }
+
+    @Test func primaryQueuePolicyResolvesAtTheLastPrimaryReturnBoundaryOnly() throws {
+        let pipelineSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+        )
+        let deliverySource = try repositorySource(
+            "VoiceInk/Transcription/Engine/TranscriptionDelivery.swift"
+        )
+        let engineSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+        )
+        let lease = try #require(pipelineSource.range(
+            of: "guard await acquireDeliveryLease()"
+        ))
+        let threadedResolver = try #require(pipelineSource.range(
+            of: "resolveQueuedPrimaryAutoSend: { key in",
+            range: lease.upperBound..<pipelineSource.endIndex
+        ))
+        let deliver = try #require(pipelineSource.range(
+            of: "await delivery.deliver(",
+            range: lease.upperBound..<pipelineSource.endIndex
+        ))
+
+        #expect(lease.lowerBound < deliver.lowerBound)
+        #expect(deliver.lowerBound < threadedResolver.lowerBound)
+
+        let primaryStart = try #require(deliverySource.range(
+            of: "    private func deliverPrimaryToCurrentSystemInput("
+        ))
+        let exactStart = try #require(deliverySource.range(
+            of: "    private func deliverToBackgroundExactInput(",
+            range: primaryStart.upperBound..<deliverySource.endIndex
+        ))
+        let primaryBody = deliverySource[
+            primaryStart.lowerBound..<exactStart.lowerBound
+        ]
+        let settle = try #require(primaryBody.range(
+            of: "Self.primaryCurrentInputSettleNanoseconds"
+        ))
+        let queuePolicy = try #require(primaryBody.range(
+            of: "let queuedAutoSend = resolveQueuedAutoSend(autoSendKey)",
+            range: settle.upperBound..<primaryBody.endIndex
+        ))
+        let returnPost = try #require(primaryBody.range(
+            of: "CursorPaster.performAutoSend(",
+            range: queuePolicy.upperBound..<primaryBody.endIndex
+        ))
+        #expect(settle.lowerBound < queuePolicy.lowerBound)
+        #expect(queuePolicy.lowerBound < returnPost.lowerBound)
+        #expect(primaryBody.contains(
+            "auto-send deferred to queued Primary tail"
+        ))
+        #expect(primaryBody.contains(
+            "auto-send skipped because this session was canceled"
+        ))
+        let issuedCallback = try #require(primaryBody.range(
+            of: "onQueuedAutoSendIssued()",
+            range: returnPost.upperBound..<primaryBody.endIndex
+        ))
+        #expect(returnPost.lowerBound < issuedCallback.lowerBound)
+
+        let exactBody = deliverySource[
+            exactStart.lowerBound..<deliverySource.endIndex
+        ]
+        #expect(!exactBody.contains("resolveQueuedAutoSend"))
+        #expect(!exactBody.contains("queued Primary tail"))
+        #expect(engineSource.contains(
+            "session.pasteTarget.destination == .primaryCurrentInput"
+        ))
+        #expect(engineSource.contains(
+            "session.completionDisposition == .normalDelivery"
+        ))
+        #expect(engineSource.contains("!session.skipPostProcessing"))
+        #expect(engineSource.contains("!session.useCase.isAssistantFollowUp"))
+        #expect(engineSource.contains(
+            ").outputMode == .paste"
+        ))
+        #expect(engineSource.contains(
+            "return .canceledCurrent(originalKey)"
+        ))
+
+        let warningStart = try #require(engineSource.range(
+            of: "    private func reportUnresolvedPrimaryAutoSendIfQueueDrained()"
+        ))
+        let dispatchStart = try #require(engineSource.range(
+            of: "    // MARK: - Pipeline Dispatch",
+            range: warningStart.upperBound..<engineSource.endIndex
+        ))
+        let warningBody = engineSource[
+            warningStart.lowerBound..<dispatchStart.lowerBound
+        ]
+        #expect(warningBody.contains("compensatingReturn=false"))
+        #expect(warningBody.contains("type: .warning"))
+        #expect(!warningBody.contains("performAutoSend"))
+        #expect(!warningBody.contains("CGEvent"))
+
+        let queueRemoval = try #require(engineSource.range(
+            of: "self.transcriptionJobRegistry.remove(identity)"
+        ))
+        let drainReport = try #require(engineSource.range(
+            of: "self.reportUnresolvedPrimaryAutoSendIfQueueDrained()",
+            range: queueRemoval.upperBound..<engineSource.endIndex
+        ))
+        #expect(queueRemoval.lowerBound < drainReport.lowerBound)
+    }
+
     @MainActor
     @Test func serialQueueKeepsInjectedResultsBoundToFIFOJobIdentity() async throws {
         var registry = TranscriptionJobRegistry()

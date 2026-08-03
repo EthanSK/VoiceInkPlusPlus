@@ -134,6 +134,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // cancels every retained task, not only the newest tail.
     private let transcriptionJobQueue = SerialTranscriptionJobQueue()
     private var transcriptionJobRegistry = TranscriptionJobRegistry()
+    private var primaryQueuedAutoSendTracker = PrimaryQueuedAutoSendTracker()
     private let activeRecordingDeliveryBarrier = ActiveRecordingDeliveryBarrier()
 
     // Whisper/FluidAudio managers are shared even though jobs are per-session. A
@@ -994,14 +995,125 @@ class VoiceInkEngine: NSObject, ObservableObject {
             onDiscard: { [weak self] discardedIdentity in
                 guard let self else { return }
                 self.transcriptionJobRegistry.remove(discardedIdentity)
+                self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
                 self.vippLog.notice("pipeline queue DISCARD before run \(discardedIdentity.logDescription, privacy: .public) taskCancelled=\(Task.isCancelled, privacy: .public)")
             },
             operation: { [weak self] _ in
                 guard let self else { return }
                 await self.runPipeline(for: job)
                 self.transcriptionJobRegistry.remove(identity)
+                self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
                 self.vippLog.info("pipeline remove \(identity.logDescription, privacy: .public)")
             }
+        )
+    }
+
+    /// Resolve whether this normal Primary paste owns the cohort's one auto-send.
+    ///
+    /// The serial queue already guarantees paste order. This policy inspects every
+    /// retained successor identity at the delivery lease—not merely the queue's tail—
+    /// and suppresses Return only when the immediately following jobs are still live,
+    /// ordinary Primary paste deliveries. Any exact Next route or other side-effect
+    /// policy breaks the cohort. A successor that fails after this boundary may leave
+    /// the earlier text pasted but unsent; deliberately never compensate with a late
+    /// Return because Primary owns no exact input to verify by then.
+    private func queuedPrimaryAutoSendResolution(
+        for job: QueuedTranscriptionJob,
+        originalKey: AutoSendKey,
+        outputMode: ModeOutputMode,
+        destination: RecordingPasteDestination
+    ) -> PrimaryQueuedAutoSendResolution {
+        let currentWasCanceled = job.recordingSession.shouldCancel
+            || canceledPipelineTranscriptionIDs.contains(
+                job.identity.transcriptionID
+            )
+        if destination == .primaryCurrentInput,
+           outputMode == .paste,
+           currentWasCanceled {
+            // Cancellation can arrive during the 100 ms paste-settle interval after
+            // the pipeline's earlier cancel gates. The paste already posted, but the
+            // irreversible Return still has a safe last boundary and must be skipped.
+            return .canceledCurrent(originalKey)
+        }
+
+        let currentIsEligible = destination == .primaryCurrentInput
+            && outputMode == .paste
+            && job.recordingSession.completionDisposition == .normalDelivery
+            && !job.recordingSession.skipPostProcessing
+            && !job.recordingSession.useCase.isAssistantFollowUp
+            && !currentWasCanceled
+
+        let newerCandidates = transcriptionJobRegistry
+            .newerIdentities(after: job.identity)
+            .map { identity in
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: identity.enqueueSequence,
+                    isEligiblePrimaryPaste: isEligiblePrimaryQueueSuccessor(
+                        identity
+                    )
+                )
+            }
+
+        let resolution = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: originalKey,
+            currentIsEligiblePrimaryPaste: currentIsEligible,
+            newerCandidates: newerCandidates
+        )
+        if currentIsEligible {
+            // The resolver is called only after this Primary Command-V succeeded.
+            // Tracking therefore never warns for a paste that fell back to clipboard.
+            primaryQueuedAutoSendTracker.observeSuccessfulPrimaryPaste(
+                sequence: job.identity.enqueueSequence,
+                resolution: resolution
+            )
+        }
+        return resolution
+    }
+
+    private func isEligiblePrimaryQueueSuccessor(
+        _ identity: TranscriptionJobIdentity
+    ) -> Bool {
+        guard transcriptionJobRegistry.contains(identity),
+              let session = sessions.first(where: {
+                  $0.id == identity.recordingSessionID
+              }),
+              session.pipelineTranscriptionID == identity.transcriptionID,
+              session.audioURL?.standardizedFileURL == identity.audioURL,
+              session.phase == .transcribing || session.phase == .delivering,
+              session.pasteTarget.destination == .primaryCurrentInput,
+              session.completionDisposition == .normalDelivery,
+              !session.skipPostProcessing,
+              !session.useCase.isAssistantFollowUp,
+              !session.shouldCancel,
+              !canceledPipelineTranscriptionIDs.contains(
+                  identity.transcriptionID
+              ) else {
+            return false
+        }
+
+        // A custom command/response is an independent action, not another paste that
+        // the cohort's final Return could submit. Primary still resolves its Mode live;
+        // this snapshot is used only to decide whether the queued job currently joins
+        // the consecutive paste cohort, never to freeze or replace its later Mode.
+        return ModeRuntimeResolver.pasteTargetOutputConfiguration(
+            mode: session.postProcessingMode
+        ).outputMode == .paste
+    }
+
+    private func reportUnresolvedPrimaryAutoSendIfQueueDrained() {
+        let unresolved = primaryQueuedAutoSendTracker
+            .takeUnresolvedIfQueueDrained(
+                hasRegisteredJobs: !transcriptionJobRegistry.isEmpty
+            )
+        guard !unresolved.isEmpty else { return }
+
+        let sequences = unresolved.map { String($0) }.joined(separator: ",")
+        vippLog.notice("paste: queued Primary auto-send remained unsent after queue drained suppressedSequences=\(sequences, privacy: .public) compensatingReturn=false")
+        NotificationManager.shared.showNotification(
+            title: String(localized: "Queued transcription was pasted but left unsent because the final queued recording didn’t complete a normal Primary paste"),
+            type: .warning,
+            duration: 8.0,
+            playSound: false
         )
     }
 
@@ -1156,6 +1268,20 @@ class VoiceInkEngine: NSObject, ObservableObject {
             releaseDeliveryLease: { [weak self] in
                 self?.activeRecordingDeliveryBarrier.releaseDelivery(
                     owner: job.identity.transcriptionID
+                )
+            },
+            resolveQueuedPrimaryAutoSend: { [weak self] key, outputMode, destination in
+                guard let self else { return .unchanged(key) }
+                return self.queuedPrimaryAutoSendResolution(
+                    for: job,
+                    originalKey: key,
+                    outputMode: outputMode,
+                    destination: destination
+                )
+            },
+            onQueuedPrimaryAutoSendIssued: { [weak self] in
+                self?.primaryQueuedAutoSendTracker.observePrimaryAutoSendIssued(
+                    sequence: job.identity.enqueueSequence
                 )
             },
             onCancel: { [weak self, streamingSession = job.transcriptionSession] in
@@ -1336,6 +1462,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // pipeline must pass isDeliveryAuthorized before it can paste completed text.
         recordingStartReservation.invalidate()
         activeRecordingDeliveryBarrier.reset()
+        primaryQueuedAutoSendTracker.reset()
         transcriptionJobRegistry.invalidateAll()
         transcriptionJobQueue.cancelAll()
 

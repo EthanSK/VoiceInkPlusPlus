@@ -112,6 +112,18 @@ class TranscriptionPipeline {
         // to finish; only normal user-visible delivery is gated.
         acquireDeliveryLease: @escaping () async -> Bool = { true },
         releaseDeliveryLease: @escaping () -> Void = {},
+        // Rapid normal Primary recordings form one FIFO paste cohort. Thread the
+        // resolver through to Primary's last pre-Return boundary; evaluating it here
+        // would be stale if a queued successor cancels or retargets while Command-V
+        // and clipboard settlement are still in flight.
+        resolveQueuedPrimaryAutoSend: @escaping (
+            AutoSendKey,
+            ModeOutputMode,
+            RecordingPasteDestination
+        ) -> PrimaryQueuedAutoSendResolution = { key, _, _ in
+            .unchanged(key)
+        },
+        onQueuedPrimaryAutoSendIssued: @escaping () -> Void = {},
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
         assistant: AssistantHooks = .inactive
@@ -548,18 +560,18 @@ class TranscriptionPipeline {
         let pipelineOutput = skipPostProcessingNow
             ? (outputForDelivery ?? outputConfiguration())
             : outputConfiguration()
-        let outputForPasteTarget: OutputRuntimeConfiguration
+        let routeResolvedOutput: OutputRuntimeConfiguration
         if skipPostProcessingNow {
             // The one-shot raw/skip contract is stronger than any destination Mode:
             // it explicitly means paste only, with no Return or other action.
-            outputForPasteTarget = pipelineOutput
+            routeResolvedOutput = pipelineOutput
         } else {
             // Only a physical Next-button route owns destination Mode/auto-send.
             // Primary is base VoiceInk: whichever input and Mode are current when the
             // result is delivered decide both paste and Return. Keeping this choice on
             // RecordingPasteTarget prevents Primary from inheriting exact-delivery
             // behavior while preserving the two latch routes' atomic destination Mode.
-            outputForPasteTarget = OutputRuntimeConfiguration(
+            routeResolvedOutput = OutputRuntimeConfiguration(
                 mode: pipelineOutput.mode,
                 outputMode: pipelineOutput.outputMode,
                 autoSendKey: pasteTargetForDelivery.resolvedAutoSendKey(
@@ -569,7 +581,9 @@ class TranscriptionPipeline {
             )
         }
 
-        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+        let outputForPasteTarget = routeResolvedOutput
+
+        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) queuedPrimaryDecision=deferredUntilReturnBoundary destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
         await delivery.deliver(
             TranscriptionDelivery.Request(
                 transcription: transcription,
@@ -579,6 +593,14 @@ class TranscriptionPipeline {
                 responseError: responseError,
                 isAssistantFollowUp: assistant.isFollowUp,
                 pasteTarget: pasteTargetForDelivery, // Resolve at delivery, not pipeline start, so Next Track can change the pending session's destination while transcription or enhancement is still loading.
+                resolveQueuedPrimaryAutoSend: { key in
+                    resolveQueuedPrimaryAutoSend(
+                        key,
+                        outputForPasteTarget.outputMode,
+                        pasteTargetForDelivery.destination
+                    )
+                },
+                onQueuedPrimaryAutoSendIssued: onQueuedPrimaryAutoSendIssued,
                 // VIPP (skip-mode-processing): pass the resolved one-shot flag so delivery
                 // can make the raw-paste guarantee at the routing point itself (belt-and-
                 // braces on top of the already-forced .paste output above).

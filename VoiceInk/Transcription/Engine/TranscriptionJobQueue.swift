@@ -33,6 +33,10 @@ struct TranscriptionJobRegistry {
     private(set) var nextEnqueueSequence: UInt64 = 1
     private var identitiesByTranscriptionID: [UUID: TranscriptionJobIdentity] = [:]
 
+    var isEmpty: Bool {
+        identitiesByTranscriptionID.isEmpty
+    }
+
     mutating func register(
         recordingSessionID: UUID,
         transcriptionID: UUID,
@@ -64,6 +68,25 @@ struct TranscriptionJobRegistry {
             && identitiesByTranscriptionID[identity.transcriptionID] == identity
     }
 
+    /// Returns every still-registered successor in immutable FIFO order.
+    ///
+    /// Queue-tail auto-send must inspect the complete retained registry, not the
+    /// scheduler's single `tail` reference: cancellation is cooperative and every
+    /// earlier task remains in flight until it actually exits. Returning identities
+    /// only from the current generation also keeps reset from joining two unrelated
+    /// recording cohorts.
+    func newerIdentities(
+        after identity: TranscriptionJobIdentity
+    ) -> [TranscriptionJobIdentity] {
+        guard contains(identity) else { return [] }
+        return identitiesByTranscriptionID.values
+            .filter {
+                $0.generation == identity.generation
+                    && $0.enqueueSequence > identity.enqueueSequence
+            }
+            .sorted { $0.enqueueSequence < $1.enqueueSequence }
+    }
+
     mutating func remove(_ identity: TranscriptionJobIdentity) {
         guard identitiesByTranscriptionID[identity.transcriptionID] == identity else {
             return
@@ -74,6 +97,166 @@ struct TranscriptionJobRegistry {
     mutating func invalidateAll() {
         generation &+= 1
         identitiesByTranscriptionID.removeAll()
+    }
+}
+
+/// One newer FIFO job as seen at an older Primary delivery boundary.
+///
+/// Eligibility is deliberately computed by `VoiceInkEngine`, where the job's live
+/// session route, completion policy, cancel state, and output action are available.
+/// Keeping the reducer below independent of sessions makes A/B/C behavior and cohort
+/// breaks deterministic in tests.
+struct PrimaryQueuedAutoSendCandidate: Equatable {
+    let enqueueSequence: UInt64
+    let isEligiblePrimaryPaste: Bool
+}
+
+/// The effective key for one Primary paste plus privacy-safe queue diagnostics.
+enum PrimaryAutoSendSuppressionReason: String, Equatable {
+    case none
+    case queuedSuccessor
+    case currentCanceled
+}
+
+struct PrimaryQueuedAutoSendResolution: Equatable {
+    let originalKey: AutoSendKey
+    let effectiveKey: AutoSendKey
+    let queuedTailSequence: UInt64?
+    let consecutiveSuccessorCount: Int
+    let suppressionReason: PrimaryAutoSendSuppressionReason
+
+    var isSuppressed: Bool {
+        suppressionReason != .none
+    }
+
+    var isQueuedSuppression: Bool {
+        suppressionReason == .queuedSuccessor
+    }
+
+    static func unchanged(_ key: AutoSendKey) -> Self {
+        Self(
+            originalKey: key,
+            effectiveKey: key,
+            queuedTailSequence: nil,
+            consecutiveSuccessorCount: 0,
+            suppressionReason: .none
+        )
+    }
+
+    static func canceledCurrent(_ key: AutoSendKey) -> Self {
+        Self(
+            originalKey: key,
+            effectiveKey: .none,
+            queuedTailSequence: nil,
+            consecutiveSuccessorCount: 0,
+            suppressionReason: .currentCanceled
+        )
+    }
+}
+
+/// Gives one configured auto-send to the tail of a consecutive Primary paste cohort.
+///
+/// Example: A/B/C normal Primary jobs resolve to none/none/configured-key. An exact
+/// Next route, clipboard-only recovery, cancellation, raw/skip delivery, assistant
+/// follow-up, response, or custom command breaks the cohort rather than suppressing an
+/// unrelated destination's action. If a successor fails only after an older paste has
+/// already been suppressed, fail safely: never issue a delayed Return to an unverified
+/// current input. The text remains pasted and unsent for the user to submit manually.
+enum PrimaryQueuedAutoSendPolicy {
+    static func resolve(
+        originalKey: AutoSendKey,
+        currentIsEligiblePrimaryPaste: Bool,
+        newerCandidates: [PrimaryQueuedAutoSendCandidate]
+    ) -> PrimaryQueuedAutoSendResolution {
+        guard currentIsEligiblePrimaryPaste else {
+            return .unchanged(originalKey)
+        }
+
+        let consecutiveSuccessors = newerCandidates.prefix {
+            $0.isEligiblePrimaryPaste
+        }
+        guard let tail = consecutiveSuccessors.last else {
+            return .unchanged(originalKey)
+        }
+
+        // A tail Mode with no auto-send remains paste-only, but retain cohort
+        // metadata so an older outstanding suppression is not cleared before that
+        // tail actually reaches its own successful Primary paste boundary.
+        guard originalKey.isEnabled else {
+            return PrimaryQueuedAutoSendResolution(
+                originalKey: originalKey,
+                effectiveKey: originalKey,
+                queuedTailSequence: tail.enqueueSequence,
+                consecutiveSuccessorCount: consecutiveSuccessors.count,
+                suppressionReason: .none
+            )
+        }
+
+        return PrimaryQueuedAutoSendResolution(
+            originalKey: originalKey,
+            effectiveKey: .none,
+            queuedTailSequence: tail.enqueueSequence,
+            consecutiveSuccessorCount: consecutiveSuccessors.count,
+            suppressionReason: .queuedSuccessor
+        )
+    }
+}
+
+/// Tracks only whether an earlier successful Primary paste is awaiting the cohort
+/// tail's delivery. It never owns or emits a key event. If that predicted tail later
+/// cancels, fails, or retargets, draining returns the unresolved predecessors so the
+/// engine can warn; a compensating Return would be unsafe because Primary saved no
+/// exact input.
+struct PrimaryQueuedAutoSendTracker {
+    private(set) var suppressedSequences = Set<UInt64>()
+    private(set) var expectedTailSequence: UInt64?
+
+    mutating func observeSuccessfulPrimaryPaste(
+        sequence: UInt64,
+        resolution: PrimaryQueuedAutoSendResolution
+    ) {
+        if resolution.isQueuedSuppression {
+            suppressedSequences.insert(sequence)
+            if let queuedTailSequence = resolution.queuedTailSequence {
+                expectedTailSequence = max(
+                    expectedTailSequence ?? queuedTailSequence,
+                    queuedTailSequence
+                )
+            }
+            return
+        }
+
+        // A successful later Primary paste whose own Mode intentionally disables
+        // auto-send is still the cohort tail; no key was promised for that Mode, so
+        // do not misreport the earlier queue suppression as a failure.
+        if !resolution.originalKey.isEnabled,
+           resolution.consecutiveSuccessorCount == 0,
+           suppressedSequences.contains(where: { $0 < sequence }) {
+            reset()
+        }
+    }
+
+    mutating func observePrimaryAutoSendIssued(sequence: UInt64) {
+        guard suppressedSequences.contains(where: { $0 < sequence }) else {
+            return
+        }
+        reset()
+    }
+
+    mutating func takeUnresolvedIfQueueDrained(
+        hasRegisteredJobs: Bool
+    ) -> [UInt64] {
+        guard !hasRegisteredJobs, !suppressedSequences.isEmpty else {
+            return []
+        }
+        let unresolved = suppressedSequences.sorted()
+        reset()
+        return unresolved
+    }
+
+    mutating func reset() {
+        suppressedSequences.removeAll()
+        expectedTailSequence = nil
     }
 }
 

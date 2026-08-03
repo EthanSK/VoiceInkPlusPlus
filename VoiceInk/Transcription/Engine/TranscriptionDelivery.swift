@@ -321,6 +321,13 @@ final class TranscriptionDelivery {
         let responseError: String?
         let isAssistantFollowUp: Bool
         let pasteTarget: RecordingPasteTarget
+        // Consulted only by `deliverPrimaryToCurrentSystemInput` after Command-V has
+        // succeeded and its settle interval has elapsed. Exact Next routes never read
+        // this closure, preserving their independent destination/action contract.
+        let resolveQueuedPrimaryAutoSend: (
+            AutoSendKey
+        ) -> PrimaryQueuedAutoSendResolution
+        let onQueuedPrimaryAutoSendIssued: () -> Void
         // VIPP (skip-mode-processing feature): when true, THIS delivery must paste the RAW
         // transcript and run NO mode post-processing — no custom-command/script
         // (deliverCustomCommand), no `.respond` (deliverResponse). The pipeline already
@@ -369,7 +376,14 @@ final class TranscriptionDelivery {
                     autoSendKey: .none,
                     customCommand: nil
                 )
-                await paste(text, target: request.pasteTarget, output: rawOutput, actions: actions)
+                await paste(
+                    text,
+                    target: request.pasteTarget,
+                    output: rawOutput,
+                    resolveQueuedPrimaryAutoSend: request.resolveQueuedPrimaryAutoSend,
+                    onQueuedPrimaryAutoSendIssued: request.onQueuedPrimaryAutoSendIssued,
+                    actions: actions
+                )
             } else {
                 FocusLockService.shared.clearLock()
                 await actions.dismiss()
@@ -412,7 +426,14 @@ final class TranscriptionDelivery {
         }
 
         if let text = request.text {
-            await paste(text, target: request.pasteTarget, output: request.output, actions: actions)
+            await paste(
+                text,
+                target: request.pasteTarget,
+                output: request.output,
+                resolveQueuedPrimaryAutoSend: request.resolveQueuedPrimaryAutoSend,
+                onQueuedPrimaryAutoSendIssued: request.onQueuedPrimaryAutoSendIssued,
+                actions: actions
+            )
         } else {
             await actions.dismiss()
         }
@@ -518,6 +539,10 @@ final class TranscriptionDelivery {
         _ text: String,
         target: RecordingPasteTarget,
         output: OutputRuntimeConfiguration,
+        resolveQueuedPrimaryAutoSend: (
+            AutoSendKey
+        ) -> PrimaryQueuedAutoSendResolution,
+        onQueuedPrimaryAutoSendIssued: @escaping () -> Void,
         actions: Actions
     ) async {
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
@@ -538,7 +563,9 @@ final class TranscriptionDelivery {
         if target.destination.usesBaseCurrentInputDelivery {
             await deliverPrimaryToCurrentSystemInput(
                 pastedText,
-                autoSendKey: autoSendKey
+                autoSendKey: autoSendKey,
+                resolveQueuedAutoSend: resolveQueuedPrimaryAutoSend,
+                onQueuedAutoSendIssued: onQueuedPrimaryAutoSendIssued
             )
             return
         }
@@ -700,7 +727,11 @@ final class TranscriptionDelivery {
     /// retry, or app allowlist. This must remain the only Primary delivery path.
     private func deliverPrimaryToCurrentSystemInput(
         _ pastedText: String,
-        autoSendKey: AutoSendKey
+        autoSendKey: AutoSendKey,
+        resolveQueuedAutoSend: (
+            AutoSendKey
+        ) -> PrimaryQueuedAutoSendResolution,
+        onQueuedAutoSendIssued: @escaping () -> Void
     ) async {
         vippLog.info("paste: primary current-input compatibility selected exactCaptureRequired=false appSpecificDelivery=false")
         let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
@@ -721,28 +752,49 @@ final class TranscriptionDelivery {
             break
         }
 
-        guard autoSendKey.isEnabled else {
-            vippLog.info("paste: primary current-input delivery finished autoSend=none verification=notRequired")
-            return
-        }
-
         // Keep this generic and current-input-driven: no app classifier, saved AX
         // wrapper, semantic Send, or verification. Upstream VoiceInk waits 500 ms
         // here; 100 ms is the smallest bounded compromise after live traces showed
         // that an immediate Return could overtake Cmd-V in a lagging Electron input.
-        try? await Task.sleep(
-            nanoseconds: Self.primaryCurrentInputSettleNanoseconds
-        )
+        // A Mode with auto-send disabled needs no delay, but still reports its
+        // successful tail paste so any earlier cohort suppression can resolve.
+        if autoSendKey.isEnabled {
+            try? await Task.sleep(
+                nanoseconds: Self.primaryCurrentInputSettleNanoseconds
+            )
+        }
+        // This is the last safe boundary before the irreversible generic Return.
+        // The delivery lease prevents a newer microphone capture from starting while
+        // this check runs, and the resolver reads only internal FIFO/session state—no
+        // Accessibility target, app classifier, focus rewrite, or verification is
+        // added to Primary. Keep the configured key intact in the request so traces
+        // distinguish queue suppression from a Mode that genuinely selected `.none`.
+        let queuedAutoSend = resolveQueuedAutoSend(autoSendKey)
+        vippLog.info("paste: primary queued auto-send decision originalKey=\(queuedAutoSend.originalKey.rawValue, privacy: .public) effectiveKey=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) suppressed=\(queuedAutoSend.isSuppressed, privacy: .public) suppressionReason=\(queuedAutoSend.suppressionReason.rawValue, privacy: .public) successorCount=\(queuedAutoSend.consecutiveSuccessorCount, privacy: .public) tailSequence=\(queuedAutoSend.queuedTailSequence.map { String($0) } ?? "none", privacy: .public)")
+        if queuedAutoSend.suppressionReason == .queuedSuccessor {
+            vippLog.info("paste: primary current-input auto-send deferred to queued Primary tail verification=notRequired")
+            return
+        }
+        if queuedAutoSend.suppressionReason == .currentCanceled {
+            vippLog.info("paste: primary current-input auto-send skipped because this session was canceled during paste settlement")
+            return
+        }
+        guard queuedAutoSend.effectiveKey.isEnabled else {
+            vippLog.info("paste: primary current-input delivery finished autoSend=none verification=notRequired")
+            return
+        }
+
         let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
         let sendResult = await CursorPaster.performAutoSend(
-            autoSendKey,
+            queuedAutoSend.effectiveKey,
             targetPID: currentPID,
             method: .cgEvent,
             canPost: { true }
         )
         switch sendResult {
         case .commandPosted:
-            vippLog.info("paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=100 key=\(autoSendKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            onQueuedAutoSendIssued()
+            vippLog.info("paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=100 key=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         case .actionGuardRefused:
             showAutoSendFailure(
                 "Transcription pasted, but Return could not be issued",

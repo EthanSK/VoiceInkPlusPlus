@@ -26,6 +26,27 @@ startup waits for that delivery to finish rather than overlapping it. This preve
 valid result from appearing inside the newer dictation's foreground input. Clipboard-only completion
 and session-local cancellation do not wait for an unrelated active recording.
 
+## Rapid Primary recordings paste as one FIFO cohort
+
+When several consecutive normal **Primary** recordings overlap, VoiceInk++ keeps every transcript
+and pastes them in recording order, but gives the configured auto-send key only to the newest queued
+Primary paste. For A/B, A pastes without Return and B pastes then sends once. For A/B/C, A and B paste
+without Return and C performs the one configured Enter, Shift-Enter, or Command-Enter. A single
+recording is unchanged, and a tail whose Mode disables auto-send remains paste-only.
+
+This is intentionally narrower than every item retained by the transcription scheduler. An exact
+Next-button route, second-chance retarget, clipboard-only/recovery exit, cancellation, raw/skip
+delivery, assistant follow-up, response, or custom command breaks the Primary cohort. Those actions
+may target another input or may not paste at all, so they must never suppress an unrelated Return.
+The decision is made inside the final delivery lease from the complete immutable job registry, not
+from the scheduler's single tail task.
+
+If a newer Primary job fails only after an earlier transcript has already pasted without Return,
+VoiceInk++ leaves that earlier text safely unsent. It never posts a delayed compensating Return:
+Primary deliberately owns no exact input, so the input may no longer be the one that received the
+text. This is the fail-safe outcome; the text remains available for manual submission, and a quiet
+warning explains that the predicted queue tail did not complete a normal Primary paste.
+
 ## Pause without finalizing
 
 While a recording is active, double-press the **Primary button** within VoiceInk++'s pause decision
