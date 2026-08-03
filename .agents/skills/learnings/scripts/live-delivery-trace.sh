@@ -268,6 +268,8 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: transcribe START'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: transcribe SUCCESS'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: DELIVERY REFUSED'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery DEFERRED'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery RESUMED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: about to DELIVER'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery RETURNED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'paste:'*|\

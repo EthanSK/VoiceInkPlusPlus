@@ -108,6 +108,113 @@ struct RecordingStartReservation {
     }
 }
 
+/// Prevents an older completed transcription from mutating the foreground input while
+/// a newer recording owns (or is about to own) the microphone.
+///
+/// Provider finalization is still allowed to finish in the background. Only the final
+/// user-visible delivery side effect waits. Owners begin at the synchronous start
+/// reservation, transfer atomically to the created `RecordingSession`, and end only
+/// after that capture has stopped/canceled and its immutable job has been enqueued.
+/// This closes the few-millisecond start-handshake gap without canceling either result
+/// or weakening FIFO delivery.
+@MainActor
+final class ActiveRecordingDeliveryBarrier {
+    private(set) var activeCaptureOwners = Set<UUID>()
+    private(set) var activeDeliveryOwners = Set<UUID>()
+    private var stateChangeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    var isDeliveryBlocked: Bool {
+        !activeCaptureOwners.isEmpty
+    }
+
+    var isCaptureStartBlocked: Bool {
+        !activeDeliveryOwners.isEmpty
+    }
+
+    func beginCapture(owner: UUID) {
+        activeCaptureOwners.insert(owner)
+    }
+
+    @discardableResult
+    func transferCapture(from reservation: UUID, to session: UUID) -> Bool {
+        // A missing reservation means lifecycle ownership was already reset or
+        // corrupted. Never manufacture a session owner in that state: it could not be
+        // paired reliably with the original start and would block delivery forever.
+        guard activeCaptureOwners.contains(reservation),
+              !activeCaptureOwners.contains(session) else {
+            return false
+        }
+        activeCaptureOwners.remove(reservation)
+        activeCaptureOwners.insert(session)
+        return true
+    }
+
+    func endCapture(owner: UUID) {
+        guard activeCaptureOwners.remove(owner) != nil else { return }
+        if activeCaptureOwners.isEmpty {
+            signalStateChange()
+        }
+    }
+
+    /// Wake blocked jobs so they can observe per-session cancellation or stale lineage
+    /// without falsely declaring the still-active capture finished.
+    func notifyStateChange() {
+        signalStateChange()
+    }
+
+    func reset() {
+        activeCaptureOwners.removeAll()
+        activeDeliveryOwners.removeAll()
+        signalStateChange()
+    }
+
+    /// The synchronous reservation is already an active capture owner when this runs,
+    /// so no later delivery can overtake it. We wait only for a delivery that acquired
+    /// the opposite lease first.
+    func waitUntilCaptureMayStart(
+        while shouldContinueWaiting: () -> Bool
+    ) async -> Bool {
+        while isCaptureStartBlocked && shouldContinueWaiting() {
+            await withCheckedContinuation { continuation in
+                stateChangeWaiters.append(continuation)
+            }
+        }
+        return shouldContinueWaiting() && !isCaptureStartBlocked
+    }
+
+    /// Atomically waits for every capture owner, then acquires the delivery side of
+    /// the lease before returning. A new Primary start can reserve immediately after
+    /// this, but its microphone handshake must wait for `releaseDelivery`.
+    func acquireDelivery(
+        owner: UUID,
+        while shouldContinueWaiting: () -> Bool
+    ) async -> Bool {
+        while isDeliveryBlocked && shouldContinueWaiting() {
+            await withCheckedContinuation { continuation in
+                stateChangeWaiters.append(continuation)
+            }
+        }
+        guard shouldContinueWaiting(), !isDeliveryBlocked else { return false }
+        activeDeliveryOwners.insert(owner)
+        return true
+    }
+
+    func releaseDelivery(owner: UUID) {
+        guard activeDeliveryOwners.remove(owner) != nil else { return }
+        if activeDeliveryOwners.isEmpty {
+            signalStateChange()
+        }
+    }
+
+    private func signalStateChange() {
+        let waiters = stateChangeWaiters
+        stateChangeWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
 /// MainActor FIFO scheduler for transcription jobs.
 ///
 /// Every task is retained, not only the tail, so a reset cancels the running job and

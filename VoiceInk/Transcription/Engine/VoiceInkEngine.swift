@@ -134,6 +134,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // cancels every retained task, not only the newest tail.
     private let transcriptionJobQueue = SerialTranscriptionJobQueue()
     private var transcriptionJobRegistry = TranscriptionJobRegistry()
+    private let activeRecordingDeliveryBarrier = ActiveRecordingDeliveryBarrier()
 
     // Whisper/FluidAudio managers are shared even though jobs are per-session. A
     // cleanup task is therefore a resource barrier: a new recording waits for it,
@@ -419,6 +420,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         if let active = activeRecordingSession {
+            // A completed older job may finish provider work while this capture is live,
+            // but it must not paste or press Return into the foreground input during the
+            // newer dictation. Release its delivery barrier only after this stop path has
+            // frozen/enqueued the active session's own immutable job (or safely canceled).
+            defer {
+                activeRecordingDeliveryBarrier.endCapture(owner: active.id)
+            }
+
             // ── STOP branch ──────────────────────────────────────────────────────────
             // The mic owner stops. We flip its phase .recording→.transcribing, release the
             // mic (recorder.stopRecording), build its Transcription record, and ENQUEUE the
@@ -549,6 +558,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 vippLog.notice("toggleRecord: duplicate START ignored while an earlier start request is pending")
                 return
             }
+            // Begin before the permission/start task yields. Otherwise an older result
+            // can finish in the few-millisecond reservation-to-session gap and paste
+            // after Ethan has already pressed Primary to begin the next dictation.
+            activeRecordingDeliveryBarrier.beginCapture(owner: startRequestID)
 
             let canContinueAssistantSession = isAssistantFollowUp && assistantSession.canSendFollowUp
             let useCase: RecordingSession.UseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
@@ -599,6 +612,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     } else {
                         recordingStartIdentityTask?.cancel()
                         self.recordingStartReservation.cancel(startRequestID)
+                        self.activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
                         self.logger.error("Recording permission denied")
                     }
                 }
@@ -618,6 +632,30 @@ class VoiceInkEngine: NSObject, ObservableObject {
         recordingStartFocusedInput: FocusLockService.Target?,
         recordingStartIdentityTask: Task<FocusLockService.Target, Never>?
     ) async {
+        let startWaitBeganAt = Date()
+        let startWasDeferred = activeRecordingDeliveryBarrier.isCaptureStartBlocked
+        if startWasDeferred {
+            vippLog.info("record start: DEFERRED while an older delivery lease completes requestID=\(startRequestID.uuidString, privacy: .public)")
+        }
+        let captureMayStart = await activeRecordingDeliveryBarrier
+            .waitUntilCaptureMayStart {
+                self.recordingStartReservation.pendingID == startRequestID
+                    && !self.isResettingRecordingSession
+            }
+        if startWasDeferred {
+            let elapsedMilliseconds = Int(
+                Date().timeIntervalSince(startWaitBeganAt) * 1_000
+            )
+            vippLog.info("record start: RESUMED captureMayStart=\(captureMayStart, privacy: .public) waitMs=\(elapsedMilliseconds, privacy: .public) requestID=\(startRequestID.uuidString, privacy: .public)")
+        }
+        guard captureMayStart else {
+            recordingStartIdentityTask?.cancel()
+            recordingStartReservation.cancel(startRequestID)
+            activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
+            vippLog.notice("startNewSession: START reservation canceled while waiting for an older delivery requestID=\(startRequestID.uuidString, privacy: .public)")
+            return
+        }
+
         // Cleanup yields while shared model managers release memory. Keep the start
         // reservation owned across that wait so no second start can overtake it, then
         // revalidate the token before creating a session or touching shared resources.
@@ -631,6 +669,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         guard recordingStartReservation.consume(startRequestID),
               activeRecordingSession == nil else {
             recordingStartIdentityTask?.cancel()
+            activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
             vippLog.notice("startNewSession: stale or duplicate START refused requestID=\(startRequestID.uuidString, privacy: .public)")
             return
         }
@@ -642,6 +681,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
             startID: startID,
             recordingStartFocusedInput: recordingStartFocusedInput
         )
+        guard activeRecordingDeliveryBarrier.transferCapture(
+            from: startRequestID,
+            to: session.id
+        ) else {
+            recordingStartIdentityTask?.cancel()
+            vippLog.fault("startNewSession: capture ownership transfer refused requestID=\(startRequestID.uuidString, privacy: .public) sessionID=\(session.id.uuidString, privacy: .public)")
+            return
+        }
         // Born .recording but we drive it through .starting → .recording during the handshake.
         session.liveRecordingState = .starting
 
@@ -703,6 +750,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         session.audioURL = nil
                     }
                     self.removeSession(session)
+                    self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
                 }
                 return
             }
@@ -753,6 +801,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 try? FileManager.default.removeItem(at: permanentURL)
                 session.audioURL = nil
                 self.removeSession(session)
+                self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
                 await self.cleanupResourcesIfUnused(
                     retiringOwnerIsCurrent: true,
                     reason: "recording had no selected model"
@@ -862,6 +911,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
             session.audioURL = nil
             self.removeSession(session)
+            self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
             await self.cleanupResourcesIfUnused(
                 retiringOwnerIsCurrent: true,
                 reason: "recording failed to start"
@@ -977,6 +1027,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 && transcription.audioFileURL == job.audioURL.absoluteString
                 && self.sessions.contains(where: { $0 === session })
         }
+        let jobShouldCancel: @MainActor () -> Bool = { [weak self, weak session] in
+            guard let self else { return false }
+            return self.canceledPipelineTranscriptionIDs.contains(transcriptionID)
+                || (session?.shouldCancel ?? false)
+        }
 
         vippLog.info("pipeline run START \(job.identity.logDescription, privacy: .public)")
 
@@ -1079,13 +1134,30 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // recording one (it never is during the pipeline, but be defensive).
                 self?.recomputeDerivedState()
             },
-            shouldCancel: { [weak self, weak session] in
-                guard let self else { return false }
-                // Per-session cancel: poisoned id OR this session's own cancel flag.
-                return self.canceledPipelineTranscriptionIDs.contains(transcriptionID)
-                    || (session?.shouldCancel ?? false)
-            },
+            // Per-session cancel: poisoned id OR this session's own cancel flag.
+            shouldCancel: jobShouldCancel,
             isDeliveryAuthorized: jobIsCurrent,
+            acquireDeliveryLease: { [weak self] in
+                guard let self else { return false }
+                let wasBlocked = self.activeRecordingDeliveryBarrier.isDeliveryBlocked
+                if wasBlocked {
+                    self.vippLog.info("pipeline: delivery DEFERRED while newer recording is active \(job.identity.logDescription, privacy: .public)")
+                }
+                let acquired = await self.activeRecordingDeliveryBarrier.acquireDelivery(
+                    owner: job.identity.transcriptionID
+                ) {
+                    jobIsCurrent() && !jobShouldCancel()
+                }
+                if wasBlocked || !acquired {
+                    self.vippLog.info("pipeline: delivery RESUMED activeRecording=\(self.activeRecordingDeliveryBarrier.isDeliveryBlocked, privacy: .public) acquired=\(acquired, privacy: .public) authorized=\(jobIsCurrent(), privacy: .public) canceled=\(jobShouldCancel(), privacy: .public) \(job.identity.logDescription, privacy: .public)")
+                }
+                return acquired
+            },
+            releaseDeliveryLease: { [weak self] in
+                self?.activeRecordingDeliveryBarrier.releaseDelivery(
+                    owner: job.identity.transcriptionID
+                )
+            },
             onCancel: { [weak self, streamingSession = job.transcriptionSession] in
                 guard let self else { return }
                 self.cancelPipelineSession(transcriptionID: transcriptionID, session: streamingSession)
@@ -1206,6 +1278,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         session.shouldCancel = true
         session.transcriptionSession?.cancel()
+        // A pipeline waiting behind another active recording must wake immediately
+        // to observe this session-local cancellation instead of lingering until the
+        // unrelated capture ends.
+        activeRecordingDeliveryBarrier.notifyStateChange()
 
         switch session.phase {
         case .recording:
@@ -1220,6 +1296,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await recorder.stopRecording()
             await finishCanceledRecording(session)
             removeSession(session)
+            activeRecordingDeliveryBarrier.endCapture(owner: session.id)
             await cleanupResourcesIfUnused(
                 retiringOwnerIsCurrent: true,
                 reason: "active recording was canceled"
@@ -1258,6 +1335,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // jobs still recheck generation after their previous tail returns, and a running
         // pipeline must pass isDeliveryAuthorized before it can paste completed text.
         recordingStartReservation.invalidate()
+        activeRecordingDeliveryBarrier.reset()
         transcriptionJobRegistry.invalidateAll()
         transcriptionJobQueue.cancelAll()
 

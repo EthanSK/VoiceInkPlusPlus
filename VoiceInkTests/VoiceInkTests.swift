@@ -964,6 +964,268 @@ struct VoiceInkTests {
         #expect(reservation.pendingID == nil)
     }
 
+    @MainActor
+    @Test func activeRecordingBarrierDefersOlderDeliveryThroughReservationAndCapture() async {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let reservationID = UUID()
+        let recordingSessionID = UUID()
+        let deliveryID = UUID()
+        let state = TranscriptionQueueTestState()
+
+        barrier.beginCapture(owner: reservationID)
+        let waiter = Task { @MainActor in
+            let acquired = await barrier.acquireDelivery(
+                owner: deliveryID
+            ) { true }
+            state.events.append("acquired:\(acquired)")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(state.events.isEmpty)
+
+        // Turning the pending start into the actual session is atomic: it must not
+        // create an unblocked instant in which the older result can paste.
+        barrier.transferCapture(from: reservationID, to: recordingSessionID)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(state.events.isEmpty)
+        #expect(barrier.activeCaptureOwners == [recordingSessionID])
+
+        barrier.endCapture(owner: recordingSessionID)
+        await waiter.value
+        #expect(state.events == ["acquired:true"])
+        #expect(!barrier.isDeliveryBlocked)
+        #expect(barrier.activeDeliveryOwners == [deliveryID])
+        barrier.releaseDelivery(owner: deliveryID)
+    }
+
+    @MainActor
+    @Test func deliveryLeaseMakesANewerCaptureHandshakeWaitWithoutLosingItsReservation() async {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let deliveryID = UUID()
+        let reservationID = UUID()
+        let state = TranscriptionQueueTestState()
+
+        let deliveryAcquired = await barrier.acquireDelivery(owner: deliveryID) { true }
+        #expect(deliveryAcquired)
+        barrier.beginCapture(owner: reservationID)
+        let startWaiter = Task { @MainActor in
+            let canStart = await barrier.waitUntilCaptureMayStart { true }
+            state.events.append("start:\(canStart)")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(state.events.isEmpty)
+        #expect(barrier.activeCaptureOwners == [reservationID])
+        #expect(barrier.activeDeliveryOwners == [deliveryID])
+
+        barrier.releaseDelivery(owner: deliveryID)
+        await startWaiter.value
+        #expect(state.events == ["start:true"])
+        #expect(barrier.activeCaptureOwners == [reservationID])
+        barrier.endCapture(owner: reservationID)
+    }
+
+    @MainActor
+    @Test func canceledOlderJobCanLeaveBarrierWithoutEndingNewerRecording() async {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let activeRecordingID = UUID()
+        let state = TranscriptionQueueTestState()
+        var shouldContinueWaiting = true
+
+        barrier.beginCapture(owner: activeRecordingID)
+        let waiter = Task { @MainActor in
+            let acquired = await barrier.acquireDelivery(
+                owner: UUID()
+            ) {
+                shouldContinueWaiting
+            }
+            state.events.append("canceled:\(acquired)")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(state.events.isEmpty)
+
+        shouldContinueWaiting = false
+        barrier.notifyStateChange()
+        await waiter.value
+        #expect(state.events == ["canceled:false"])
+        #expect(barrier.isDeliveryBlocked)
+        #expect(barrier.activeCaptureOwners == [activeRecordingID])
+
+        barrier.endCapture(owner: activeRecordingID)
+    }
+
+    @MainActor
+    @Test func resetWakesADeferredDeliveryAndInvalidatesItsRealJobPredicate() async throws {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        var registry = TranscriptionJobRegistry()
+        let activeRecordingID = UUID()
+        let registeredIdentity = registry.register(
+            recordingSessionID: UUID(),
+            transcriptionID: UUID(),
+            audioURL: URL(fileURLWithPath: "/tmp/deferred-reset.wav")
+        )
+        let identity = try #require(registeredIdentity)
+
+        barrier.beginCapture(owner: activeRecordingID)
+        let waiter = Task { @MainActor in
+            await barrier.acquireDelivery(owner: identity.transcriptionID) {
+                registry.contains(identity)
+            }
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(barrier.isDeliveryBlocked)
+
+        registry.invalidateAll()
+        barrier.reset()
+
+        let acquiredAfterReset = await waiter.value
+        #expect(acquiredAfterReset == false)
+        #expect(barrier.activeCaptureOwners.isEmpty)
+        #expect(barrier.activeDeliveryOwners.isEmpty)
+    }
+
+    @MainActor
+    @Test func resetCancelsADeferredStartReservationWithoutStartingCapture() async throws {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        var reservation = RecordingStartReservation()
+        let reservedRequestID = reservation.reserve()
+        let requestID = try #require(reservedRequestID)
+        let deliveryID = UUID()
+        var isResetting = false
+
+        let deliveryAcquired = await barrier.acquireDelivery(
+            owner: deliveryID
+        ) { true }
+        #expect(deliveryAcquired)
+        barrier.beginCapture(owner: requestID)
+        let waiter = Task { @MainActor in
+            await barrier.waitUntilCaptureMayStart {
+                reservation.pendingID == requestID && !isResetting
+            }
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(barrier.isCaptureStartBlocked)
+
+        isResetting = true
+        reservation.invalidate()
+        barrier.reset()
+
+        let startedAfterReset = await waiter.value
+        #expect(startedAfterReset == false)
+        #expect(reservation.pendingID == nil)
+        #expect(barrier.activeCaptureOwners.isEmpty)
+        #expect(barrier.activeDeliveryOwners.isEmpty)
+    }
+
+    @MainActor
+    @Test func captureTransferFailsClosedWithoutItsReservationOwner() {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let unrelatedOwner = UUID()
+        let missingReservation = UUID()
+        let sessionID = UUID()
+
+        barrier.beginCapture(owner: unrelatedOwner)
+
+        #expect(!barrier.transferCapture(
+            from: missingReservation,
+            to: sessionID
+        ))
+        #expect(barrier.activeCaptureOwners == [unrelatedOwner])
+        #expect(!barrier.activeCaptureOwners.contains(sessionID))
+    }
+
+    @Test func primaryNextAndMidStartCancellationShareCaptureReleaseContract() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let engineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        let shortcutSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Shortcuts/RecordingShortcutManager.swift"
+            ),
+            encoding: .utf8
+        )
+
+        let midStartCancel = try #require(engineSource.range(
+            of: "if let active = activeRecordingSession, active.liveRecordingState == .starting"
+        ))
+        let commonStop = try #require(engineSource.range(
+            of: "if let active = activeRecordingSession {",
+            range: midStartCancel.upperBound..<engineSource.endIndex
+        ))
+        let commonRelease = try #require(engineSource.range(
+            of: "defer {\n                activeRecordingDeliveryBarrier.endCapture(owner: active.id)\n            }",
+            range: commonStop.upperBound..<engineSource.endIndex
+        ))
+        let routeSwitch = try #require(engineSource.range(
+            of: "switch stopPasteDestination",
+            range: commonRelease.upperBound..<engineSource.endIndex
+        ))
+        let enqueue = try #require(engineSource.range(
+            of: "enqueueTranscription(for: active, transcription: transcription)",
+            range: routeSwitch.upperBound..<engineSource.endIndex
+        ))
+        let startBranch = try #require(engineSource.range(
+            of: "// ── START branch",
+            range: enqueue.upperBound..<engineSource.endIndex
+        ))
+        let cancelRecordingCase = try #require(engineSource.range(
+            of: "case .recording:",
+            range: startBranch.upperBound..<engineSource.endIndex
+        ))
+        let delegatedRelease = try #require(engineSource.range(
+            of: "activeRecordingDeliveryBarrier.endCapture(owner: session.id)",
+            range: cancelRecordingCase.upperBound..<engineSource.endIndex
+        ))
+
+        #expect(commonStop.lowerBound < commonRelease.lowerBound)
+        #expect(commonRelease.lowerBound < routeSwitch.lowerBound)
+        #expect(routeSwitch.lowerBound < enqueue.lowerBound)
+        #expect(enqueue.lowerBound < startBranch.lowerBound)
+        #expect(cancelRecordingCase.lowerBound < delegatedRelease.lowerBound)
+        #expect(shortcutSource.contains(
+            "stopPasteDestination: .recordingStart"
+        ))
+    }
+
+    @Test func normalDeliveryLeaseBeginsAfterTargetFreezeAndBeforeSideEffects() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+            ),
+            encoding: .utf8
+        )
+        let clipboardOnly = try #require(source.range(
+            of: "if completionDispositionNow == .clipboardOnly"
+        ))
+        let pasteTarget = try #require(source.range(
+            of: "let pasteTargetForDelivery = await resolvePasteTarget()",
+            range: clipboardOnly.upperBound..<source.endIndex
+        ))
+        let lease = try #require(source.range(
+            of: "guard await acquireDeliveryLease()",
+            range: pasteTarget.upperBound..<source.endIndex
+        ))
+        let delivery = try #require(source.range(
+            of: "await delivery.deliver(",
+            range: lease.upperBound..<source.endIndex
+        ))
+        let guardedBody = source[lease.lowerBound..<delivery.lowerBound]
+
+        #expect(clipboardOnly.lowerBound < pasteTarget.lowerBound)
+        #expect(pasteTarget.lowerBound < lease.lowerBound)
+        #expect(lease.lowerBound < delivery.lowerBound)
+        #expect(guardedBody.contains("defer { releaseDeliveryLease() }"))
+        #expect(guardedBody.contains("if shouldCancel()"))
+        #expect(guardedBody.contains("guard isDeliveryAuthorized()"))
+    }
+
     @Test func transcriptionJobRegistryBindsUniqueSessionTranscriptionAndAudio() throws {
         var registry = TranscriptionJobRegistry()
         let sessionA = UUID()

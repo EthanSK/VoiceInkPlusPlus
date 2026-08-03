@@ -105,6 +105,13 @@ class TranscriptionPipeline {
         // cancel, but it may never cross a reset/generation boundary and paste as stale
         // work after a newer recording lifecycle has begun.
         isDeliveryAuthorized: () -> Bool,
+        // A newer recording may begin after this job's provider result is ready. Its
+        // final paste/Return must wait until that capture stops, otherwise the older
+        // text appears inside the newer dictation's foreground composer. Finalization,
+        // formatting, history, cancellation, and clipboard-only completion stay free
+        // to finish; only normal user-visible delivery is gated.
+        acquireDeliveryLease: @escaping () async -> Bool = { true },
+        releaseDeliveryLease: @escaping () -> Void = {},
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
         assistant: AssistantHooks = .inactive
@@ -512,6 +519,32 @@ class TranscriptionPipeline {
         // that arrived during transcription/enhancement supplies the latest target's
         // complete Mode (output action, command, and Return), not just its input. The
         // one-shot raw path keeps the already-forced neutral output below.
+        guard await acquireDeliveryLease() else {
+            if shouldCancel() {
+                vippLog.info("pipeline: delivery lease refused for cancellation → retain result without delivery")
+                await finishCanceledTranscription(recoveredText: finalText)
+            } else {
+                vippLog.notice("pipeline: DELIVERY REFUSED stale lineage after recording barrier finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+                saveTranscriptionAndPostCompletion()
+            }
+            return
+        }
+        defer { releaseDeliveryLease() }
+
+        // The lease and the next recording's synchronous reservation are mutually
+        // exclusive. Recheck cancellation/reset once more before resolving the live
+        // Primary Mode or entering any paste/Return/command/response side effect.
+        if shouldCancel() {
+            vippLog.info("pipeline: delivery lease acquired but session was canceled → retain result without delivery")
+            await finishCanceledTranscription(recoveredText: finalText)
+            return
+        }
+        guard isDeliveryAuthorized() else {
+            vippLog.notice("pipeline: DELIVERY REFUSED stale lineage after lease acquisition finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+            saveTranscriptionAndPostCompletion()
+            return
+        }
+
         let pipelineOutput = skipPostProcessingNow
             ? (outputForDelivery ?? outputConfiguration())
             : outputConfiguration()

@@ -17,6 +17,15 @@ The two Next-button latch routes are unchanged by real-time transcription: Next 
 still owns `recordingStart`, and the post-Primary second chance still owns
 `focusedDuringTranscription`.
 
+If recording B begins while recording A is still finalizing, A may finish its provider and
+formatting work, but it must not paste, press Return, run a command, or otherwise deliver while B
+owns the microphone. VoiceInk++ defers only A's final side effects until B stops or cancels, then
+continues the existing FIFO delivery order. A start request reserves the newer capture immediately;
+if the older delivery already crossed its mutually exclusive delivery boundary first, microphone
+startup waits for that delivery to finish rather than overlapping it. This prevents an older
+valid result from appearing inside the newer dictation's foreground input. Clipboard-only completion
+and session-local cancellation do not wait for an unrelated active recording.
+
 ## Pause without finalizing
 
 While a recording is active, double-press the **Primary button** within VoiceInk++'s pause decision
