@@ -1007,6 +1007,7 @@ struct VoiceInkTests {
         let deliveryAcquired = await barrier.acquireDelivery(owner: deliveryID) { true }
         #expect(deliveryAcquired)
         barrier.beginCapture(owner: reservationID)
+        #expect(barrier.hasCaptureWaitingBehindDelivery)
         let startWaiter = Task { @MainActor in
             let canStart = await barrier.waitUntilCaptureMayStart { true }
             state.events.append("start:\(canStart)")
@@ -1020,6 +1021,7 @@ struct VoiceInkTests {
         await startWaiter.value
         #expect(state.events == ["start:true"])
         #expect(barrier.activeCaptureOwners == [reservationID])
+        #expect(!barrier.hasCaptureWaitingBehindDelivery)
         barrier.endCapture(owner: reservationID)
     }
 
@@ -1351,6 +1353,55 @@ struct VoiceInkTests {
         #expect(!tail.isSuppressed)
     }
 
+    @Test func aPendingRecordingStartSuppressesTheOlderPrimaryReturn() {
+        let resolution = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .enter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [],
+            newerRecordingStartPending: true
+        )
+
+        #expect(resolution.originalKey == .enter)
+        #expect(resolution.effectiveKey == .none)
+        #expect(resolution.isQueuedSuppression)
+        #expect(resolution.suppressionReason == .pendingRecordingStart)
+        #expect(resolution.queuedTailSequence == nil)
+        #expect(resolution.consecutiveSuccessorCount == 0)
+    }
+
+    @MainActor
+    @Test func aStartReservedBehindTheOlderDeliveryLeaseCountsAsContinuationIntent() async {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let olderDeliveryID = UUID()
+        let newerStartID = UUID()
+        let trackerSequence: UInt64 = 41
+        var tracker = PrimaryQueuedAutoSendTracker()
+
+        #expect(await barrier.acquireDelivery(owner: olderDeliveryID) { true })
+        barrier.beginCapture(owner: newerStartID)
+
+        let resolution = PrimaryQueuedAutoSendPolicy.resolve(
+            originalKey: .enter,
+            currentIsEligiblePrimaryPaste: true,
+            newerCandidates: [],
+            newerRecordingStartPending:
+                barrier.hasCaptureWaitingBehindDelivery
+        )
+        tracker.observeSuccessfulPrimaryPaste(
+            sequence: trackerSequence,
+            resolution: resolution
+        )
+
+        #expect(resolution.suppressionReason == .pendingRecordingStart)
+        #expect(tracker.suppressedSequences == [trackerSequence])
+        #expect(tracker.takeUnresolvedIfQueueDrained(
+            hasOutstandingSuccessor: barrier.isDeliveryBlocked
+        ).isEmpty)
+
+        barrier.releaseDelivery(owner: olderDeliveryID)
+        barrier.endCapture(owner: newerStartID)
+    }
+
     @Test func threeQueuedPrimaryPastesGiveAutoSendOnlyToTheNewestTail() {
         let first = PrimaryQueuedAutoSendPolicy.resolve(
             originalKey: .commandEnter,
@@ -1459,7 +1510,8 @@ struct VoiceInkTests {
         let resolution = PrimaryQueuedAutoSendPolicy.resolve(
             originalKey: .enter,
             currentIsEligiblePrimaryPaste: true,
-            newerCandidates: [exactNextOrCanceledSuccessor, laterPrimary]
+            newerCandidates: [exactNextOrCanceledSuccessor, laterPrimary],
+            newerRecordingStartPending: true
         )
 
         // Never skip across a Next route, cancellation, failed/reset lineage,
@@ -1534,13 +1586,13 @@ struct VoiceInkTests {
         )
 
         #expect(tracker.takeUnresolvedIfQueueDrained(
-            hasRegisteredJobs: true
+            hasOutstandingSuccessor: true
         ).isEmpty)
         #expect(tracker.takeUnresolvedIfQueueDrained(
-            hasRegisteredJobs: false
+            hasOutstandingSuccessor: false
         ) == [10])
         #expect(tracker.takeUnresolvedIfQueueDrained(
-            hasRegisteredJobs: false
+            hasOutstandingSuccessor: false
         ).isEmpty)
     }
 
@@ -1593,7 +1645,7 @@ struct VoiceInkTests {
         #expect(settle.lowerBound < queuePolicy.lowerBound)
         #expect(queuePolicy.lowerBound < returnPost.lowerBound)
         #expect(primaryBody.contains(
-            "auto-send deferred to queued Primary tail"
+            "auto-send deferred because a newer recording exists"
         ))
         #expect(primaryBody.contains(
             "auto-send skipped because this session was canceled"
@@ -1623,6 +1675,9 @@ struct VoiceInkTests {
         #expect(engineSource.contains(
             "return .canceledCurrent(originalKey)"
         ))
+        #expect(engineSource.contains(
+            ".hasCaptureWaitingBehindDelivery"
+        ))
 
         let warningStart = try #require(engineSource.range(
             of: "    private func reportUnresolvedPrimaryAutoSendIfQueueDrained()"
@@ -1636,6 +1691,9 @@ struct VoiceInkTests {
         ]
         #expect(warningBody.contains("compensatingReturn=false"))
         #expect(warningBody.contains("type: .warning"))
+        #expect(warningBody.contains(
+            "activeRecordingDeliveryBarrier.isDeliveryBlocked"
+        ))
         #expect(!warningBody.contains("performAutoSend"))
         #expect(!warningBody.contains("CGEvent"))
 

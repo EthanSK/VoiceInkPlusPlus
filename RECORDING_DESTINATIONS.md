@@ -22,9 +22,11 @@ formatting work, but it must not paste, press Return, run a command, or otherwis
 owns the microphone. VoiceInk++ defers only A's final side effects until B stops or cancels, then
 continues the existing FIFO delivery order. A start request reserves the newer capture immediately;
 if the older delivery already crossed its mutually exclusive delivery boundary first, microphone
-startup waits for that delivery to finish rather than overlapping it. This prevents an older
-valid result from appearing inside the newer dictation's foreground input. Clipboard-only completion
-and session-local cancellation do not wait for an unrelated active recording.
+startup waits for that delivery lease rather than overlapping it, but the reservation still suppresses
+A's not-yet-posted Return at the final boundary. A may already have pasted, yet it remains unsent
+because the new recording is treated as a continuation. This prevents an older valid result from
+appearing inside the newer dictation's foreground input or submitting before the continuation exists.
+Clipboard-only completion and session-local cancellation do not wait for an unrelated active recording.
 
 ## Rapid Primary recordings paste as one FIFO cohort
 

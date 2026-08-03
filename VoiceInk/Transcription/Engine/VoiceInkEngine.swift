@@ -427,6 +427,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // frozen/enqueued the active session's own immutable job (or safely canceled).
             defer {
                 activeRecordingDeliveryBarrier.endCapture(owner: active.id)
+                reportUnresolvedPrimaryAutoSendIfQueueDrained()
             }
 
             // ── STOP branch ──────────────────────────────────────────────────────────
@@ -614,6 +615,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         recordingStartIdentityTask?.cancel()
                         self.recordingStartReservation.cancel(startRequestID)
                         self.activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
+                        self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
                         self.logger.error("Recording permission denied")
                     }
                 }
@@ -653,6 +655,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             recordingStartIdentityTask?.cancel()
             recordingStartReservation.cancel(startRequestID)
             activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
+            reportUnresolvedPrimaryAutoSendIfQueueDrained()
             vippLog.notice("startNewSession: START reservation canceled while waiting for an older delivery requestID=\(startRequestID.uuidString, privacy: .public)")
             return
         }
@@ -671,6 +674,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
               activeRecordingSession == nil else {
             recordingStartIdentityTask?.cancel()
             activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
+            reportUnresolvedPrimaryAutoSendIfQueueDrained()
             vippLog.notice("startNewSession: stale or duplicate START refused requestID=\(startRequestID.uuidString, privacy: .public)")
             return
         }
@@ -752,6 +756,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     }
                     self.removeSession(session)
                     self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
+                    self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
                 }
                 return
             }
@@ -803,6 +808,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 session.audioURL = nil
                 self.removeSession(session)
                 self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
+                self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
                 await self.cleanupResourcesIfUnused(
                     retiringOwnerIsCurrent: true,
                     reason: "recording had no selected model"
@@ -913,6 +919,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.audioURL = nil
             self.removeSession(session)
             self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
+            self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
             await self.cleanupResourcesIfUnused(
                 retiringOwnerIsCurrent: true,
                 reason: "recording failed to start"
@@ -1057,7 +1064,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let resolution = PrimaryQueuedAutoSendPolicy.resolve(
             originalKey: originalKey,
             currentIsEligiblePrimaryPaste: currentIsEligible,
-            newerCandidates: newerCandidates
+            newerCandidates: newerCandidates,
+            // If the older delivery lease won first, a later physical Start is
+            // already represented by a capture reservation that must wait behind it.
+            // Treat that reservation as continuation intent before Return-down.
+            newerRecordingStartPending: activeRecordingDeliveryBarrier
+                .hasCaptureWaitingBehindDelivery
         )
         if currentIsEligible {
             // The resolver is called only after this Primary Command-V succeeded.
@@ -1103,7 +1115,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private func reportUnresolvedPrimaryAutoSendIfQueueDrained() {
         let unresolved = primaryQueuedAutoSendTracker
             .takeUnresolvedIfQueueDrained(
-                hasRegisteredJobs: !transcriptionJobRegistry.isEmpty
+                hasOutstandingSuccessor: !transcriptionJobRegistry.isEmpty
+                    || activeRecordingDeliveryBarrier.isDeliveryBlocked
             )
         guard !unresolved.isEmpty else { return }
 
@@ -1423,6 +1436,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await finishCanceledRecording(session)
             removeSession(session)
             activeRecordingDeliveryBarrier.endCapture(owner: session.id)
+            reportUnresolvedPrimaryAutoSendIfQueueDrained()
             await cleanupResourcesIfUnused(
                 retiringOwnerIsCurrent: true,
                 reason: "active recording was canceled"

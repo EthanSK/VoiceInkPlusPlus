@@ -771,8 +771,8 @@ final class TranscriptionDelivery {
         // distinguish queue suppression from a Mode that genuinely selected `.none`.
         let queuedAutoSend = resolveQueuedAutoSend(autoSendKey)
         vippLog.info("paste: primary queued auto-send decision originalKey=\(queuedAutoSend.originalKey.rawValue, privacy: .public) effectiveKey=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) suppressed=\(queuedAutoSend.isSuppressed, privacy: .public) suppressionReason=\(queuedAutoSend.suppressionReason.rawValue, privacy: .public) successorCount=\(queuedAutoSend.consecutiveSuccessorCount, privacy: .public) tailSequence=\(queuedAutoSend.queuedTailSequence.map { String($0) } ?? "none", privacy: .public)")
-        if queuedAutoSend.suppressionReason == .queuedSuccessor {
-            vippLog.info("paste: primary current-input auto-send deferred to queued Primary tail verification=notRequired")
+        if queuedAutoSend.isQueuedSuppression {
+            vippLog.info("paste: primary current-input auto-send deferred because a newer recording exists suppressionReason=\(queuedAutoSend.suppressionReason.rawValue, privacy: .public) verification=notRequired")
             return
         }
         if queuedAutoSend.suppressionReason == .currentCanceled {

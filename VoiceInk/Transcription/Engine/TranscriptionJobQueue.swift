@@ -115,6 +115,7 @@ struct PrimaryQueuedAutoSendCandidate: Equatable {
 enum PrimaryAutoSendSuppressionReason: String, Equatable {
     case none
     case queuedSuccessor
+    case pendingRecordingStart
     case currentCanceled
 }
 
@@ -131,6 +132,7 @@ struct PrimaryQueuedAutoSendResolution: Equatable {
 
     var isQueuedSuppression: Bool {
         suppressionReason == .queuedSuccessor
+            || suppressionReason == .pendingRecordingStart
     }
 
     static func unchanged(_ key: AutoSendKey) -> Self {
@@ -152,6 +154,16 @@ struct PrimaryQueuedAutoSendResolution: Equatable {
             suppressionReason: .currentCanceled
         )
     }
+
+    static func pendingRecordingStart(_ key: AutoSendKey) -> Self {
+        Self(
+            originalKey: key,
+            effectiveKey: .none,
+            queuedTailSequence: nil,
+            consecutiveSuccessorCount: 0,
+            suppressionReason: .pendingRecordingStart
+        )
+    }
 }
 
 /// Gives one configured auto-send to the tail of a consecutive Primary paste cohort.
@@ -166,7 +178,8 @@ enum PrimaryQueuedAutoSendPolicy {
     static func resolve(
         originalKey: AutoSendKey,
         currentIsEligiblePrimaryPaste: Bool,
-        newerCandidates: [PrimaryQueuedAutoSendCandidate]
+        newerCandidates: [PrimaryQueuedAutoSendCandidate],
+        newerRecordingStartPending: Bool = false
     ) -> PrimaryQueuedAutoSendResolution {
         guard currentIsEligiblePrimaryPaste else {
             return .unchanged(originalKey)
@@ -176,6 +189,15 @@ enum PrimaryQueuedAutoSendPolicy {
             $0.isEligiblePrimaryPaste
         }
         guard let tail = consecutiveSuccessors.last else {
+            // If another registered route already follows this job, that route owns
+            // the cohort break even when a still-later recording start is waiting.
+            // With no registered successor, the synchronous start reservation itself
+            // is enough to prove Ethan began a continuation before Return-down.
+            if newerCandidates.isEmpty,
+               newerRecordingStartPending,
+               originalKey.isEnabled {
+                return .pendingRecordingStart(originalKey)
+            }
             return .unchanged(originalKey)
         }
 
@@ -244,9 +266,9 @@ struct PrimaryQueuedAutoSendTracker {
     }
 
     mutating func takeUnresolvedIfQueueDrained(
-        hasRegisteredJobs: Bool
+        hasOutstandingSuccessor: Bool
     ) -> [UInt64] {
-        guard !hasRegisteredJobs, !suppressedSequences.isEmpty else {
+        guard !hasOutstandingSuccessor, !suppressedSequences.isEmpty else {
             return []
         }
         let unresolved = suppressedSequences.sorted()
@@ -312,6 +334,14 @@ final class ActiveRecordingDeliveryBarrier {
 
     var isCaptureStartBlocked: Bool {
         !activeDeliveryOwners.isEmpty
+    }
+
+    /// True only for the narrow race where an older delivery acquired its lease first,
+    /// then Ethan pressed Start for the next recording before the older Return posted.
+    /// The reservation is already a capture owner, even though its microphone handshake
+    /// waits for the older lease to release.
+    var hasCaptureWaitingBehindDelivery: Bool {
+        !activeCaptureOwners.isEmpty && !activeDeliveryOwners.isEmpty
     }
 
     func beginCapture(owner: UUID) {
