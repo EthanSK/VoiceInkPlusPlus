@@ -721,6 +721,22 @@ No row may be promoted merely because a later build reused part of it.
   Ethan explicitly asks to revive the integration. The combined policy would then be
   `voiceInkRecordingActive || youtubeVideoPlaying`, but that policy is not an implementation.
 
+### VAD, playback state, music labels, or polished-text style as the sole intended-speaker gate
+
+- **State:** REJECTED as standalone hard gates.
+- **Failure:** VAD answers whether audio is speech, so it accepts a YouTube presenter. A music label
+  does not reject a spoken podcast or news clip and can conflict with Ethan speaking over music.
+  YouTube/media-playing state cannot distinguish simultaneous Ethan speech. A polished transcript
+  style is content evidence after the damage, not source or speaker identity, and Ethan may
+  intentionally dictate polished prose.
+- **Rule:** Never delete or withhold recording audio solely because one of these signals fires. Keep
+  the raw WAV and use them only as auxiliary scores around a proven digital playback reference/AEC
+  and explicit local target-speaker enrollment. Uncertain regions fail open until a labelled
+  physical corpus proves a stricter policy safe.
+- **Reconsider only if:** A replacement signal independently proves either the exact reproduced
+  playback source or Ethan's enrolled speaker identity, and overlap tests demonstrate that Ethan's
+  concurrent speech is retained.
+
 ## Shortcut settings failures
 
 ### Clearing persistent shortcut storage for capture without a transaction

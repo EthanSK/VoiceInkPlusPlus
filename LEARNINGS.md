@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-03T22:56:04Z
+**Trigger:** Ethan asked VoiceInk++ to distinguish his intended speech from background music, YouTube/video playback, and polished presenter narration without relying on the text-only Voice coordination layer.
+**Symptom:** The current recorder forwards one mono microphone stream to the WAV and realtime provider, so downstream transcription can receive both Ethan and acoustically leaked background speech with no speaker/source identity.
+**Root cause:** `CoreAudioRecorder` uses input-only AUHAL, downmixes the selected device to 16 kHz mono PCM16, writes it to the WAV, and forwards the same bytes to streaming. It has no digital playback reference or speaker enrollment. VAD and music classification cannot identify Ethan because presenter narration is valid speech. Apple voice processing is not a one-line AUHAL flag: the documented API requires both I/O nodes and a device-rendering engine.
+**Fix:** Investigation-only. Added `BACKGROUND_SPEECH_FILTERING_PLAN.md`: first prove Apple voice processing in an isolated harness; if it cannot cancel other-process playback safely, use an unmuted in-memory Core Audio process tap plus synchronized AEC; then add a local FluidAudio target-speaker score. Preserve the raw WAV, start with score-only shadow mode, fail open on uncertainty/errors, and never hard-gate solely on playback/VAD/music/text style.
+**Commit:** investigation-only
+**Guard:** No audio-device setting, shared service, installed app, or runtime provider was changed. Before implementation, require the plan's labelled overlap corpus and isolated AEC/voice-processing probe. The current FluidAudio revision already exposes local speaker enrollment/diarization; use it before adding another identity dependency.
+---
+
+
+---
 **Date:** 2026-08-03T22:45:09Z
 **Trigger:** Ethan asked that an earlier result never press Enter after he has already started another recording because the new recording is probably an addition.
 **Symptom:** If Ethan pressed Primary to start recording B during recording A's final paste-to-Return window, A could still press Return before B's microphone handshake began, even though B was intended as a continuation.
