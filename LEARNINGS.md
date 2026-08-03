@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-03T00:29:00Z
+**Trigger:** Ethan reproduced the previous transcript delivering after immediately starting a new recording.
+**Symptom:** Starting recording B while recording A was still transcribing could let A paste or auto-send during B, making the previous result appear to belong to the new dictation.
+**Root cause:** A and B already had immutable audio/transcription lineage, but there was no mutually exclusive boundary between a new synchronous capture reservation and an older job's final delivery side effects; live trace showed B start only 6 ms before A's final result arrived.
+**Fix:** Commit 4c030c6 adds ActiveRecordingDeliveryBarrier: provider/formatting work may continue, but normal paste/Return/command/response waits while a newer capture owns or is reserving the microphone; if delivery wins first, the new microphone handshake waits. Cancellation, clipboard-only completion, Primary current-input, both Next routes, and FIFO remain unchanged.
+**Commit:** 4c030c6
+**Guard:** Mac Mini direct xcrun xctest named and passed all 99 tests, including eight new reservation/capture/delivery/reset guards plus existing Primary isolation, realtime HUD-only, and second-chance tests. Physical rapid A-stop then B-start remains the installed v2.0.276 acceptance trace.
+---
+
+
+---
 **Date:** 2026-08-02T22:25:47Z
 **Trigger:** Ethan said the Cancel Recording reset control was misaligned and asked Fable 5 to review the whole mechanism for bugs
 **Symptom:** Default Escape showed a trailing no-op reset icon that displaced the shortcut capsule; starting any shortcut edit also erased the old binding before a replacement was accepted, and a settings backup made with default Escape could not reset a custom binding during import
