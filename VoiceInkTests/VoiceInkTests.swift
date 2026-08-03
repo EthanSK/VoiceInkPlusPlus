@@ -1159,12 +1159,16 @@ struct VoiceInkTests {
             range: midStartCancel.upperBound..<engineSource.endIndex
         ))
         let commonRelease = try #require(engineSource.range(
-            of: "defer {\n                activeRecordingDeliveryBarrier.endCapture(owner: active.id)\n            }",
+            of: "activeRecordingDeliveryBarrier.endCapture(owner: active.id)",
             range: commonStop.upperBound..<engineSource.endIndex
+        ))
+        let commonQueueDrain = try #require(engineSource.range(
+            of: "reportUnresolvedPrimaryAutoSendIfQueueDrained()",
+            range: commonRelease.upperBound..<engineSource.endIndex
         ))
         let routeSwitch = try #require(engineSource.range(
             of: "switch stopPasteDestination",
-            range: commonRelease.upperBound..<engineSource.endIndex
+            range: commonQueueDrain.upperBound..<engineSource.endIndex
         ))
         let enqueue = try #require(engineSource.range(
             of: "enqueueTranscription(for: active, transcription: transcription)",
@@ -1184,7 +1188,8 @@ struct VoiceInkTests {
         ))
 
         #expect(commonStop.lowerBound < commonRelease.lowerBound)
-        #expect(commonRelease.lowerBound < routeSwitch.lowerBound)
+        #expect(commonRelease.lowerBound < commonQueueDrain.lowerBound)
+        #expect(commonQueueDrain.lowerBound < routeSwitch.lowerBound)
         #expect(routeSwitch.lowerBound < enqueue.lowerBound)
         #expect(enqueue.lowerBound < startBranch.lowerBound)
         #expect(cancelRecordingCase.lowerBound < delegatedRelease.lowerBound)
