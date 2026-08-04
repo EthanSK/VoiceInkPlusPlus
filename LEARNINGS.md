@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-04T01:56:44Z
+**Trigger:** Ethan reported that the right-hand locked-destination icon and full Next-button latch had been worse for a while and asked to restore the last working Codex behavior.
+**Symptom:** Current VoiceInk++ could show an app-only or warning destination for Codex at recording start, then fail the background `recordingStart` latch even though the exact composer had been focused before the Primary shortcut completed.
+**Root cause:** The G HUB Primary macro completes Shift-Control-Option sequentially. Codex/ChatGPT commonly exposed its exact `AXTextArea` during an earlier forwarded partial modifier, then only an `AXGroup` or `AXWebArea` when the final modifier completed the chord. Capture retried only on `nil`, not on the app-only fallback, so it discarded the earlier exact editor.
+**Fix:** Commit 417841a passively stages one short-lived exact input during forwarded partial modifiers and recovers it only when the completed-chord container belongs to the same process, the editor remains its replay-safe descendant, and exact identity re-resolves. It never focuses/activates Codex, suppresses partial modifiers/releases, changes Primary delivery, or trusts the staged target alone.
+**Commit:** 417841ae2a62009ee0a97af5bb53d78d809bbdc3
+**Guard:** The Mac Mini canonical Debug/local-signing action compiled before the known TestManager stall; the fresh direct `xcrun xctest` fallback named and passed all 113 tests, including `primaryModifierChordExposesOnlyForwardedPartialProgressForCapture`, `primaryModifierChordSuppressesOnlyTheCompletedPress`, Primary isolation, second-chance Mode ownership, and realtime HUD-only. A uniquely signed v2.0.279 install plus one physical background Codex `recordingStart` trace remains the release acceptance gate.
+---
+
+
+---
 **Date:** 2026-08-03T22:56:04Z
 **Trigger:** Ethan asked VoiceInk++ to distinguish his intended speech from background music, YouTube/video playback, and polished presenter narration without relying on the text-only Voice coordination layer.
 **Symptom:** The current recorder forwards one mono microphone stream to the WAV and realtime provider, so downstream transcription can receive both Ethan and acoustically leaked background speech with no speaker/source identity.

@@ -69,6 +69,16 @@ For a G HUB sanity check, confirm the live active profile, onboard/software mode
 
 For modifier-only Primary regressions, inspect the complete `flagsChanged` sequence. VoiceInk++ owns and suppresses only the event that completes the configured Shift-Control-Option chord plus any full-chord repeats; partial modifiers and every release must remain downstream-balanced. Require the pure reducer test and a physical check with a context menu already open. Never swallow the entire modifier sequence to hide a menu-dismissal symptom, because that can leave the foreground app with stuck logical modifiers.
 
+For recording-start exact-input capture, remember that Ethan's G HUB Primary macro completes its
+modifiers sequentially. Electron may expose the exact composer during an earlier forwarded partial
+modifier and only an ancestor container on the completed chord. Preserve one passive, short-lived
+pre-chord snapshot, but recover it only when the completed-chord container has the same process and
+the exact editor remains a replay-safe descendant whose identity re-resolves immediately. Never
+focus or activate the app, suppress partial modifiers/releases, reuse a stale snapshot on its own,
+or let this tentative Next-only capture enter Primary delivery. Keep
+`primaryModifierChordExposesOnlyForwardedPartialProgressForCapture` passing and require a physical
+`recordingStart` Next trace before accepting the installed release.
+
 Keep these three routes distinct:
 
 | Action | Destination |

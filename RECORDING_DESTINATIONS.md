@@ -278,6 +278,16 @@ replaces the saved editor's Accessibility wrapper before delivery. Normal stop-t
 transcription-time retargets still require an exact editable input, so an incidental non-editable
 control cannot silently replace their destination.
 
+The G HUB Primary macro completes Shift, Control, and Option sequentially. On Codex/ChatGPT,
+Electron can expose the exact `AXTextArea` during the earlier forwarded modifiers but only its
+`AXGroup` or `AXWebArea` ancestor when the final modifier completes the shortcut. VoiceInk++
+therefore takes one passive, short-lived exact-input snapshot during that forwarded partial chord.
+It may recover the snapshot at recording start only when the completed-chord container belongs to
+the same process, the exact editor is still a replay-safe descendant of that container, and the
+saved identity re-resolves immediately. The snapshot never focuses or activates the app, never
+changes which modifier events are forwarded, and never enters Primary delivery; any stale process,
+task, ancestry, or identity mismatch falls back to the ordinary capture result or fails closed.
+
 For an exact saved input whose app is currently backgrounded, VoiceInk++:
 
 1. Uniquely resolves the saved Accessibility window and editor. Structural identity plus nearby
