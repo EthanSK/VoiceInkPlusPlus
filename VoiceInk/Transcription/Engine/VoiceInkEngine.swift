@@ -576,7 +576,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // stop. A normal Primary stop discards it structurally and never enters an
             // app-specific resolver, even though the user could choose Next later.
             let recordingStartFocusedInput = FocusLockService.shared
-                .captureFocusedInputSnapshot(allowApplicationFallback: true)
+                .captureRecordingStartInputSnapshot()
             let recordingStartIdentityTask: Task<
                 FocusLockService.Target,
                 Never

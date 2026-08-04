@@ -416,6 +416,38 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func primaryModifierChordExposesOnlyForwardedPartialProgressForCapture() {
+        let shortcut = Shortcut.modifierOnly(
+            keyCode: nil,
+            modifierFlags: [.shift, .control, .option]
+        )
+
+        #expect(ShortcutMonitor.isPartialModifierOnlySequence(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Shift),
+            modifierFlags: [.shift]
+        ))
+        #expect(ShortcutMonitor.isPartialModifierOnlySequence(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Control),
+            modifierFlags: [.shift, .control]
+        ))
+        #expect(!ShortcutMonitor.isPartialModifierOnlySequence(
+            shortcut: shortcut,
+            wasDown: false,
+            keyCode: UInt16(kVK_Option),
+            modifierFlags: [.shift, .control, .option]
+        ))
+        #expect(!ShortcutMonitor.isPartialModifierOnlySequence(
+            shortcut: shortcut,
+            wasDown: true,
+            keyCode: UInt16(kVK_Control),
+            modifierFlags: [.shift, .control]
+        ))
+    }
+
     @Test func primaryDoublePressDefersStopThenTogglesPause() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5

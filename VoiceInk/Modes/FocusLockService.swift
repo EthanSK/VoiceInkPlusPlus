@@ -50,6 +50,10 @@ final class FocusLockService: ObservableObject {
         fileprivate let element: AXUIElement?
         fileprivate let window: AXUIElement?
         fileprivate let identity: ExactInputIdentity?
+        /// Non-editable ancestor observed only while the modifier shortcut is
+        /// completing. It is never a delivery identity; it can only prove that an
+        /// earlier exact pre-chord snapshot belongs to this same capture surface.
+        fileprivate let applicationFallbackContainer: AXUIElement?
         /// Telegram's App Store build publishes no readable chat header through
         /// the parentless composer's AX window. Start one privacy-bounded visual
         /// fingerprint at the input-decision boundary; delivery awaits it only if
@@ -438,6 +442,11 @@ final class FocusLockService: ObservableObject {
         let completion: BoundedTraversalCompletion
     }
 
+    private struct StagedRecordingStartInput {
+        let target: Target
+        let capturedAt: TimeInterval
+    }
+
     static let shared = FocusLockService()
     static let longPressThreshold: TimeInterval = 0.45
 
@@ -445,6 +454,8 @@ final class FocusLockService: ObservableObject {
     private(set) var stopHoldDecisionPending = false
 
     private let logger = Logger(subsystem: "com.ethansk.VoiceInkPlusPlus", category: "FocusLock")
+    private var stagedRecordingStartInput: StagedRecordingStartInput?
+    private static let stagedRecordingStartInputLifetime: TimeInterval = 0.5
     private static let semanticSendNodeBudget = 1_600
     private static let semanticSendSearchSeconds = 0.35
     // A media-key transition and a busy WindowServer can temporarily make the
@@ -519,6 +530,66 @@ final class FocusLockService: ObservableObject {
     ]
 
     private init() {}
+
+    /// Capture the exact editor on an early, forwarded modifier event. This is
+    /// intentionally read-only and first-success-wins for one short gesture window:
+    /// later modifiers are precisely when Electron may replace AXTextArea focus with
+    /// an ancestor container. The staged target is never used on its own.
+    func stageRecordingStartInputBeforeShortcutCompletion() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let stagedRecordingStartInput,
+           now - stagedRecordingStartInput.capturedAt
+                <= Self.stagedRecordingStartInputLifetime {
+            return
+        }
+        stagedRecordingStartInput = nil
+        guard let target = captureFocusedInputSnapshot(),
+              target.hasExactInput,
+              target.window != nil,
+              target.identity != nil else {
+            return
+        }
+        stagedRecordingStartInput = StagedRecordingStartInput(
+            target: target,
+            capturedAt: now
+        )
+        logger.info("Staged exact recording-start input before modifier chord completion pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+    }
+
+    /// Complete the physical recording-start decision. Prefer the ordinary focused
+    /// exact input. If Electron now reports only an ancestor, recover the earlier
+    /// exact snapshot solely when it is fresh, replay-safe, from the same process,
+    /// and still a descendant of that exact observed ancestor. This prevents a fast
+    /// app/task switch from silently latching a different composer.
+    func captureRecordingStartInputSnapshot() -> Target? {
+        let completedChordTarget = captureFocusedInputSnapshot(
+            allowApplicationFallback: true
+        )
+        let staged = stagedRecordingStartInput
+        stagedRecordingStartInput = nil
+
+        guard let completedChordTarget,
+              !completedChordTarget.hasExactInput,
+              let fallbackContainer = completedChordTarget
+                .applicationFallbackContainer,
+              let staged,
+              ProcessInfo.processInfo.systemUptime - staged.capturedAt
+                <= Self.stagedRecordingStartInputLifetime,
+              staged.target.pid == completedChordTarget.pid,
+              staged.target.bundleIdentifier
+                == completedChordTarget.bundleIdentifier,
+              let stagedElement = staged.target.element,
+              isDescendant(stagedElement, of: fallbackContainer),
+              resolvedExactElement(
+                for: staged.target,
+                diagnosticContext: "preShortcutRecordingStart"
+              ).map({ CFEqual($0, stagedElement) }) == true else {
+            return completedChordTarget
+        }
+
+        logger.info("Recovered exact recording-start input from pre-chord snapshot pid=\(staged.target.pid, privacy: .public) bundle=\(staged.target.bundleIdentifier ?? "nil", privacy: .public)")
+        return staged.target
+    }
 
     func captureFocusedInput(allowApplicationFallback: Bool = false) -> Target? {
         captureFocusedInputSnapshot(
@@ -614,6 +685,8 @@ final class FocusLockService: ObservableObject {
             element: isExactEditableInput ? element : nil,
             window: owningWindow,
             identity: identity,
+            applicationFallbackContainer:
+                isExactEditableInput ? nil : element,
             telegramVisualIdentityCapture: telegramVisualIdentityCapture,
             app: app,
             pid: pid,
@@ -648,6 +721,8 @@ final class FocusLockService: ObservableObject {
             element: target.element,
             window: target.window,
             identity: target.identity,
+            applicationFallbackContainer:
+                target.applicationFallbackContainer,
             telegramVisualIdentityCapture:
                 target.telegramVisualIdentityCapture,
             app: target.app,
@@ -2145,6 +2220,7 @@ final class FocusLockService: ObservableObject {
             element: focused.element,
             window: window,
             identity: identity,
+            applicationFallbackContainer: nil,
             telegramVisualIdentityCapture: identity.contextAnchors.isEmpty
                 ? makeTelegramVisualIdentityCapture(
                     app: target.app,
@@ -3747,6 +3823,21 @@ final class FocusLockService: ObservableObject {
             }
         }
         return result
+    }
+
+    private func isDescendant(
+        _ element: AXUIElement,
+        of ancestor: AXUIElement
+    ) -> Bool {
+        var current: AXUIElement? = element
+        for _ in 0..<40 {
+            guard let candidate = current else { return false }
+            if CFEqual(candidate, ancestor) {
+                return true
+            }
+            current = elementAttribute(kAXParentAttribute, from: candidate)
+        }
+        return false
     }
 
     private func ancestorPath(

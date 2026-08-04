@@ -335,6 +335,21 @@ class RecordingShortcutManager: ObservableObject {
                     await self.shortcutModeHandler.handleInterruption(action: action)
                 }
             },
+            onModifierOnlySequenceProgress: { [weak self] action, _ in
+                MainActor.assumeIsolated {
+                    guard let self,
+                          action == .primaryRecording,
+                          self.engine.recordingState == .idle else {
+                        return
+                    }
+                    // Read only. Partial modifiers and every release still pass to the
+                    // foreground app unchanged; this merely preserves the exact
+                    // composer before Electron transiently reports an ancestor at the
+                    // completed Shift-Control-Option chord.
+                    FocusLockService.shared
+                        .stageRecordingStartInputBeforeShortcutCompletion()
+                }
+            },
             onNextTrackKeyDown: { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return false }

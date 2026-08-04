@@ -68,6 +68,7 @@ final class ShortcutMonitor {
     private var onKeyDown: ((ShortcutAction, TimeInterval) -> Void)?
     private var onKeyUp: ((ShortcutAction, TimeInterval) -> Void)?
     private var onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)?
+    private var onModifierOnlySequenceProgress: ((ShortcutAction, TimeInterval) -> Void)?
     private var onNextTrackKeyDown: (() -> Bool)?
     private var isConsumingNextTrackPress = false
     private var eventTap: CFMachPort?
@@ -87,6 +88,7 @@ final class ShortcutMonitor {
         onKeyDown: @escaping (ShortcutAction, TimeInterval) -> Void,
         onKeyUp: @escaping (ShortcutAction, TimeInterval) -> Void,
         onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)? = nil,
+        onModifierOnlySequenceProgress: ((ShortcutAction, TimeInterval) -> Void)? = nil,
         onNextTrackKeyDown: (() -> Bool)? = nil
     ) -> Bool {
         stop()
@@ -103,6 +105,7 @@ final class ShortcutMonitor {
         self.onKeyDown = onKeyDown
         self.onKeyUp = onKeyUp
         self.onShortcutInterrupted = onShortcutInterrupted
+        self.onModifierOnlySequenceProgress = onModifierOnlySequenceProgress
         self.onNextTrackKeyDown = onNextTrackKeyDown
 
         return installEventTap()
@@ -174,6 +177,7 @@ final class ShortcutMonitor {
         onKeyDown = nil
         onKeyUp = nil
         onShortcutInterrupted = nil
+        onModifierOnlySequenceProgress = nil
         onNextTrackKeyDown = nil
         isConsumingNextTrackPress = false
     }
@@ -406,6 +410,23 @@ final class ShortcutMonitor {
             return false
         }
 
+        // Ethan's G HUB Primary macro presses Shift, Control, and Option in a
+        // sequence. Electron may replace the focused AXTextArea with an AXGroup or
+        // AXWebArea by the time the final modifier completes the owned chord. Observe
+        // the earlier partial sequence without suppressing it so VoiceInk++ can take
+        // one passive exact-input snapshot before that transient focus change.
+        if Self.isPartialModifierOnlySequence(
+            shortcut: state.shortcut,
+            wasDown: state.isDown,
+            keyCode: keyCode,
+            modifierFlags: modifierFlags
+        ) {
+            dispatchModifierOnlySequenceProgress(
+                for: action,
+                eventTime: eventTime
+            )
+        }
+
         let transition = Self.modifierOnlySequenceTransition(
             shortcut: state.shortcut,
             wasDown: state.isDown,
@@ -472,6 +493,36 @@ final class ShortcutMonitor {
         DispatchQueue.main.async { [onShortcutInterrupted] in
             onShortcutInterrupted?(action, eventTime)
         }
+    }
+
+    private func dispatchModifierOnlySequenceProgress(
+        for action: ShortcutAction,
+        eventTime: TimeInterval
+    ) {
+        DispatchQueue.main.async { [onModifierOnlySequenceProgress] in
+            onModifierOnlySequenceProgress?(action, eventTime)
+        }
+    }
+
+    static func isPartialModifierOnlySequence(
+        shortcut: Shortcut,
+        wasDown: Bool,
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        guard shortcut.isModifierOnly,
+              !wasDown,
+              Shortcut.isModifierKeyCode(keyCode) else {
+            return false
+        }
+        let observed = Shortcut.normalizedModifierFlags(
+            modifierFlags,
+            forKeyCode: keyCode
+        )
+        let required = shortcut.modifierFlags
+        return !observed.isEmpty
+            && observed != required
+            && required.isSuperset(of: observed)
     }
 
     private static let eventMask: CGEventMask = [
