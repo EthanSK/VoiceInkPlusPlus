@@ -465,13 +465,33 @@ struct VoiceInkTests {
             "matchesAuditedOpenAIRetainedPreparationBuild"
         ))
         #expect(body.contains("candidates.count == 1"))
-        #expect(body.contains("CFEqual(currentFocus.element, fallbackContainer)"))
+        #expect(body.contains("reason=auditedBuildMismatch"))
+        #expect(body.contains("reason=frontmostMismatch"))
+        #expect(body.contains("reason=initialFocusUnreadable"))
+        #expect(body.contains("reason=initialFocusMismatch"))
+        #expect(body.contains("reason=focusedWindowUnreadable"))
+        #expect(body.contains("reason=focusedWindowFrameUnreadable"))
+        #expect(body.contains("reason=candidateCount"))
+        #expect(body.contains("reason=revalidationFailed"))
+        #expect(body.contains("currentFocusMatches"))
         #expect(body.contains("exactStructureMatches"))
         #expect(!body.contains("AXUIElementSetAttributeValue("))
         #expect(!body.contains("kAXFocusedAttribute"))
         #expect(!body.contains(".activate("))
         #expect(!body.contains("kAXFocusedWindowAttribute as CFString"))
         #expect(!body.contains("kAXFocusedUIElementAttribute as CFString"))
+    }
+
+    @Test func primaryModifierProgressCarriesEventTimeIntoPassiveCapture() throws {
+        let source = try repositorySource(
+            "VoiceInk/Shortcuts/RecordingShortcutManager.swift"
+        )
+        #expect(source.contains(
+            "onModifierOnlySequenceProgress: { [weak self] action, eventTime in"
+        ))
+        #expect(source.contains(
+            ".stageRecordingStartInputBeforeShortcutCompletion(\n                            eventTime: eventTime"
+        ))
     }
 
     @Test func primaryDoublePressDefersStopThenTogglesPause() {

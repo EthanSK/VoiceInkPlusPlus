@@ -335,7 +335,7 @@ class RecordingShortcutManager: ObservableObject {
                     await self.shortcutModeHandler.handleInterruption(action: action)
                 }
             },
-            onModifierOnlySequenceProgress: { [weak self] action, _ in
+            onModifierOnlySequenceProgress: { [weak self] action, eventTime in
                 MainActor.assumeIsolated {
                     guard let self,
                           action == .primaryRecording,
@@ -347,7 +347,9 @@ class RecordingShortcutManager: ObservableObject {
                     // composer before Electron transiently reports an ancestor at the
                     // completed Shift-Control-Option chord.
                     FocusLockService.shared
-                        .stageRecordingStartInputBeforeShortcutCompletion()
+                        .stageRecordingStartInputBeforeShortcutCompletion(
+                            eventTime: eventTime
+                        )
                 }
             },
             onNextTrackKeyDown: { [weak self] in

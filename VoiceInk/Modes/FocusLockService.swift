@@ -557,11 +557,17 @@ final class FocusLockService: ObservableObject {
     /// intentionally read-only and first-success-wins for one short gesture window:
     /// later modifiers are precisely when Electron may replace AXTextArea focus with
     /// an ancestor container. The staged target is never used on its own.
-    func stageRecordingStartInputBeforeShortcutCompletion() {
+    func stageRecordingStartInputBeforeShortcutCompletion(
+        eventTime: TimeInterval? = nil
+    ) {
         let now = ProcessInfo.processInfo.systemUptime
+        let dispatchLatencyMilliseconds = eventTime.map {
+            max(0, Int((now - $0) * 1_000))
+        } ?? -1
         if let stagedRecordingStartInput,
            now - stagedRecordingStartInput.capturedAt
                 <= Self.stagedRecordingStartInputLifetime {
+            logger.debug("Recording-start pre-chord snapshot kept first successful target dispatchLatencyMs=\(dispatchLatencyMilliseconds, privacy: .public)")
             return
         }
         stagedRecordingStartInput = nil
@@ -569,13 +575,17 @@ final class FocusLockService: ObservableObject {
               target.hasExactInput,
               target.window != nil,
               target.identity != nil else {
+            // Debug-build evidence only: the exact capture routine already logs the
+            // role/pid rejection. Event-to-MainActor latency distinguishes a genuinely
+            // non-editable focus from a partial-modifier callback that ran too late.
+            logger.notice("Recording-start pre-chord snapshot unavailable dispatchLatencyMs=\(dispatchLatencyMilliseconds, privacy: .public)")
             return
         }
         stagedRecordingStartInput = StagedRecordingStartInput(
             target: target,
             capturedAt: now
         )
-        logger.info("Staged exact recording-start input before modifier chord completion pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
+        logger.info("Staged exact recording-start input before modifier chord completion pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) dispatchLatencyMs=\(dispatchLatencyMilliseconds, privacy: .public)")
     }
 
     /// Complete the physical recording-start decision. Prefer the ordinary focused
@@ -627,14 +637,38 @@ final class FocusLockService: ObservableObject {
     private func captureAuditedOpenAIComposerAtRecordingStart(
         from fallback: Target
     ) -> Target? {
-        guard !fallback.hasExactInput,
-              let fallbackContainer = fallback.applicationFallbackContainer,
-              Self.matchesAuditedOpenAIRetainedPreparationBuild(fallback.app),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier
-                == fallback.pid,
-              let initialFocus = systemFocusedElement(),
-              initialFocus.pid == fallback.pid,
-              CFEqual(initialFocus.element, fallbackContainer) else {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        guard !fallback.hasExactInput else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=alreadyExact pid=\(fallback.pid, privacy: .public)")
+            return nil
+        }
+        guard let fallbackContainer = fallback.applicationFallbackContainer else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=missingFallbackContainer pid=\(fallback.pid, privacy: .public)")
+            return nil
+        }
+        guard Self.matchesAuditedOpenAIRetainedPreparationBuild(fallback.app) else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=auditedBuildMismatch pid=\(fallback.pid, privacy: .public)")
+            return nil
+        }
+
+        let initialFrontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        guard initialFrontmostPID == fallback.pid else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=frontmostMismatch pid=\(fallback.pid, privacy: .public) frontmostPid=\(initialFrontmostPID ?? -1, privacy: .public)")
+            return nil
+        }
+        guard let initialFocus = systemFocusedElement() else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=initialFocusUnreadable pid=\(fallback.pid, privacy: .public)")
+            return nil
+        }
+        let initialFocusRole = stringAttribute(
+            kAXRoleAttribute,
+            from: initialFocus.element
+        ) ?? "nil"
+        let initialFocusMatches = initialFocus.pid == fallback.pid
+            && CFEqual(initialFocus.element, fallbackContainer)
+        guard initialFocusMatches else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=initialFocusMismatch pid=\(fallback.pid, privacy: .public) focusPid=\(initialFocus.pid, privacy: .public) focusRole=\(initialFocusRole, privacy: .public) wrapperEqual=\(CFEqual(initialFocus.element, fallbackContainer), privacy: .public)")
             return nil
         }
 
@@ -642,7 +676,12 @@ final class FocusLockService: ObservableObject {
         guard let focusedWindow = elementAttribute(
             kAXFocusedWindowAttribute,
             from: appElement
-        ), let windowFrame = frame(of: focusedWindow) else {
+        ) else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=focusedWindowUnreadable pid=\(fallback.pid, privacy: .public)")
+            return nil
+        }
+        guard let windowFrame = frame(of: focusedWindow) else {
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=focusedWindowFrameUnreadable pid=\(fallback.pid, privacy: .public)")
             return nil
         }
         let candidates = descendants(of: fallbackContainer).filter { element in
@@ -674,7 +713,10 @@ final class FocusLockService: ObservableObject {
                 for: composer,
                 in: focusedWindow
               ) else {
-            logger.notice("OpenAI recording-start passive composer capture skipped because the active fallback did not contain one proven main composer pid=\(fallback.pid, privacy: .public) candidates=\(candidates.count, privacy: .public)")
+            let elapsedMilliseconds = Int(
+                (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000
+            )
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=candidateCount pid=\(fallback.pid, privacy: .public) candidates=\(candidates.count, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
             return nil
         }
 
@@ -682,25 +724,43 @@ final class FocusLockService: ObservableObject {
         // or ChatGPT updated during discovery, do nothing. This branch deliberately has
         // no AX setter: tentative recording-start ownership exists only for Next and must
         // never disturb the keyboard-focused field that a later Primary stop will use.
-        guard Self.matchesAuditedOpenAIRetainedPreparationBuild(fallback.app),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier
-                == fallback.pid,
-              let currentFocus = systemFocusedElement(),
-              currentFocus.pid == fallback.pid,
-              CFEqual(currentFocus.element, fallbackContainer),
-              elementAttribute(
-                kAXFocusedWindowAttribute,
-                from: appElement
-              ).map({ CFEqual($0, focusedWindow) }) == true,
-              exactStructureMatches(
-                composer,
-                identity: identity,
-                in: focusedWindow
-              ) else {
+        let buildStillMatches = Self
+            .matchesAuditedOpenAIRetainedPreparationBuild(fallback.app)
+        let finalFrontmostPID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        let currentFocus = systemFocusedElement()
+        let currentFocusRole = currentFocus.map {
+            stringAttribute(kAXRoleAttribute, from: $0.element) ?? "nil"
+        } ?? "nil"
+        let currentFocusMatches = currentFocus.map {
+            $0.pid == fallback.pid
+                && CFEqual($0.element, fallbackContainer)
+        } == true
+        let focusedWindowMatches = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ).map({ CFEqual($0, focusedWindow) }) == true
+        let structureStillMatches = exactStructureMatches(
+            composer,
+            identity: identity,
+            in: focusedWindow
+        )
+        guard buildStillMatches,
+              finalFrontmostPID == fallback.pid,
+              currentFocusMatches,
+              focusedWindowMatches,
+              structureStillMatches else {
+            let elapsedMilliseconds = Int(
+                (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000
+            )
+            logger.notice("OpenAI recording-start passive composer capture stopped reason=revalidationFailed pid=\(fallback.pid, privacy: .public) buildMatches=\(buildStillMatches, privacy: .public) frontmostPid=\(finalFrontmostPID ?? -1, privacy: .public) focusReadable=\(currentFocus != nil, privacy: .public) focusRole=\(currentFocusRole, privacy: .public) focusMatches=\(currentFocusMatches, privacy: .public) windowMatches=\(focusedWindowMatches, privacy: .public) structureMatches=\(structureStillMatches, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
             return nil
         }
 
-        logger.notice("Passively captured one audited OpenAI main composer for a possible recording-start Next route pid=\(fallback.pid, privacy: .public)")
+        let elapsedMilliseconds = Int(
+            (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000
+        )
+        logger.notice("Passively captured one audited OpenAI main composer for a possible recording-start Next route pid=\(fallback.pid, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)")
         return Target(
             element: composer,
             window: focusedWindow,
