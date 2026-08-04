@@ -4,6 +4,34 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
+**Current installed state verified 2026-08-04:** signed v2.0.280 at implementation commit `00fa934`
+plus structural-test correction `3952485` is installed but has not yet been physically accepted.
+The Mini's canonical Xcode action rebuilt the candidate but stalled in TestManager before naming
+tests; the fresh direct `xcrun xctest` fallback then named and passed all 116 tests in 2 suites.
+The candidate allows an older valid Primary result to paste while a newer recording is active,
+suppresses the older Return, and leaves only the eventual Primary cohort tail eligible to send.
+Exact Next, command/response, raw/skip, assistant, and other non-cohort side effects still wait for
+capture to end. The installed executable SHA-256 is
+`6af320ae7855682b98b07f4bf3355d1fb5be8b28c2e33e71f9bb9c86f1d478d7`, its CDHash is
+`aabb54d8f4d2c8ea989622932fb10d8b856c6072`, deep/strict signing and outer Automation/audio-input
+entitlements verify, exact delivery is enabled, and v2.0.279 is preserved as rollback. Physical
+A-stop/B-start and ChatGPT background-Next acceptance remain required.
+
+The preceding signed v2.0.279 build produced a correlated ChatGPT 26.727.51351 build 6119
+`recordingStart` Next run captured the exact composer, kept Chrome frontmost, and finalized 483
+characters, but failed before insertion because ordinary background preparation could not re-resolve
+the saved element/window. v2.0.280 adds only a tuple-pinned preparation exception for that audited
+ChatGPT build: it may open one targeted-input activation session before resolving, then must reprove
+the same task/window/editor anchors, ChatGPT-internal focus, and unrelated macOS foreground. This
+candidate path remains unaccepted until a physical trace and visible submission agree.
+
+The v2.0.279 rapid-recording reproduction also separates queue policy from provider output. Its old
+exclusive delivery barrier deferred Primary A until recording B ended. That particular A could not
+paste afterward either: GPT Live committed zero characters, completed-WAV fallback returned no usable
+text, no realtime draft existed, and the retained 16.9-second WAV was quiet (mean -49 dB, maximum
+-31.4 dB). The candidate policy fixes the avoidable deferral for valid results; it cannot manufacture
+text from an empty provider result.
+
 **Current runtime state verified 2026-07-24:** signed VoiceInk++ v2.0.259 is installed from commit
 `049efc7` with CDHash `b791737a00d593fdb8a76ac67fce5ed74149824f` and exact delivery
 enabled. Its fresh Mini bundle named and passed all 46 unit tests through direct `xcrun xctest`
