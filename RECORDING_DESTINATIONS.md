@@ -17,16 +17,18 @@ The two Next-button latch routes are unchanged by real-time transcription: Next 
 still owns `recordingStart`, and the post-Primary second chance still owns
 `focusedDuringTranscription`.
 
-If recording B begins while recording A is still finalizing, A may finish its provider and
-formatting work, but it must not paste, press Return, run a command, or otherwise deliver while B
-owns the microphone. VoiceInk++ defers only A's final side effects until B stops or cancels, then
-continues the existing FIFO delivery order. A start request reserves the newer capture immediately;
-if the older delivery already crossed its mutually exclusive delivery boundary first, microphone
-startup waits for that delivery lease rather than overlapping it, but the reservation still suppresses
-A's not-yet-posted Return at the final boundary. A may already have pasted, yet it remains unsent
-because the new recording is treated as a continuation. This prevents an older valid result from
-appearing inside the newer dictation's foreground input or submitting before the continuation exists.
-Clipboard-only completion and session-local cancellation do not wait for an unrelated active recording.
+If recording B begins while normal Primary recording A is still finalizing, A may finish its
+provider/formatting work and paste immediately into the system-focused input while B is recording.
+A must not press Return: the live capture reservation is continuation intent, so B remains the only
+eligible cohort member that may later auto-send. FIFO still governs all paste order. Exact Next
+destinations, commands, responses, assistant work, raw/skip output, and every non-cohort side effect
+remain mutually exclusive with active capture and wait until B stops or cancels.
+
+A start request reserves the newer capture immediately. If A already owns a short Primary paste
+lease, B's microphone handshake waits for that paste to finish, but its reservation is visible at
+A's final Return boundary and suppresses Return. If B owns the microphone first, A's Primary paste
+may cross that capture boundary while retaining the same suppression. Clipboard-only completion
+and session-local cancellation do not wait for an unrelated active recording.
 
 ## Rapid Primary recordings paste as one FIFO cohort
 
@@ -287,6 +289,11 @@ the same process, the exact editor is still a replay-safe descendant of that con
 saved identity re-resolves immediately. The snapshot never focuses or activates the app, never
 changes which modifier events are forwarded, and never enters Primary delivery; any stale process,
 task, ancestry, or identity mismatch falls back to the ordinary capture result or fails closed.
+If the exact audited ChatGPT build is already frontmost at recording start but no editor owns the
+caret, VoiceInk++ may make one in-place `AXFocused` attempt on exactly one lower-window main
+composer. It revalidates the original fallback control, app, window, build tuple, and exact composer
+immediately before that single setter. It never activates ChatGPT, rewrites the app/window focus
+pointers, retries, or performs a compensating focus change after a newer user click.
 
 For an exact saved input whose app is currently backgrounded, VoiceInk++:
 
@@ -305,6 +312,14 @@ For an exact saved input whose app is currently backgrounded, VoiceInk++:
    copies the transcript to the clipboard and shows a visible error rather than guessing. After one
    irreversible Send attempt, an unreadable/replaced wrapper is indeterminate telemetry: do not
    retry, claim success, or show a false failure.
+
+ChatGPT 26.727.51351 build 6119 has one narrower preparation exception: it can make a correctly
+captured Codex composer wrapper unreadable only after the app becomes backgrounded. If ordinary
+strict resolution fails, VoiceInk++ may open one build-pinned targeted-input activation session
+before resolving. It then requires the same capture-time task/window/editor identity, nonempty
+content anchors, ChatGPT-internal window/editor focus, and a still-unrelated macOS foreground. This
+path writes no Accessibility focus pointer or boolean, never activates ChatGPT, and closes the one
+session without restoration mutation. Any tuple, identity, focus, or context mismatch fails closed.
 
 Telegram's parentless composer is a narrow identity exception, not an app-only fallback. Prefer
 readable matching AX chat anchors. For the exact audited Telegram 12.9 build 282526 layout only, when

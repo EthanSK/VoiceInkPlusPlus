@@ -448,6 +448,33 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func openAINoCaretRecordingStartFocusIsPinnedBoundedAndOneShot() throws {
+        let source = try repositorySource(
+            "VoiceInk/Modes/FocusLockService.swift"
+        )
+        let start = try #require(source.range(
+            of: "    private func focusAuditedOpenAIComposerAtRecordingStart("
+        ))
+        let end = try #require(source.range(
+            of: "    func captureFocusedInput(allowApplicationFallback:",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        #expect(body.contains(
+            "matchesAuditedOpenAIRetainedPreparationBuild"
+        ))
+        #expect(body.contains("candidates.count == 1"))
+        #expect(body.contains("CFEqual(currentFocus.element, fallbackContainer)"))
+        #expect(body.contains("exactStructureMatches"))
+        #expect(body.components(
+            separatedBy: "AXUIElementSetAttributeValue("
+        ).count - 1 == 1)
+        #expect(!body.contains(".activate("))
+        #expect(!body.contains("kAXFocusedWindowAttribute as CFString"))
+        #expect(!body.contains("kAXFocusedUIElementAttribute as CFString"))
+    }
+
     @Test func primaryDoublePressDefersStopThenTogglesPause() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
@@ -1030,6 +1057,43 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func primaryPasteLeaseCrossesActiveCaptureWhileExclusiveWorkStillWaits() async {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let activeRecordingID = UUID()
+        let primaryDeliveryID = UUID()
+        let exactDeliveryID = UUID()
+        let state = TranscriptionQueueTestState()
+
+        barrier.beginCapture(owner: activeRecordingID)
+        let primaryAcquired = await barrier.acquireDelivery(
+            owner: primaryDeliveryID,
+            policy: .primaryPasteDuringCapture
+        ) { true }
+        #expect(primaryAcquired)
+        #expect(barrier.activeCaptureOwners == [activeRecordingID])
+        #expect(barrier.activeDeliveryOwners == [primaryDeliveryID])
+
+        let exactWaiter = Task { @MainActor in
+            let acquired = await barrier.acquireDelivery(
+                owner: exactDeliveryID,
+                policy: .exclusive
+            ) { true }
+            state.events.append("exact:\(acquired)")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(state.events.isEmpty)
+
+        barrier.releaseDelivery(owner: primaryDeliveryID)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(state.events.isEmpty)
+
+        barrier.endCapture(owner: activeRecordingID)
+        await exactWaiter.value
+        #expect(state.events == ["exact:true"])
+        barrier.releaseDelivery(owner: exactDeliveryID)
+    }
+
+    @MainActor
     @Test func deliveryLeaseMakesANewerCaptureHandshakeWaitWithoutLosingItsReservation() async {
         let barrier = ActiveRecordingDeliveryBarrier()
         let deliveryID = UUID()
@@ -1248,7 +1312,7 @@ struct VoiceInkTests {
             range: clipboardOnly.upperBound..<source.endIndex
         ))
         let lease = try #require(source.range(
-            of: "guard await acquireDeliveryLease()",
+            of: "guard await acquireDeliveryLease(deliveryLeasePolicy)",
             range: pasteTarget.upperBound..<source.endIndex
         ))
         let delivery = try #require(source.range(
@@ -1263,6 +1327,9 @@ struct VoiceInkTests {
         #expect(guardedBody.contains("defer { releaseDeliveryLease() }"))
         #expect(guardedBody.contains("if shouldCancel()"))
         #expect(guardedBody.contains("guard isDeliveryAuthorized()"))
+        #expect(guardedBody.contains(".primaryPasteDuringCapture"))
+        #expect(guardedBody.contains("pasteTargetForDelivery.destination == .primaryCurrentInput"))
+        #expect(guardedBody.contains("outputForPasteTarget.outputMode == .paste"))
     }
 
     @Test func transcriptionJobRegistryBindsUniqueSessionTranscriptionAndAudio() throws {
@@ -1644,7 +1711,7 @@ struct VoiceInkTests {
             "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
         )
         let lease = try #require(pipelineSource.range(
-            of: "guard await acquireDeliveryLease()"
+            of: "guard await acquireDeliveryLease(deliveryLeasePolicy)"
         ))
         let threadedResolver = try #require(pipelineSource.range(
             of: "resolveQueuedPrimaryAutoSend: { key in",
@@ -1713,7 +1780,10 @@ struct VoiceInkTests {
             "return .canceledCurrent(originalKey)"
         ))
         #expect(engineSource.contains(
-            ".hasCaptureWaitingBehindDelivery"
+            "newerRecordingStartPending: activeRecordingDeliveryBarrier"
+        ))
+        #expect(engineSource.contains(
+            ".isDeliveryBlocked"
         ))
 
         let warningStart = try #require(engineSource.range(
@@ -2909,6 +2979,34 @@ struct VoiceInkTests {
             build: "5828",
             chromium: "150.0.7871.128"
         ))
+        #expect(FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.727.51351",
+            build: "6119",
+            chromium: "150.0.7871.182"
+        ))
+        #expect(FocusLockService.isAuditedOpenAIRetainedPreparationBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.727.51351",
+            build: "6119",
+            chromium: "150.0.7871.182"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAIRetainedPreparationBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.727.51351",
+            build: "6120",
+            chromium: "150.0.7871.182"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAIRetainedPreparationBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.727.51351",
+            build: "6119",
+            chromium: "150.0.7871.183"
+        ))
         #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
             applicationBundleName: "ChatGPT.app",
             bundleIdentifier: "com.openai.codex",
@@ -2981,12 +3079,64 @@ struct VoiceInkTests {
         ))
         #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
             applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.727.51351",
+            build: "6120",
+            chromium: "150.0.7871.182"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.codex",
+            shortVersion: "26.727.51351",
+            build: "6119",
+            chromium: "150.0.7871.183"
+        ))
+        #expect(!FocusLockService.isAuditedOpenAISubmitBuild(
+            applicationBundleName: "ChatGPT.app",
             bundleIdentifier: "com.openai.chat",
             shortVersion: "26.715.31925",
             build: "5551",
             chromium: "150.0.7871.124"
         ))
 
+    }
+
+    @Test func chatGPTRetainedSessionNeverWritesAXFocusPointers() throws {
+        let source = try repositorySource(
+            "VoiceInk/Modes/FocusLockService.swift"
+        )
+        let prepareStart = try #require(source.range(
+            of: "    private func prepareRetainedOpenAIBackgroundDelivery("
+        ))
+        let prepareEnd = try #require(source.range(
+            of: "    /// Telegram retains a valid editor wrapper",
+            range: prepareStart.upperBound..<source.endIndex
+        ))
+        let prepareBody = source[
+            prepareStart.lowerBound..<prepareEnd.lowerBound
+        ]
+
+        #expect(prepareBody.contains(
+            "matchesAuditedOpenAIRetainedPreparationBuild"
+        ))
+        #expect(prepareBody.contains("CursorPaster.beginTargetedInputSession"))
+        #expect(prepareBody.contains("resolvedExactElement"))
+        #expect(prepareBody.contains("internalWindow"))
+        #expect(prepareBody.contains("internalElement"))
+        #expect(!prepareBody.contains("AXUIElementSetAttributeValue"))
+
+        let finishStart = try #require(source.range(
+            of: "    private func finishRetainedNonMutatingBackgroundDelivery("
+        ))
+        let finishEnd = try #require(source.range(
+            of: "    func finishBackgroundDelivery(",
+            range: finishStart.upperBound..<source.endIndex
+        ))
+        let finishBody = source[
+            finishStart.lowerBound..<finishEnd.lowerBound
+        ]
+        #expect(finishBody.contains("CursorPaster.endTargetedInputSession"))
+        #expect(!finishBody.contains("AXUIElementSetAttributeValue"))
     }
 
     @Test func targetedOpenAISendClickIsFailClosedAndOneShot() throws {

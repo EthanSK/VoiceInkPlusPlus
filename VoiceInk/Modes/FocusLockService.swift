@@ -189,6 +189,11 @@ final class FocusLockService: ObservableObject {
         fileprivate enum Mode: Equatable {
             case preparedTargetedInput
             case directExactElement
+            /// ChatGPT build 6119 can temporarily make the retained Codex composer
+            /// unreadable after it moves to the background. This mode opens exactly
+            /// one targeted-input activation session, then requires the original
+            /// task/window/editor identity to resolve again without any AX focus write.
+            case openAIRetainedExactInput
             /// Telegram hides its window subtree while backgrounded. This mode owns
             /// one bounded targeted-input activation session solely to reveal the
             /// retained editor; it never rewrites AX focus/main pointers or booleans.
@@ -249,7 +254,7 @@ final class FocusLockService: ObservableObject {
             frontmostPIDAtPreparation
         }
         var usesPreparedTargetedInput: Bool {
-            mode == .preparedTargetedInput
+            mode == .preparedTargetedInput || mode == .openAIRetainedExactInput
         }
         var prefersAccessibilityTextInsertion: Bool {
             mode == .directExactElement || mode == .telegramRetainedExactInput
@@ -270,6 +275,7 @@ final class FocusLockService: ObservableObject {
             switch mode {
             case .preparedTargetedInput: "preparedTargetedInput"
             case .directExactElement: "directExactElement"
+            case .openAIRetainedExactInput: "openAIRetainedExactInput"
             case .telegramRetainedExactInput: "telegramRetainedExactInput"
             }
         }
@@ -526,8 +532,24 @@ final class FocusLockService: ObservableObject {
             shortVersion: "26.721.31836",
             build: "5828",
             chromium: "150.0.7871.128"
+        ),
+        // ChatGPT 26.727.51351 build 6119 still uses the same FooterActions
+        // send/stop component, but its background AX transport can make the saved
+        // editor wrapper unreadable until one bounded targeted-input session exists.
+        // Submit remains gated by the complete enabled/pressable/same-window/
+        // composer-adjacent Send-versus-Stop proof at the irreversible boundary.
+        (
+            shortVersion: "26.727.51351",
+            build: "6119",
+            chromium: "150.0.7871.182"
         )
     ]
+    private static let auditedChatGPTRetainedPreparationBuild = (
+        applicationBundleName: "ChatGPT.app",
+        shortVersion: "26.727.51351",
+        build: "6119",
+        chromium: "150.0.7871.182"
+    )
 
     private init() {}
 
@@ -568,27 +590,161 @@ final class FocusLockService: ObservableObject {
         let staged = stagedRecordingStartInput
         stagedRecordingStartInput = nil
 
-        guard let completedChordTarget,
-              !completedChordTarget.hasExactInput,
-              let fallbackContainer = completedChordTarget
+        if let completedChordTarget,
+           !completedChordTarget.hasExactInput,
+           let fallbackContainer = completedChordTarget
                 .applicationFallbackContainer,
-              let staged,
-              ProcessInfo.processInfo.systemUptime - staged.capturedAt
+           let staged,
+           ProcessInfo.processInfo.systemUptime - staged.capturedAt
                 <= Self.stagedRecordingStartInputLifetime,
-              staged.target.pid == completedChordTarget.pid,
-              staged.target.bundleIdentifier
+           staged.target.pid == completedChordTarget.pid,
+           staged.target.bundleIdentifier
                 == completedChordTarget.bundleIdentifier,
-              let stagedElement = staged.target.element,
-              isDescendant(stagedElement, of: fallbackContainer),
-              resolvedExactElement(
+           let stagedElement = staged.target.element,
+           isDescendant(stagedElement, of: fallbackContainer),
+           resolvedExactElement(
                 for: staged.target,
                 diagnosticContext: "preShortcutRecordingStart"
-              ).map({ CFEqual($0, stagedElement) }) == true else {
-            return completedChordTarget
+           ).map({ CFEqual($0, stagedElement) }) == true {
+            logger.info("Recovered exact recording-start input from pre-chord snapshot pid=\(staged.target.pid, privacy: .public) bundle=\(staged.target.bundleIdentifier ?? "nil", privacy: .public)")
+            return staged.target
         }
 
-        logger.info("Recovered exact recording-start input from pre-chord snapshot pid=\(staged.target.pid, privacy: .public) bundle=\(staged.target.bundleIdentifier ?? "nil", privacy: .public)")
-        return staged.target
+        // ChatGPT can have its main task open and active without a caret. For the
+        // exact audited build only, make one in-place focus attempt on one uniquely
+        // proven lower-window composer. Revalidate the untouched fallback control at
+        // the setter boundary; never activate ChatGPT or compensate after a user click.
+        if let completedChordTarget,
+           let promoted = focusAuditedOpenAIComposerAtRecordingStart(
+                from: completedChordTarget
+           ) {
+            return promoted
+        }
+
+        return completedChordTarget
+    }
+
+    private func focusAuditedOpenAIComposerAtRecordingStart(
+        from fallback: Target
+    ) -> Target? {
+        guard !fallback.hasExactInput,
+              let fallbackContainer = fallback.applicationFallbackContainer,
+              Self.matchesAuditedOpenAIRetainedPreparationBuild(fallback.app),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == fallback.pid,
+              let initialFocus = systemFocusedElement(),
+              initialFocus.pid == fallback.pid,
+              CFEqual(initialFocus.element, fallbackContainer) else {
+            return nil
+        }
+
+        let appElement = AXUIElementCreateApplication(fallback.pid)
+        guard let focusedWindow = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        ), let windowFrame = frame(of: focusedWindow) else {
+            return nil
+        }
+        let candidates = descendants(of: fallbackContainer).filter { element in
+            guard stringAttribute(kAXRoleAttribute, from: element)
+                    == kAXTextAreaRole,
+                  let editorFrame = relativeFrame(
+                    of: element,
+                    in: focusedWindow
+                  ),
+                  editorFrame.width >= min(240, windowFrame.width * 0.35),
+                  editorFrame.midY >= windowFrame.height * 0.45,
+                  exactElement(
+                    element,
+                    belongsTo: focusedWindow,
+                    bundleIdentifier: fallback.bundleIdentifier
+                  ),
+                  let identity = exactInputIdentity(
+                    for: element,
+                    in: focusedWindow
+                  ),
+                  !identity.contextAnchors.isEmpty else {
+                return false
+            }
+            return true
+        }
+        guard candidates.count == 1,
+              let composer = candidates.first,
+              let identity = exactInputIdentity(
+                for: composer,
+                in: focusedWindow
+              ) else {
+            logger.notice("OpenAI recording-start composer focus skipped because the active fallback did not contain one proven main composer pid=\(fallback.pid, privacy: .public) candidates=\(candidates.count, privacy: .public)")
+            return nil
+        }
+
+        // This is the irreversible focus boundary. If Ethan moved the caret, changed
+        // windows, or ChatGPT updated between discovery and now, do nothing.
+        guard Self.matchesAuditedOpenAIRetainedPreparationBuild(fallback.app),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == fallback.pid,
+              let currentFocus = systemFocusedElement(),
+              currentFocus.pid == fallback.pid,
+              CFEqual(currentFocus.element, fallbackContainer),
+              elementAttribute(
+                kAXFocusedWindowAttribute,
+                from: appElement
+              ).map({ CFEqual($0, focusedWindow) }) == true,
+              exactStructureMatches(
+                composer,
+                identity: identity,
+                in: focusedWindow
+              ) else {
+            return nil
+        }
+
+        let focusResult = AXUIElementSetAttributeValue(
+            composer,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+        let verifiedFocus = systemFocusedElement()
+        guard focusResult == .success,
+              verifiedFocus?.pid == fallback.pid,
+              verifiedFocus.map({ CFEqual($0.element, composer) }) == true,
+              resolvedExactElement(
+                for: Target(
+                    element: composer,
+                    window: focusedWindow,
+                    identity: identity,
+                    applicationFallbackContainer: nil,
+                    telegramVisualIdentityCapture: nil,
+                    app: fallback.app,
+                    pid: fallback.pid,
+                    terminalAutomationTarget: nil,
+                    captureID: fallback.captureID,
+                    bundleIdentifier: fallback.bundleIdentifier,
+                    displayInfo: fallback.displayInfo
+                ),
+                diagnosticContext: "recordingStartComposerFocus"
+              ).map({ CFEqual($0, composer) }) == true else {
+            logger.notice("OpenAI recording-start composer focus attempt did not produce one verified exact caret pid=\(fallback.pid, privacy: .public) AXResult=\(focusResult.rawValue, privacy: .public)")
+            return nil
+        }
+
+        logger.notice("Focused one audited OpenAI main composer in place at recording start pid=\(fallback.pid, privacy: .public) AXResult=\(focusResult.rawValue, privacy: .public)")
+        return Target(
+            element: composer,
+            window: focusedWindow,
+            identity: identity,
+            applicationFallbackContainer: nil,
+            telegramVisualIdentityCapture: nil,
+            app: fallback.app,
+            pid: fallback.pid,
+            terminalAutomationTarget: nil,
+            captureID: fallback.captureID,
+            bundleIdentifier: fallback.bundleIdentifier,
+            displayInfo: Target.DisplayInfo(
+                applicationName: fallback.displayInfo.applicationName,
+                inputName: inputDisplayName(for: composer),
+                applicationIcon: fallback.displayInfo.applicationIcon
+            )
+        )
     }
 
     func captureFocusedInput(allowApplicationFallback: Bool = false) -> Target? {
@@ -1129,6 +1285,13 @@ final class FocusLockService: ObservableObject {
             ) {
                 return telegramSession
             }
+            if let openAISession = await prepareRetainedOpenAIBackgroundDelivery(
+                to: target,
+                keyboardFocus: keyboardFocus,
+                frontmostPID: frontmostPID
+            ) {
+                return openAISession
+            }
             logger.error("Background exact-input preparation could not resolve the saved element/window pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public)")
             return nil
         }
@@ -1149,7 +1312,8 @@ final class FocusLockService: ObservableObject {
         let previouslyFocusedElement: AXUIElement?
         let previouslyFocusedElementWasAbsent: Bool
         switch mode {
-        case .directExactElement, .telegramRetainedExactInput:
+        case .directExactElement, .openAIRetainedExactInput,
+             .telegramRetainedExactInput:
             previouslyFocusedWindow = nil
             previouslyFocusedElement = nil
             previouslyFocusedElementWasAbsent = false
@@ -1234,7 +1398,8 @@ final class FocusLockService: ObservableObject {
         )
 
         switch mode {
-        case .directExactElement, .telegramRetainedExactInput:
+        case .directExactElement, .openAIRetainedExactInput,
+             .telegramRetainedExactInput:
             guard backgroundSessionRemainsPrepared(session) else { return nil }
         case .preparedTargetedInput:
             guard await Self.runBackgroundPreparationWithOwnedFailureCleanup(
@@ -1244,6 +1409,80 @@ final class FocusLockService: ObservableObject {
         }
 
         logger.info("Non-activating exact input prepared pid=\(target.pid, privacy: .public) bundle=\(target.bundleIdentifier ?? "nil", privacy: .public) mode=\(String(describing: mode), privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) preparationFrontmostPid=\(session.frontmostPIDAtPreparation, privacy: .public) currentFrontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+        return session
+    }
+
+    /// ChatGPT build 6119 keeps the exact captured Codex composer internally selected,
+    /// but its AX wrapper can become unreadable after the app moves to the background.
+    /// Open one targeted-input activation session first, then require the complete
+    /// capture-time task/window/editor identity to resolve again and match ChatGPT's own
+    /// internal focus. This route never activates the app or writes an AX focus pointer.
+    private func prepareRetainedOpenAIBackgroundDelivery(
+        to target: Target,
+        keyboardFocus: (element: AXUIElement, pid: pid_t),
+        frontmostPID: pid_t
+    ) async -> BackgroundDeliverySession? {
+        guard Self.matchesAuditedOpenAIRetainedPreparationBuild(target.app),
+              let element = target.element,
+              let window = target.window,
+              let identity = target.identity,
+              !identity.contextAnchors.isEmpty,
+              keyboardFocus.pid != target.pid,
+              frontmostPID != target.pid else {
+            return nil
+        }
+
+        let session = BackgroundDeliverySession(
+            target: target,
+            element: element,
+            window: window,
+            app: target.app,
+            mode: .openAIRetainedExactInput,
+            frontmostPIDAtPreparation: frontmostPID,
+            previouslyFocusedWindow: nil,
+            previouslyFocusedElement: nil,
+            previouslyFocusedElementWasAbsent: false,
+            focusBooleanSnapshot: BackgroundFocusBooleanSnapshot { _ in nil },
+            processIdentifier: target.pid,
+            bundleIdentifier: target.bundleIdentifier
+        )
+        let targetPID = target.pid
+        guard session.lifecycle.begin(open: {
+            CursorPaster.beginTargetedInputSession(pid: targetPID)
+        }) else {
+            logger.error("OpenAI retained-input preparation could not open its bounded activation-state session pid=\(target.pid, privacy: .public)")
+            return nil
+        }
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let appElement = AXUIElementCreateApplication(target.pid)
+        let resolvedElement = resolvedExactElement(
+            for: target,
+            diagnosticContext: "openAIRetainedPreparation"
+        )
+        let resolvedWindow = resolvedElement.flatMap {
+            liveWindow(for: target, resolvedElement: $0)
+        }
+        let internalWindow = elementAttribute(
+            kAXFocusedWindowAttribute,
+            from: appElement
+        )
+        let internalElement = elementAttribute(
+            kAXFocusedUIElementAttribute,
+            from: appElement
+        )
+        guard resolvedElement.map({ CFEqual($0, element) }) == true,
+              resolvedWindow.map({ CFEqual($0, window) }) == true,
+              internalWindow.map({ CFEqual($0, window) }) == true,
+              internalElement.map({ CFEqual($0, element) }) == true,
+              exactStructureMatches(element, identity: identity, in: window),
+              backgroundSessionRemainsPrepared(session) else {
+            logger.notice("OpenAI retained-input preparation rejected unresolved, changed, or internally unfocused composer pid=\(target.pid, privacy: .public) resolvedElement=\(resolvedElement != nil, privacy: .public) resolvedWindow=\(resolvedWindow != nil, privacy: .public) internalWindowMatch=\(internalWindow.map { CFEqual($0, window) } == true, privacy: .public) internalElementMatch=\(internalElement.map { CFEqual($0, element) } == true, privacy: .public) capturedAnchors=\(identity.contextAnchors.count, privacy: .public)")
+            finishRetainedOpenAIBackgroundDelivery(session)
+            return nil
+        }
+
+        logger.notice("OpenAI retained exact input prepared after strict identity re-resolution pid=\(target.pid, privacy: .public) windowHash=\(CFHash(window), privacy: .public) elementHash=\(CFHash(element), privacy: .public) capturedAnchors=\(identity.contextAnchors.count, privacy: .public) frontmostPid=\(frontmostPID, privacy: .public)")
         return session
     }
 
@@ -1371,10 +1610,31 @@ final class FocusLockService: ObservableObject {
     private func finishRetainedTelegramBackgroundDelivery(
         _ session: BackgroundDeliverySession
     ) {
-        guard session.mode == .telegramRetainedExactInput,
-              session.lifecycle.requiresTeardown else {
-            return
-        }
+        guard session.mode == .telegramRetainedExactInput else { return }
+        finishRetainedNonMutatingBackgroundDelivery(
+            session,
+            diagnosticLabel: "Telegram"
+        )
+    }
+
+    private func finishRetainedOpenAIBackgroundDelivery(
+        _ session: BackgroundDeliverySession
+    ) {
+        guard session.mode == .openAIRetainedExactInput else { return }
+        finishRetainedNonMutatingBackgroundDelivery(
+            session,
+            diagnosticLabel: "OpenAI"
+        )
+    }
+
+    /// Retained Telegram/OpenAI sessions never changed AX focus pointers or boolean
+    /// state. Pair their one synthetic activation end only while the target still does
+    /// not own real system focus; otherwise waive the event instead of fighting Ethan.
+    private func finishRetainedNonMutatingBackgroundDelivery(
+        _ session: BackgroundDeliverySession,
+        diagnosticLabel: String
+    ) {
+        guard session.lifecycle.requiresTeardown else { return }
         let boundary = preparedTargetFocusBoundaryStatus(session)
         switch boundary {
         case .safe:
@@ -1382,7 +1642,7 @@ final class FocusLockService: ObservableObject {
             _ = session.lifecycle.finish {
                 CursorPaster.endTargetedInputSession(pid: targetPID)
             }
-            logger.info("Telegram retained activation-state session ended without AX focus restoration targetPid=\(targetPID, privacy: .public)")
+            logger.info("\(diagnosticLabel, privacy: .public) retained activation-state session ended without AX focus restoration targetPid=\(targetPID, privacy: .public)")
         case .frontmostUnavailable where session.teardownRetryCount == 0,
              .systemFocusUnavailable where session.teardownRetryCount == 0:
             guard session.lifecycle.markTeardownRetryScheduled() else {
@@ -1391,15 +1651,18 @@ final class FocusLockService: ObservableObject {
             }
             session.teardownRetryCount += 1
             Thread.sleep(forTimeInterval: 0.05)
-            finishRetainedTelegramBackgroundDelivery(session)
+            finishRetainedNonMutatingBackgroundDelivery(
+                session,
+                diagnosticLabel: diagnosticLabel
+            )
         case .targetOwnsSystemFocus, .targetTerminated,
              .frontmostUnavailable, .systemFocusUnavailable:
-            // Ending a synthetic session after Telegram genuinely takes system focus
+            // Ending a synthetic session after the target genuinely takes system focus
             // can deactivate or fight the user's real workspace. This mode made no AX
             // mutations to restore, so terminate ownership explicitly without another
             // event when the no-focus-theft boundary is no longer provable.
             _ = session.lifecycle.waiveTeardown()
-            logger.notice("Telegram retained activation-state teardown waived without AX mutation targetPid=\(session.processIdentifier, privacy: .public) boundary=\(String(describing: boundary), privacy: .public)")
+            logger.notice("\(diagnosticLabel, privacy: .public) retained activation-state teardown waived without AX mutation targetPid=\(session.processIdentifier, privacy: .public) boundary=\(String(describing: boundary), privacy: .public)")
         }
     }
 
@@ -1407,6 +1670,10 @@ final class FocusLockService: ObservableObject {
         guard session.lifecycle.requiresTeardown else { return }
         if session.mode == .telegramRetainedExactInput {
             finishRetainedTelegramBackgroundDelivery(session)
+            return
+        }
+        if session.mode == .openAIRetainedExactInput {
+            finishRetainedOpenAIBackgroundDelivery(session)
             return
         }
         guard session.mode == .preparedTargetedInput else {
@@ -2071,7 +2338,8 @@ final class FocusLockService: ObservableObject {
         switch session.mode {
         case .directExactElement:
             return true
-        case .preparedTargetedInput, .telegramRetainedExactInput:
+        case .preparedTargetedInput, .openAIRetainedExactInput,
+             .telegramRetainedExactInput:
             let appElement = AXUIElementCreateApplication(
                 session.processIdentifier
             )
@@ -2101,8 +2369,12 @@ final class FocusLockService: ObservableObject {
             window: session.window,
             app: session.app,
             pid: session.processIdentifier,
-            preserveSystemFocusAcrossAction: session.mode != .preparedTargetedInput,
-            allowsTargetedBackgroundClick: session.mode == .preparedTargetedInput,
+            preserveSystemFocusAcrossAction:
+                session.mode != .preparedTargetedInput
+                    && session.mode != .openAIRetainedExactInput,
+            allowsTargetedBackgroundClick:
+                session.mode == .preparedTargetedInput
+                    || session.mode == .openAIRetainedExactInput,
             waitForUnavailableCandidate: true,
             traversalPreflight: { [weak self] in
                 self?.backgroundDeliveryFastBoundaryMatches(session) == true
@@ -3037,7 +3309,8 @@ final class FocusLockService: ObservableObject {
             return false
         }
         switch session.mode {
-        case .preparedTargetedInput, .telegramRetainedExactInput:
+        case .preparedTargetedInput, .openAIRetainedExactInput,
+             .telegramRetainedExactInput:
             return NSWorkspace.shared.frontmostApplication?.processIdentifier
                     != session.processIdentifier
                 && systemFocus.pid != session.processIdentifier
@@ -3153,6 +3426,22 @@ final class FocusLockService: ObservableObject {
         }
     }
 
+    static func isAuditedOpenAIRetainedPreparationBuild(
+        applicationBundleName: String?,
+        bundleIdentifier: String?,
+        shortVersion: String?,
+        build: String?,
+        chromium: String?
+    ) -> Bool {
+        bundleIdentifier == "com.openai.codex"
+            && applicationBundleName
+                == auditedChatGPTRetainedPreparationBuild.applicationBundleName
+            && shortVersion
+                == auditedChatGPTRetainedPreparationBuild.shortVersion
+            && build == auditedChatGPTRetainedPreparationBuild.build
+            && chromium == auditedChatGPTRetainedPreparationBuild.chromium
+    }
+
     static func semanticSendGeometryMatches(
         editorFrame: CGRect,
         candidateFrame: CGRect
@@ -3251,6 +3540,28 @@ final class FocusLockService: ObservableObject {
             return false
         }
         return isAuditedOpenAISubmitBuild(
+            applicationBundleName: bundleURL.lastPathComponent,
+            bundleIdentifier: bundle.bundleIdentifier,
+            shortVersion: bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String,
+            build: bundle.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String,
+            chromium: bundle.object(
+                forInfoDictionaryKey: "ChromiumBaseVersion"
+            ) as? String
+        )
+    }
+
+    private static func matchesAuditedOpenAIRetainedPreparationBuild(
+        _ app: NSRunningApplication
+    ) -> Bool {
+        guard let bundleURL = app.bundleURL,
+              let bundle = Bundle(url: bundleURL) else {
+            return false
+        }
+        return isAuditedOpenAIRetainedPreparationBuild(
             applicationBundleName: bundleURL.lastPathComponent,
             bundleIdentifier: bundle.bundleIdentifier,
             shortVersion: bundle.object(

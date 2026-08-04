@@ -313,15 +313,27 @@ struct RecordingStartReservation {
     }
 }
 
-/// Prevents an older completed transcription from mutating the foreground input while
-/// a newer recording owns (or is about to own) the microphone.
+enum TranscriptionDeliveryLeasePolicy: Equatable {
+    /// Commands, responses, exact Next destinations, raw/skip delivery, and every
+    /// other non-cohort side effect remain mutually exclusive with active capture.
+    case exclusive
+
+    /// A consecutive normal Primary result may paste while the next recording owns
+    /// the microphone. Its Return is decided later and suppressed by the queue-tail
+    /// policy, so A can appear during B without prematurely submitting the cohort.
+    case primaryPasteDuringCapture
+}
+
+/// Coordinates an older completed transcription with a newer microphone capture.
 ///
-/// Provider finalization is still allowed to finish in the background. Only the final
-/// user-visible delivery side effect waits. Owners begin at the synchronous start
-/// reservation, transfer atomically to the created `RecordingSession`, and end only
-/// after that capture has stopped/canceled and its immutable job has been enqueued.
-/// This closes the few-millisecond start-handshake gap without canceling either result
-/// or weakening FIFO delivery.
+/// Provider finalization is always allowed to finish in the background. Most final
+/// side effects still wait for capture to end. The deliberate exception is a normal
+/// Primary FIFO-cohort paste: it may cross the capture boundary, while the later
+/// last-safe auto-send resolver suppresses Return because a capture owner exists.
+/// Owners begin at the synchronous start reservation, transfer atomically to the
+/// created `RecordingSession`, and end only after capture stops/cancels and its
+/// immutable job is enqueued. This closes the start-handshake gap without dropping
+/// either transcript or letting an earlier partial cohort submit.
 @MainActor
 final class ActiveRecordingDeliveryBarrier {
     private(set) var activeCaptureOwners = Set<UUID>()
@@ -395,19 +407,27 @@ final class ActiveRecordingDeliveryBarrier {
         return shouldContinueWaiting() && !isCaptureStartBlocked
     }
 
-    /// Atomically waits for every capture owner, then acquires the delivery side of
-    /// the lease before returning. A new Primary start can reserve immediately after
-    /// this, but its microphone handshake must wait for `releaseDelivery`.
+    /// Atomically applies the requested delivery policy and acquires the delivery side
+    /// of the lease. Exclusive work waits for every capture owner. A normal Primary
+    /// cohort paste may acquire while capture is live; a still-later start reservation
+    /// nevertheless waits behind this short paste lease, and the current capture owner
+    /// remains visible to the last-safe Return suppression decision.
     func acquireDelivery(
         owner: UUID,
+        policy: TranscriptionDeliveryLeasePolicy = .exclusive,
         while shouldContinueWaiting: () -> Bool
     ) async -> Bool {
-        while isDeliveryBlocked && shouldContinueWaiting() {
+        while policy == .exclusive
+                && isDeliveryBlocked
+                && shouldContinueWaiting() {
             await withCheckedContinuation { continuation in
                 stateChangeWaiters.append(continuation)
             }
         }
-        guard shouldContinueWaiting(), !isDeliveryBlocked else { return false }
+        guard shouldContinueWaiting(),
+              policy == .primaryPasteDuringCapture || !isDeliveryBlocked else {
+            return false
+        }
         activeDeliveryOwners.insert(owner)
         return true
     }

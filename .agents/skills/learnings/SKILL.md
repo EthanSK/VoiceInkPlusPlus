@@ -92,12 +92,14 @@ Keep these three routes distinct:
 Consecutive normal Primary delivery jobs form one FIFO paste cohort when a later recording starts
 before the earlier job has delivered. Drain every successful transcript in order, suppress Return on
 each earlier member, and let only the newest eligible queued Primary tail use its current Mode's
-auto-send. Next/retarget, clipboard-only, cancellation, raw/skip, command/response, assistant, and
-non-paste routes break the cohort. If a predecessor or expected tail fails, warn and fail closed;
-never issue a delayed compensating Return because Primary owns no exact destination to submit safely.
-The synchronous start reservation counts as continuation intent even when an older delivery lease
-was acquired first: if Ethan has pressed Start again before Return-down, suppress that older Return
-while the new microphone handshake waits.
+auto-send. An older normal Primary result may paste while the newer recording owns the microphone;
+the live capture owner remains visible at the last Return boundary and suppresses that older Return.
+Next/retarget, clipboard-only, cancellation, raw/skip, command/response, assistant, and non-paste
+routes remain exclusive with capture and break the cohort. If a predecessor or expected tail fails,
+warn and fail closed; never issue a delayed compensating Return because Primary owns no exact
+destination to submit safely. The synchronous start reservation counts as continuation intent even
+when an older delivery lease was acquired first: if Ethan has pressed Start again before Return-down,
+suppress that older Return while the new microphone handshake waits.
 
 Pause is capture state, not a fourth delivery route. The second Primary press cancels the pending
 single-press stop; pause/resume must not paste, change Mode, or change the tentative recording-start

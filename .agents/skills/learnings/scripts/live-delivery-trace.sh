@@ -270,6 +270,7 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: DELIVERY REFUSED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery DEFERRED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery RESUMED'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery lease resolved'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: about to DELIVER'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'pipeline: delivery RETURNED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'paste:'*|\
@@ -288,10 +289,16 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured recording-start'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Recording-start main-composer'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Promoted recording-start'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused one audited OpenAI main composer'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused input capture'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Focused input restore'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Restored and verified focused input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background exact'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact input direct wrapper rejected'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact input recovery unavailable'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact input recovery found no'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Exact input recovery remained ambiguous'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'OpenAI retained'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram retained'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Telegram visual identity'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Background internal focus'*|\

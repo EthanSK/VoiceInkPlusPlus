@@ -421,10 +421,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         if let active = activeRecordingSession {
-            // A completed older job may finish provider work while this capture is live,
-            // but it must not paste or press Return into the foreground input during the
-            // newer dictation. Release its delivery barrier only after this stop path has
-            // frozen/enqueued the active session's own immutable job (or safely canceled).
+            // A completed older normal Primary job may paste while this capture is live,
+            // but its Return is suppressed so the two recordings remain one FIFO cohort.
+            // Every other side effect remains blocked. Release capture ownership only
+            // after this stop path freezes/enqueues the active session's immutable job
+            // (or safely cancels), so a tail Return can never overtake this recording.
             defer {
                 activeRecordingDeliveryBarrier.endCapture(owner: active.id)
                 reportUnresolvedPrimaryAutoSendIfQueueDrained()
@@ -1069,7 +1070,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // already represented by a capture reservation that must wait behind it.
             // Treat that reservation as continuation intent before Return-down.
             newerRecordingStartPending: activeRecordingDeliveryBarrier
-                .hasCaptureWaitingBehindDelivery
+                .isDeliveryBlocked
         )
         if currentIsEligible {
             // The resolver is called only after this Primary Command-V succeeded.
@@ -1262,19 +1263,23 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // Per-session cancel: poisoned id OR this session's own cancel flag.
             shouldCancel: jobShouldCancel,
             isDeliveryAuthorized: jobIsCurrent,
-            acquireDeliveryLease: { [weak self] in
+            acquireDeliveryLease: { [weak self] policy in
                 guard let self else { return false }
                 let wasBlocked = self.activeRecordingDeliveryBarrier.isDeliveryBlocked
+                    && policy == .exclusive
                 if wasBlocked {
                     self.vippLog.info("pipeline: delivery DEFERRED while newer recording is active \(job.identity.logDescription, privacy: .public)")
                 }
                 let acquired = await self.activeRecordingDeliveryBarrier.acquireDelivery(
-                    owner: job.identity.transcriptionID
+                    owner: job.identity.transcriptionID,
+                    policy: policy
                 ) {
                     jobIsCurrent() && !jobShouldCancel()
                 }
-                if wasBlocked || !acquired {
-                    self.vippLog.info("pipeline: delivery RESUMED activeRecording=\(self.activeRecordingDeliveryBarrier.isDeliveryBlocked, privacy: .public) acquired=\(acquired, privacy: .public) authorized=\(jobIsCurrent(), privacy: .public) canceled=\(jobShouldCancel(), privacy: .public) \(job.identity.logDescription, privacy: .public)")
+                if wasBlocked || !acquired
+                    || (policy == .primaryPasteDuringCapture
+                        && self.activeRecordingDeliveryBarrier.isDeliveryBlocked) {
+                    self.vippLog.info("pipeline: delivery lease resolved policy=\(String(describing: policy), privacy: .public) activeRecording=\(self.activeRecordingDeliveryBarrier.isDeliveryBlocked, privacy: .public) acquired=\(acquired, privacy: .public) authorized=\(jobIsCurrent(), privacy: .public) canceled=\(jobShouldCancel(), privacy: .public) \(job.identity.logDescription, privacy: .public)")
                 }
                 return acquired
             },

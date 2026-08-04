@@ -105,12 +105,14 @@ class TranscriptionPipeline {
         // cancel, but it may never cross a reset/generation boundary and paste as stale
         // work after a newer recording lifecycle has begun.
         isDeliveryAuthorized: () -> Bool,
-        // A newer recording may begin after this job's provider result is ready. Its
-        // final paste/Return must wait until that capture stops, otherwise the older
-        // text appears inside the newer dictation's foreground composer. Finalization,
-        // formatting, history, cancellation, and clipboard-only completion stay free
-        // to finish; only normal user-visible delivery is gated.
-        acquireDeliveryLease: @escaping () async -> Bool = { true },
+        // A newer recording may begin after this job's provider result is ready. Most
+        // side effects wait until that capture stops. The only exception is an ordinary
+        // Primary FIFO-cohort paste: it may appear during the newer recording, while
+        // the last-safe queue decision suppresses its Return so only the final cohort
+        // member submits. Exact Next routes and every non-paste action stay exclusive.
+        acquireDeliveryLease: @escaping (
+            TranscriptionDeliveryLeasePolicy
+        ) async -> Bool = { _ in true },
         releaseDeliveryLease: @escaping () -> Void = {},
         // Rapid normal Primary recordings form one FIFO paste cohort. Thread the
         // resolver through to Primary's last pre-Return boundary; evaluating it here
@@ -531,32 +533,6 @@ class TranscriptionPipeline {
         // that arrived during transcription/enhancement supplies the latest target's
         // complete Mode (output action, command, and Return), not just its input. The
         // one-shot raw path keeps the already-forced neutral output below.
-        guard await acquireDeliveryLease() else {
-            if shouldCancel() {
-                vippLog.info("pipeline: delivery lease refused for cancellation → retain result without delivery")
-                await finishCanceledTranscription(recoveredText: finalText)
-            } else {
-                vippLog.notice("pipeline: DELIVERY REFUSED stale lineage after recording barrier finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
-                saveTranscriptionAndPostCompletion()
-            }
-            return
-        }
-        defer { releaseDeliveryLease() }
-
-        // The lease and the next recording's synchronous reservation are mutually
-        // exclusive. Recheck cancellation/reset once more before resolving the live
-        // Primary Mode or entering any paste/Return/command/response side effect.
-        if shouldCancel() {
-            vippLog.info("pipeline: delivery lease acquired but session was canceled → retain result without delivery")
-            await finishCanceledTranscription(recoveredText: finalText)
-            return
-        }
-        guard isDeliveryAuthorized() else {
-            vippLog.notice("pipeline: DELIVERY REFUSED stale lineage after lease acquisition finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
-            saveTranscriptionAndPostCompletion()
-            return
-        }
-
         let pipelineOutput = skipPostProcessingNow
             ? (outputForDelivery ?? outputConfiguration())
             : outputConfiguration()
@@ -582,8 +558,41 @@ class TranscriptionPipeline {
         }
 
         let outputForPasteTarget = routeResolvedOutput
+        let deliveryLeasePolicy: TranscriptionDeliveryLeasePolicy =
+            pasteTargetForDelivery.destination == .primaryCurrentInput
+                && outputForPasteTarget.outputMode == .paste
+                && !skipPostProcessingNow
+                && !assistant.isFollowUp
+                ? .primaryPasteDuringCapture
+                : .exclusive
 
-        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) queuedPrimaryDecision=deferredUntilReturnBoundary destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+        guard await acquireDeliveryLease(deliveryLeasePolicy) else {
+            if shouldCancel() {
+                vippLog.info("pipeline: delivery lease refused for cancellation → retain result without delivery")
+                await finishCanceledTranscription(recoveredText: finalText)
+            } else {
+                vippLog.notice("pipeline: DELIVERY REFUSED stale lineage after recording barrier finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+                saveTranscriptionAndPostCompletion()
+            }
+            return
+        }
+        defer { releaseDeliveryLease() }
+
+        // The lease rechecks cancellation/reset before any paste/Return/command or
+        // response. A Primary cohort paste may coexist with the current capture, but
+        // its Return resolver still sees that capture owner at the final boundary.
+        if shouldCancel() {
+            vippLog.info("pipeline: delivery lease acquired but session was canceled → retain result without delivery")
+            await finishCanceledTranscription(recoveredText: finalText)
+            return
+        }
+        guard isDeliveryAuthorized() else {
+            vippLog.notice("pipeline: DELIVERY REFUSED stale lineage after lease acquisition finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+            saveTranscriptionAndPostCompletion()
+            return
+        }
+
+        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) queuedPrimaryDecision=deferredUntilReturnBoundary leasePolicy=\(String(describing: deliveryLeasePolicy), privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
         await delivery.deliver(
             TranscriptionDelivery.Request(
                 transcription: transcription,
