@@ -351,10 +351,10 @@ it re-verifies that same app/window/input at the irreversible boundary, sends or
 and performs only the surface's bounded semantic or ordinary-HID auto-send. It never activates or
 internally refocuses a delivery target. If Ethan moves before Command–V, the key is cancelled and the
 same frozen target may continue through the non-activating exact-input route; otherwise delivery
-fails visibly. Separately, recording-start capture may make one bounded in-place attempt to focus a
-uniquely proven main composer while that app/window/task is already active. It rechecks the original
-control immediately before the one focus setter and never performs a compensating focus rewrite,
-because a rollback cannot distinguish VoiceInk++'s caret from a newer user click on that composer.
+fails visibly. Recording-start capture is deliberately different: before the physical stop route is
+known it may only passively identify a uniquely proven main composer for a possible later Next press.
+It must not set Accessibility focus, move the caret, or replace a genuinely focused secondary field;
+any exact preparation belongs only to the later physical Next route.
 
 If the app closed, the input disappeared, or focus cannot be verified, VoiceInk++ copies the
 transcription to the clipboard instead of risking a paste into the wrong place.

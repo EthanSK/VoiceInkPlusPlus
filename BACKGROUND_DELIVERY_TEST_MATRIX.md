@@ -4,6 +4,20 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
+**Current installed state verified 2026-08-04:** signed v2.0.282 is installed from the combined
+source through `d34737e`, including passive recording-start composer capture in `2cfa3a1`, recording
+input-device metadata in `34d8e32`/`2246ee7`, and the exact `self.recorder` structural-test
+correction in `09e5249`. The Mini's canonical Xcode action rebuilt the candidate but stalled in
+TestManager before naming tests; a fresh direct `xcrun xctest` fallback then named and passed all
+121 tests in 3 suites. The installed executable SHA-256 is
+`e5904ca57df3df7f5396a30e201929ccbddfcb9f8aa388f84ce8f98850253990`, its CDHash is
+`d03b0048722151e4e887883590e7a196229ffa62`, deep/strict signing and outer Automation/audio-input
+entitlements verify, exact delivery is enabled, v2.0.280 is preserved as rollback, and
+`/Applications/VoiceInk.app` remains untouched. The required physical acceptance is still pending:
+Primary from a focused ChatGPT annotation/secondary field must leave the caret and paste there, and
+a recording-time Next press must still use its passively saved exact destination without stealing
+system focus.
+
 **Current installed state verified 2026-08-04:** signed v2.0.280 at implementation commit `00fa934`
 plus structural-test correction `3952485` is installed but has not yet been physically accepted.
 The Mini's canonical Xcode action rebuilt the candidate but stalled in TestManager before naming
