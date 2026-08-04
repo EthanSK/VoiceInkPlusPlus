@@ -6,7 +6,7 @@ class WindowManager: NSObject {
     static let shared = WindowManager()
 
     private static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("com.prakashjoshipax.voiceink.mainWindow")
-    private static let mainWindowAutosaveName = NSWindow.FrameAutosaveName("VoiceInkMainWindowFrame")
+    private static let mainWindowFrameDefaultsKey = "VoiceInkMainWindowFrame"
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "WindowManager")
     private weak var mainWindow: NSWindow?
@@ -79,12 +79,12 @@ class WindowManager: NSObject {
     private func applyInitialPlacementIfNeeded(to window: NSWindow) {
         guard !didApplyInitialPlacement else { return }
 
-        // SwiftUI's WindowGroup assigns a generated, view-type-based frame key before this
-        // accessor runs. setFrameAutosaveName therefore cannot reliably replace it, and that
-        // generated key changes when the root view's generic type changes between releases.
-        // Restore and explicitly save one stable AppKit frame name instead so position and
-        // monitor survive VoiceInk++ upgrades.
-        if window.setFrameUsingName(Self.mainWindowAutosaveName) {
+        // SwiftUI's WindowGroup assigns a generated, view-type-based autosave key before this
+        // accessor runs, and that key changes when the root view's generic type changes between
+        // releases. Persist AppKit's own frame descriptor under one VoiceInk++ key instead so
+        // position, size, and monitor survive signed upgrades without competing autosave owners.
+        if let savedFrame = UserDefaults.standard.string(forKey: Self.mainWindowFrameDefaultsKey) {
+            window.setFrame(from: savedFrame)
             logger.notice("applyInitialPlacement: restored stable main-window frame")
         } else if let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first {
             window.setFrame(
@@ -122,9 +122,11 @@ class WindowManager: NSObject {
         guard didApplyInitialPlacement,
               window.identifier == Self.mainWindowIdentifier else { return }
 
-        // Explicit saving is intentional: WindowGroup keeps its own unstable autosave
-        // name, while this stable key belongs to VoiceInk++ across signed upgrades.
-        window.saveFrame(usingName: Self.mainWindowAutosaveName)
+        // Keep one explicit descriptor independent of WindowGroup's generated autosave name.
+        UserDefaults.standard.set(
+            window.frameDescriptor,
+            forKey: Self.mainWindowFrameDefaultsKey
+        )
     }
     
     private func resolveMainWindow() -> NSWindow? {

@@ -4091,14 +4091,17 @@ struct VoiceInkTests {
         let source = try repositorySource("VoiceInk/WindowManager.swift")
 
         #expect(source.contains(
-            "window.setFrameUsingName(Self.mainWindowAutosaveName)"
+            "UserDefaults.standard.string(forKey: Self.mainWindowFrameDefaultsKey)"
         ))
         #expect(source.contains(
-            "window.saveFrame(usingName: Self.mainWindowAutosaveName)"
+            "window.frameDescriptor"
         ))
+        #expect(source.contains("window.setFrame(from: savedFrame)"))
         #expect(source.contains("func windowDidMove"))
         #expect(source.contains("func windowDidResize"))
         #expect(source.contains("func windowDidChangeScreen"))
+        #expect(!source.contains("setFrameAutosaveName"))
+        #expect(!source.contains("saveFrame(usingName:"))
         #expect(!source.contains("window.center()"))
     }
 
