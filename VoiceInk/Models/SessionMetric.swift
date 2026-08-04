@@ -10,6 +10,8 @@ final class SessionMetric {
     var wordCount: Int = 0
     var audioDuration: TimeInterval = 0
     var transcriptionModelName: String?
+    var inputDeviceName: String?
+    var inputDeviceUID: String?
     var transcriptionDuration: TimeInterval?
     var speedFactor: Double?
     @Attribute(originalName: "powerModeName")
@@ -24,6 +26,8 @@ final class SessionMetric {
         wordCount: Int,
         audioDuration: TimeInterval,
         transcriptionModelName: String?,
+        inputDeviceName: String?,
+        inputDeviceUID: String?,
         transcriptionDuration: TimeInterval?,
         speedFactor: Double?,
         modeName: String?,
@@ -37,6 +41,8 @@ final class SessionMetric {
         self.wordCount = wordCount
         self.audioDuration = audioDuration
         self.transcriptionModelName = transcriptionModelName
+        self.inputDeviceName = inputDeviceName
+        self.inputDeviceUID = inputDeviceUID
         self.transcriptionDuration = transcriptionDuration
         self.speedFactor = speedFactor
         self.modeName = modeName

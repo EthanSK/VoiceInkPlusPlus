@@ -20,6 +20,10 @@ final class Transcription {
     var timestamp: Date = Date()
     var duration: TimeInterval = 0
     var audioFileURL: String?
+    /// Input device that actually started this recording. Optional preserves lightweight
+    /// migration of existing History rows, whose source microphone was never stored.
+    var inputDeviceName: String?
+    var inputDeviceUID: String?
     var transcriptionModelName: String?
     var aiEnhancementModelName: String?
     var promptName: String?
@@ -48,6 +52,7 @@ final class Transcription {
          duration: TimeInterval,
          enhancedText: String? = nil,
          audioFileURL: String? = nil,
+         recordingInputDevice: RecordingInputDeviceSnapshot? = nil,
          transcriptionModelName: String? = nil,
          aiEnhancementModelName: String? = nil,
          promptName: String? = nil,
@@ -66,6 +71,8 @@ final class Transcription {
         self.timestamp = Date()
         self.duration = duration
         self.audioFileURL = audioFileURL
+        self.inputDeviceName = recordingInputDevice?.name
+        self.inputDeviceUID = recordingInputDevice?.uid
         self.transcriptionModelName = transcriptionModelName
         self.aiEnhancementModelName = aiEnhancementModelName
         self.promptName = promptName

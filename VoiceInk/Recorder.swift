@@ -147,10 +147,13 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
-    func startRecording(toOutputFile url: URL) async throws {
+    func startRecording(toOutputFile url: URL) async throws -> RecordingInputDeviceSnapshot? {
         deviceManager.isRecordingActive = true
 
         let currentDeviceID = deviceManager.getCurrentDevice()
+        // Bind History metadata to the same numeric device ID passed to AUHAL. Never read the
+        // system default again after startup: it may change while this recording transcribes.
+        let inputDeviceSnapshot = deviceManager.recordingInputDeviceSnapshot(for: currentDeviceID)
         let lastDeviceID = UserDefaults.standard.string(forKey: "lastUsedMicrophoneDeviceID")
         if String(currentDeviceID) != lastDeviceID {
             if let deviceName = deviceManager.availableDevices.first(where: { $0.id == currentDeviceID })?.name {
@@ -193,6 +196,12 @@ class Recorder: NSObject, ObservableObject {
             // Posted in the success branch only, so a failed start (which falls into catch →
             // stopRecording) won't emit a started without a matching real recording.
             RecordingActivityNotifier.postRecordingStarted()
+            if let inputDeviceSnapshot {
+                logger.notice("Recording input captured name=\(inputDeviceSnapshot.name, privacy: .public) uid=\(inputDeviceSnapshot.uid, privacy: .public) file=\(url.lastPathComponent, privacy: .public)")
+            } else {
+                logger.warning("Recording started without resolvable input-device metadata deviceID=\(deviceID, privacy: .public) file=\(url.lastPathComponent, privacy: .public)")
+            }
+            return inputDeviceSnapshot
         } catch {
             logger.error("Failed to start recording deviceID=\(deviceID, privacy: .public) file=\(url.lastPathComponent, privacy: .public) error=\(error, privacy: .public)")
             await stopRecording()

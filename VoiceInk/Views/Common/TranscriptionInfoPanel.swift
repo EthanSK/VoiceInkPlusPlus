@@ -31,6 +31,22 @@ struct TranscriptionInfoPanel: View {
                 value: transcription.duration.formatTiming()
             )
 
+            if let deviceName = transcription.inputDeviceName, !deviceName.isEmpty {
+                metadataRow(
+                    icon: "mic.fill",
+                    label: "Microphone at Start",
+                    value: deviceName
+                )
+            }
+
+            if let deviceUID = transcription.inputDeviceUID, !deviceUID.isEmpty {
+                metadataRow(
+                    icon: "number",
+                    label: "Microphone UID",
+                    value: deviceUID
+                )
+            }
+
             if let modelName = transcription.transcriptionModelName {
                 metadataRow(
                     icon: "cpu.fill",

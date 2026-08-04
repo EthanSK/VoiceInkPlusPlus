@@ -45,6 +45,8 @@ enum SessionMetricRecorder {
             wordCount: wordCount,
             audioDuration: audioDuration,
             transcriptionModelName: transcription.transcriptionModelName ?? model?.displayName,
+            inputDeviceName: transcription.inputDeviceName,
+            inputDeviceUID: transcription.inputDeviceUID,
             transcriptionDuration: transcriptionDuration,
             speedFactor: speedFactor,
             modeName: transcription.modeName,

@@ -3,6 +3,35 @@ import CoreAudio
 import AVFoundation
 import os
 
+/// Immutable identity for the exact Core Audio input handed to AUHAL at recording start.
+///
+/// Core Audio's numeric device ID is process/boot-local, so History persists the device's
+/// stable UID and user-facing name instead. Both values are captured from the same resolved
+/// device ID that `Recorder` passes to `CoreAudioRecorder`; later system-default or Settings
+/// changes must never rewrite an in-flight recording's identity.
+struct RecordingInputDeviceSnapshot: Equatable, Sendable {
+    let name: String
+    let uid: String
+
+    init?(name: String?, uid: String?) {
+        let normalizedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedUID = uid?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedName.isEmpty, !normalizedUID.isEmpty else { return nil }
+        self.name = normalizedName
+        self.uid = normalizedUID
+    }
+
+    init?(
+        deviceID: AudioDeviceID,
+        availableDevices: [(id: AudioDeviceID, uid: String, name: String)]
+    ) {
+        guard let device = availableDevices.first(where: { $0.id == deviceID }) else {
+            return nil
+        }
+        self.init(name: device.name, uid: device.uid)
+    }
+}
+
 struct PrioritizedDevice: Codable, Identifiable {
     let id: String
     let name: String
@@ -309,6 +338,23 @@ class AudioDeviceManager: ObservableObject {
             }
             return findBestAvailableDevice() ?? 0
         }
+    }
+
+    /// Snapshot the exact device selected for a new capture. Read the live Core Audio object
+    /// first so a stale device-list generation or reused numeric ID cannot mislabel the recording,
+    /// then fall back to the matching enumerated record if one property is temporarily unavailable.
+    func recordingInputDeviceSnapshot(for deviceID: AudioDeviceID) -> RecordingInputDeviceSnapshot? {
+        if let snapshot = RecordingInputDeviceSnapshot(
+            name: getDeviceName(deviceID: deviceID),
+            uid: getDeviceUID(deviceID: deviceID)
+        ) {
+            return snapshot
+        }
+
+        return RecordingInputDeviceSnapshot(
+            deviceID: deviceID,
+            availableDevices: availableDevices
+        )
     }
     
     private func loadPrioritizedDevices() {

@@ -510,6 +510,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         for: audioURL,
                         text: "",
                         duration: 0,
+                        recordingInputDevice: active.recordingInputDevice,
                         realtimeDraftText: active.recoverablePartialTranscript,
                         preservesOriginalAudioForRecovery: completionDisposition == .clipboardOnly,
                         transcriptionStatus: completionDisposition == .clipboardOnly || hasRealtimeDraft
@@ -741,7 +742,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.liveRecordingState = .starting
             recomputeDerivedState()
 
-            try await self.recorder.startRecording(toOutputFile: permanentURL)
+            session.recordingInputDevice = try await self.recorder.startRecording(
+                toOutputFile: permanentURL
+            )
 
             // Re-press / cancel / panel-gone guard: if this is no longer the live start, abort.
             guard session.startID == startID,
@@ -1519,6 +1522,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             for: audioURL,
             text: draft.isEmpty ? Transcription.canceledTranscriptionText : draft,
             duration: duration,
+            recordingInputDevice: session.recordingInputDevice,
             realtimeDraftText: draft,
             preservesOriginalAudioForRecovery: true,
             transcriptionStatus: draft.isEmpty ? .canceled : .canceledWithResult
@@ -1538,6 +1542,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         for audioURL: URL,
         text: String,
         duration: TimeInterval,
+        recordingInputDevice: RecordingInputDeviceSnapshot? = nil,
         realtimeDraftText: String? = nil,
         preservesOriginalAudioForRecovery: Bool = false,
         transcriptionStatus: TranscriptionStatus
@@ -1548,6 +1553,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             text: text,
             duration: duration,
             audioFileURL: audioURL.absoluteString,
+            recordingInputDevice: recordingInputDevice,
             transcriptionModelName: ModeRuntimeResolver.transcriptionConfiguration(
                 transcriptionModelManager: transcriptionModelManager
             )?.model.displayName,

@@ -60,6 +60,8 @@ final class SessionMetricMigrationService {
                         wordCount: WordCounter.count(in: textForCounting),
                         audioDuration: audioDuration,
                         transcriptionModelName: transcription.transcriptionModelName,
+                        inputDeviceName: transcription.inputDeviceName,
+                        inputDeviceUID: transcription.inputDeviceUID,
                         transcriptionDuration: transcriptionDuration,
                         speedFactor: speedFactor,
                         modeName: transcription.modeName,

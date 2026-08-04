@@ -240,6 +240,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // The recorded audio file for this session. Set at record-start, consumed by the pipeline.
     var audioURL: URL?
 
+    // The exact Core Audio device successfully handed to AUHAL at capture start. This belongs
+    // to the recording lineage just like its WAV and frozen provider configuration; a later
+    // system-default/device selection change must not alter what History reports for this row.
+    var recordingInputDevice: RecordingInputDeviceSnapshot?
+
     // Final transcript text once the pipeline completes (kept for potential future use /
     // debugging; delivery already pastes it).
     var transcript: String?
