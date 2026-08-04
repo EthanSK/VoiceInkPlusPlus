@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-04T19:31:19Z
+**Trigger:** Ethan asked whether past VoiceInk++ recordings could be grouped by MacBook Pro versus Scarlett microphone and which input transcribed better.
+**Symptom:** The 5,721 History rows and 5,736 retained WAV files could not be assigned reliably to an input device, so historical microphone quality could not be compared honestly.
+**Root cause:** `Transcription` and `SessionMetric` stored no input-device identity, AUHAL device logs were transient and emitted only on prepare/re-prepare, and `CoreAudioRecorder` normalizes every source to 16 kHz mono PCM16 without source metadata. Current Settings/default-device values therefore cannot identify an older recording. Scarlett also exposed 20 native input channels while the built-in microphone exposed one; the existing all-channel average can attenuate a single routed Scarlett mic and mix other routed inputs, so that is a likely quality issue but still requires a controlled paired recording to confirm.
+**Fix:** Commit 34d8e32 captures the exact resolved Core Audio device's stable UID and display name from the same numeric device ID handed to AUHAL at successful recording start, freezes that snapshot on `RecordingSession`, persists it into optional `Transcription` and `SessionMetric` fields, and exposes it in History details and CSV. Pre-metadata rows remain unlabeled rather than inferred.
+**Commit:** 34d8e32bac577b65439a3bebac182b778930940e
+**Guard:** `RecordingInputDeviceMetadataTests` covers exact-device resolution, optional legacy migration, SwiftData History/metric propagation, and normal/canceled engine paths. Swift syntax parsing and `git diff --check` passed on the MacBook Pro; Xcode tests were not run because repository policy permits builds only on the currently unreachable Mac Mini. No app install, restart, or audio setting was changed.
+---
+
+---
 **Date:** 2026-08-04T01:56:44Z
 **Trigger:** Ethan reported that the right-hand locked-destination icon and full Next-button latch had been worse for a while and asked to restore the last working Codex behavior.
 **Symptom:** Current VoiceInk++ could show an app-only or warning destination for Codex at recording start, then fail the background `recordingStart` latch even though the exact composer had been focused before the Primary shortcut completed.
