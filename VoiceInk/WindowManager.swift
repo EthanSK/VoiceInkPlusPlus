@@ -37,9 +37,8 @@ class WindowManager: NSObject {
         window.isOpaque = false
         window.isMovableByWindowBackground = false
         window.minSize = NSSize(width: 0, height: 0)
-        window.setFrameAutosaveName(Self.mainWindowAutosaveName)
-        applyInitialPlacementIfNeeded(to: window)
         registerMainWindowIfNeeded(window)
+        applyInitialPlacementIfNeeded(to: window)
         window.orderFrontRegardless()
     }
     
@@ -79,11 +78,53 @@ class WindowManager: NSObject {
     
     private func applyInitialPlacementIfNeeded(to window: NSWindow) {
         guard !didApplyInitialPlacement else { return }
-        // Attempt to restore previous frame if one exists; otherwise fall back to a centered placement
-        if !window.setFrameUsingName(Self.mainWindowAutosaveName) {
-            window.center()
+
+        // SwiftUI's WindowGroup assigns a generated, view-type-based frame key before this
+        // accessor runs. setFrameAutosaveName therefore cannot reliably replace it, and that
+        // generated key changes when the root view's generic type changes between releases.
+        // Restore and explicitly save one stable AppKit frame name instead so position and
+        // monitor survive VoiceInk++ upgrades.
+        if window.setFrameUsingName(Self.mainWindowAutosaveName) {
+            logger.notice("applyInitialPlacement: restored stable main-window frame")
+        } else if let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first {
+            window.setFrame(
+                Self.topRightFrame(
+                    windowFrame: window.frame,
+                    visibleFrame: screen.visibleFrame
+                ),
+                display: false
+            )
+            logger.notice("applyInitialPlacement: no saved frame; placed main window at top right")
         }
+
         didApplyInitialPlacement = true
+        saveMainWindowFrame(window)
+    }
+
+    static func topRightFrame(
+        windowFrame: NSRect,
+        visibleFrame: NSRect,
+        margin: CGFloat = 24
+    ) -> NSRect {
+        var frame = windowFrame
+        frame.origin.x = max(
+            visibleFrame.minX,
+            visibleFrame.maxX - frame.width - margin
+        )
+        frame.origin.y = max(
+            visibleFrame.minY,
+            visibleFrame.maxY - frame.height - margin
+        )
+        return frame
+    }
+
+    private func saveMainWindowFrame(_ window: NSWindow) {
+        guard didApplyInitialPlacement,
+              window.identifier == Self.mainWindowIdentifier else { return }
+
+        // Explicit saving is intentional: WindowGroup keeps its own unstable autosave
+        // name, while this stable key belongs to VoiceInk++ across signed upgrades.
+        window.saveFrame(usingName: Self.mainWindowAutosaveName)
     }
     
     private func resolveMainWindow() -> NSWindow? {
@@ -110,6 +151,7 @@ extension WindowManager: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window.identifier == Self.mainWindowIdentifier {
+            saveMainWindowFrame(window)
             logger.notice("windowWillClose: main window closing, clearing weak reference")
             window.orderOut(nil)
             mainWindow = nil
@@ -121,5 +163,20 @@ extension WindowManager: NSWindowDelegate {
         guard let window = notification.object as? NSWindow,
               window.identifier == Self.mainWindowIdentifier else { return }
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        saveMainWindowFrame(window)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        saveMainWindowFrame(window)
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        saveMainWindowFrame(window)
     }
 } 

@@ -4078,6 +4078,30 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func mainWindowFirstRunPlacementUsesTopRightOfChosenScreen() {
+        let frame = WindowManager.topRightFrame(
+            windowFrame: NSRect(x: 0, y: 0, width: 400, height: 300),
+            visibleFrame: NSRect(x: 100, y: 200, width: 1_200, height: 800)
+        )
+
+        #expect(frame == NSRect(x: 876, y: 676, width: 400, height: 300))
+    }
+
+    @Test func mainWindowPlacementPersistsWithOneStableFrameName() throws {
+        let source = try repositorySource("VoiceInk/WindowManager.swift")
+
+        #expect(source.contains(
+            "window.setFrameUsingName(Self.mainWindowAutosaveName)"
+        ))
+        #expect(source.contains(
+            "window.saveFrame(usingName: Self.mainWindowAutosaveName)"
+        ))
+        #expect(source.contains("func windowDidMove"))
+        #expect(source.contains("func windowDidResize"))
+        #expect(source.contains("func windowDidChangeScreen"))
+        #expect(!source.contains("window.center()"))
+    }
+
     private func repositorySource(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
