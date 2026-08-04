@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-04T19:42:26Z
+**Trigger:** Ethan reported v2.0.281 pasting normal Primary output into ChatGPT's main composer instead of the field he was using
+**Symptom:** Normal Primary dictation in ChatGPT could jump from a focused annotation or secondary field to the main composer
+**Root cause:** Tentative recording-start capture set AXFocused=true on an audited main composer before the physical stop route was known, so Next-only preparation could move the caret even though Primary later discarded the exact target
+**Fix:** Commit 2cfa3a1 makes no-caret main-composer capture passive and read-only, preserves genuinely focused secondary inputs, and leaves exact focus preparation to a later physical Next route
+**Commit:** 2cfa3a1
+**Guard:** openAINoCaretRecordingStartCaptureIsPassiveAndPinned forbids AX setters, kAXFocusedAttribute, and app activation; the existing pre-chord and Primary current-input isolation guards remain required; physical annotation-field acceptance is still pending
+---
+
+
+---
 **Date:** 2026-08-04T19:31:19Z
 **Trigger:** Ethan asked whether past VoiceInk++ recordings could be grouped by MacBook Pro versus Scarlett microphone and which input transcribed better.
 **Symptom:** The 5,721 History rows and 5,736 retained WAV files could not be assigned reliably to an input device, so historical microphone quality could not be compared honestly.

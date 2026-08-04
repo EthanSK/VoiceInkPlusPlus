@@ -273,6 +273,24 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Target capture and identity failures
 
+### Focusing ChatGPT's main composer during tentative recording-start capture
+
+- **State:** REJECTED after the v2.0.281 Primary secondary-field regression report.
+- **Temptation:** When recording begins in an audited ChatGPT window with no exact caret exposed,
+  find the one proven lower main composer and set `AXFocused = true` so a possible later recording-
+  time Next press already has an exact target.
+- **Observed failure condition:** Recording-start capture runs before VoiceInk++ knows whether Ethan
+  will stop with Primary or Next. The focus setter could therefore move the keyboard caret away from
+  an annotation note or another secondary field to the main composer even though the eventual
+  Primary route correctly discarded all exact destination state and used ordinary Command-V.
+- **Use instead:** Keep tentative recording-start capture read-only. Preserve a genuinely focused
+  exact secondary editor through the passive pre-chord snapshot; when no caret exists, tentatively
+  identify one uniquely proven main composer without activation or any AX setter. Only a physical
+  Next route may later prepare and use that saved exact composer.
+- **Reconsider only if:** The focus mutation happens after the physical Next route has irrevocably
+  selected exact delivery and every same-app/different-input guard still proves Ethan's current
+  keyboard field will not be disturbed. Never restore it to tentative start capture.
+
 ### Saving only an application instead of an exact input
 
 - **State:** REJECTED as a universal solution; bounded fallback only for the documented
