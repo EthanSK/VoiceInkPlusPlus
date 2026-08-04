@@ -82,7 +82,7 @@ struct RecordingInputDeviceMetadataTests {
         )
 
         #expect(source.contains(
-            "session.recordingInputDevice = try await recorder.startRecording("
+            "session.recordingInputDevice = try await self.recorder.startRecording("
         ))
         #expect(source.contains(
             "recordingInputDevice: active.recordingInputDevice"
