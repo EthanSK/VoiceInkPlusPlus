@@ -1311,18 +1311,23 @@ struct VoiceInkTests {
             of: "let pasteTargetForDelivery = await resolvePasteTarget()",
             range: clipboardOnly.upperBound..<source.endIndex
         ))
+        let leasePolicy = try #require(source.range(
+            of: "let deliveryLeasePolicy: TranscriptionDeliveryLeasePolicy =",
+            range: pasteTarget.upperBound..<source.endIndex
+        ))
         let lease = try #require(source.range(
             of: "guard await acquireDeliveryLease(deliveryLeasePolicy)",
-            range: pasteTarget.upperBound..<source.endIndex
+            range: leasePolicy.upperBound..<source.endIndex
         ))
         let delivery = try #require(source.range(
             of: "await delivery.deliver(",
             range: lease.upperBound..<source.endIndex
         ))
-        let guardedBody = source[lease.lowerBound..<delivery.lowerBound]
+        let guardedBody = source[leasePolicy.lowerBound..<delivery.lowerBound]
 
         #expect(clipboardOnly.lowerBound < pasteTarget.lowerBound)
-        #expect(pasteTarget.lowerBound < lease.lowerBound)
+        #expect(pasteTarget.lowerBound < leasePolicy.lowerBound)
+        #expect(leasePolicy.lowerBound < lease.lowerBound)
         #expect(lease.lowerBound < delivery.lowerBound)
         #expect(guardedBody.contains("defer { releaseDeliveryLease() }"))
         #expect(guardedBody.contains("if shouldCancel()"))
