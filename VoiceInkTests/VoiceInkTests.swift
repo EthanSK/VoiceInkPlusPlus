@@ -448,12 +448,12 @@ struct VoiceInkTests {
         ))
     }
 
-    @Test func openAINoCaretRecordingStartFocusIsPinnedBoundedAndOneShot() throws {
+    @Test func openAINoCaretRecordingStartCaptureIsPassiveAndPinned() throws {
         let source = try repositorySource(
             "VoiceInk/Modes/FocusLockService.swift"
         )
         let start = try #require(source.range(
-            of: "    private func focusAuditedOpenAIComposerAtRecordingStart("
+            of: "    private func captureAuditedOpenAIComposerAtRecordingStart("
         ))
         let end = try #require(source.range(
             of: "    func captureFocusedInput(allowApplicationFallback:",
@@ -467,9 +467,8 @@ struct VoiceInkTests {
         #expect(body.contains("candidates.count == 1"))
         #expect(body.contains("CFEqual(currentFocus.element, fallbackContainer)"))
         #expect(body.contains("exactStructureMatches"))
-        #expect(body.components(
-            separatedBy: "AXUIElementSetAttributeValue("
-        ).count - 1 == 1)
+        #expect(!body.contains("AXUIElementSetAttributeValue("))
+        #expect(!body.contains("kAXFocusedAttribute"))
         #expect(!body.contains(".activate("))
         #expect(!body.contains("kAXFocusedWindowAttribute as CFString"))
         #expect(!body.contains("kAXFocusedUIElementAttribute as CFString"))

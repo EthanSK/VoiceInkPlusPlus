@@ -290,10 +290,12 @@ saved identity re-resolves immediately. The snapshot never focuses or activates 
 changes which modifier events are forwarded, and never enters Primary delivery; any stale process,
 task, ancestry, or identity mismatch falls back to the ordinary capture result or fails closed.
 If the exact audited ChatGPT build is already frontmost at recording start but no editor owns the
-caret, VoiceInk++ may make one in-place `AXFocused` attempt on exactly one lower-window main
-composer. It revalidates the original fallback control, app, window, build tuple, and exact composer
-immediately before that single setter. It never activates ChatGPT, rewrites the app/window focus
-pointers, retries, or performs a compensating focus change after a newer user click.
+caret, VoiceInk++ may passively identify and tentatively save exactly one lower-window main composer
+for a later recording-time **Next** route. It revalidates the original fallback control, app, window,
+build tuple, and exact composer at that read-only capture boundary. It never activates ChatGPT, sets
+`AXFocused`, moves the caret, or replaces a genuinely focused secondary editor such as an annotation
+note with the main composer. Primary therefore remains ordinary system-focused delivery; only the
+later physical Next route may prepare and use the saved exact composer.
 
 For an exact saved input whose app is currently backgrounded, VoiceInk++:
 

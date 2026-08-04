@@ -611,11 +611,11 @@ final class FocusLockService: ObservableObject {
         }
 
         // ChatGPT can have its main task open and active without a caret. For the
-        // exact audited build only, make one in-place focus attempt on one uniquely
-        // proven lower-window composer. Revalidate the untouched fallback control at
-        // the setter boundary; never activate ChatGPT or compensate after a user click.
+        // exact audited build only, passively identify one uniquely proven lower-window
+        // composer for a possible future Next route. Recording-start capture must never
+        // move the caret: Primary still belongs to whatever input macOS focuses later.
         if let completedChordTarget,
-           let promoted = focusAuditedOpenAIComposerAtRecordingStart(
+           let promoted = captureAuditedOpenAIComposerAtRecordingStart(
                 from: completedChordTarget
            ) {
             return promoted
@@ -624,7 +624,7 @@ final class FocusLockService: ObservableObject {
         return completedChordTarget
     }
 
-    private func focusAuditedOpenAIComposerAtRecordingStart(
+    private func captureAuditedOpenAIComposerAtRecordingStart(
         from fallback: Target
     ) -> Target? {
         guard !fallback.hasExactInput,
@@ -674,12 +674,14 @@ final class FocusLockService: ObservableObject {
                 for: composer,
                 in: focusedWindow
               ) else {
-            logger.notice("OpenAI recording-start composer focus skipped because the active fallback did not contain one proven main composer pid=\(fallback.pid, privacy: .public) candidates=\(candidates.count, privacy: .public)")
+            logger.notice("OpenAI recording-start passive composer capture skipped because the active fallback did not contain one proven main composer pid=\(fallback.pid, privacy: .public) candidates=\(candidates.count, privacy: .public)")
             return nil
         }
 
-        // This is the irreversible focus boundary. If Ethan moved the caret, changed
-        // windows, or ChatGPT updated between discovery and now, do nothing.
+        // Revalidate at the capture boundary. If Ethan moved the caret, changed windows,
+        // or ChatGPT updated during discovery, do nothing. This branch deliberately has
+        // no AX setter: tentative recording-start ownership exists only for Next and must
+        // never disturb the keyboard-focused field that a later Primary stop will use.
         guard Self.matchesAuditedOpenAIRetainedPreparationBuild(fallback.app),
               NSWorkspace.shared.frontmostApplication?.processIdentifier
                 == fallback.pid,
@@ -698,36 +700,7 @@ final class FocusLockService: ObservableObject {
             return nil
         }
 
-        let focusResult = AXUIElementSetAttributeValue(
-            composer,
-            kAXFocusedAttribute as CFString,
-            kCFBooleanTrue
-        )
-        let verifiedFocus = systemFocusedElement()
-        guard focusResult == .success,
-              verifiedFocus?.pid == fallback.pid,
-              verifiedFocus.map({ CFEqual($0.element, composer) }) == true,
-              resolvedExactElement(
-                for: Target(
-                    element: composer,
-                    window: focusedWindow,
-                    identity: identity,
-                    applicationFallbackContainer: nil,
-                    telegramVisualIdentityCapture: nil,
-                    app: fallback.app,
-                    pid: fallback.pid,
-                    terminalAutomationTarget: nil,
-                    captureID: fallback.captureID,
-                    bundleIdentifier: fallback.bundleIdentifier,
-                    displayInfo: fallback.displayInfo
-                ),
-                diagnosticContext: "recordingStartComposerFocus"
-              ).map({ CFEqual($0, composer) }) == true else {
-            logger.notice("OpenAI recording-start composer focus attempt did not produce one verified exact caret pid=\(fallback.pid, privacy: .public) AXResult=\(focusResult.rawValue, privacy: .public)")
-            return nil
-        }
-
-        logger.notice("Focused one audited OpenAI main composer in place at recording start pid=\(fallback.pid, privacy: .public) AXResult=\(focusResult.rawValue, privacy: .public)")
+        logger.notice("Passively captured one audited OpenAI main composer for a possible recording-start Next route pid=\(fallback.pid, privacy: .public)")
         return Target(
             element: composer,
             window: focusedWindow,
