@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-05T23:16:59Z
+**Trigger:** Ethan asked that unfinished and interrupted recordings are never lost and remain usable in VoiceInk++ History.
+**Symptom:** An interrupted or force-quit recording could leave a partial WAV and live HUD transcript without a recoverable History entry after relaunch.
+**Root cause:** Recorder state lived only in-process; no atomic on-disk journal existed before capture, so a process interruption bypassed normal History persistence.
+**Fix:** RecordingCrashRecoveryService journals capture before microphone start, repairs valid PCM WAV headers on relaunch, retains malformed data byte-for-byte with a manual-recovery warning, and creates recovery-pinned History records without automatic paste, send, focus, or retranscription.
+**Commit:** 33c9c80
+**Guard:** Five focused recovery tests passed within the Mini direct xctest fallback (136 named tests total); production-only Mini build 286 deep/strict signed with Automation and audio-input entitlements. Installed-app validation remains pending because v285 rejected a clean quit.
+---
+
+
+---
 **Date:** 2026-08-05T19:08:59Z
 **Trigger:** Ethan reported the second recording in a repeated rapid stop/start sequence sometimes did not paste and asked whether this had always happened rather than being a regression.
 **Symptom:** An intermittent GPT Live recording could show realtime HUD text, then paste nothing after stop; later recordings still worked, making the rapid-recording queue look poisoned.
