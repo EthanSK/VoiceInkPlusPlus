@@ -1874,11 +1874,12 @@ struct VoiceInkTests {
         var registry = TranscriptionJobRegistry()
         var identities: [TranscriptionJobIdentity] = []
         for index in 0..<32 {
-            identities.append(try #require(registry.register(
+            let registered = registry.register(
                 recordingSessionID: UUID(),
                 transcriptionID: UUID(),
                 audioURL: URL(fileURLWithPath: "/tmp/primary-cohort-\(index).wav")
-            )))
+            )
+            identities.append(try #require(registered))
         }
 
         var issuedSequences: [UInt64] = []
