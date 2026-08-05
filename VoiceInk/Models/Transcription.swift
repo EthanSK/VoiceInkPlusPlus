@@ -4,6 +4,7 @@ import SwiftData
 enum TranscriptionStatus: String, Codable {
     case pending
     case recoverableDraft
+    case recoveredAfterInterruption
     case completed
     case failed
     case canceled

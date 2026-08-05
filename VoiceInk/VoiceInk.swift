@@ -85,6 +85,13 @@ struct VoiceInkApp: App {
         }
 
         container = resolvedContainer
+        // Run before any retention/orphan cleanup starts. A force-quit can leave a
+        // complete PCM payload whose ExtAudioFile header was never finalized; this
+        // converts only our journaled PCM16 captures into recovery-pinned History rows.
+        // It never resumes a provider, resolves an input, pastes, or sends text.
+        let crashRecoverySummary = RecordingCrashRecoveryService.recoverPendingRecordings(
+            modelContext: resolvedContainer.mainContext
+        )
         DictionaryService.removeExactDuplicateContent(context: resolvedContainer.mainContext, source: "launch")
 
         // Initialize services with proper sharing of instances
@@ -174,6 +181,26 @@ struct VoiceInkApp: App {
         // Ensure no lingering recording state from previous runs
         Task {
             await recorderUIManager.resetOnLaunch()
+            if crashRecoverySummary.recoveredCount > 0 {
+                NotificationManager.shared.showNotification(
+                    title: String(
+                        format: String(localized: "Recovered %d interrupted recording(s) in History"),
+                        crashRecoverySummary.recoveredCount
+                    ),
+                    type: .info,
+                    duration: 6
+                )
+            }
+            if crashRecoverySummary.retainedForManualRecoveryCount > 0 {
+                NotificationManager.shared.showNotification(
+                    title: String(
+                        format: String(localized: "%d interrupted recording(s) were kept for manual recovery"),
+                        crashRecoverySummary.retainedForManualRecoveryCount
+                    ),
+                    type: .error,
+                    playSound: false
+                )
+            }
         }
 
         AppShortcuts.updateAppShortcutParameters()

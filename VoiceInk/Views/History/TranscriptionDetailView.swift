@@ -18,8 +18,10 @@ struct TranscriptionDetailView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     MessageBubble(
-                        label: transcription.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                            transcription.text == Transcription.canceledTranscriptionText
+                        label: transcription.transcriptionStatus == TranscriptionStatus.recoveredAfterInterruption.rawValue
+                            ? "Recovered recording"
+                            : transcription.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                transcription.text == Transcription.canceledTranscriptionText
                             ? "Live draft at exit"
                             : "Original",
                         text: transcription.historyDisplayText,

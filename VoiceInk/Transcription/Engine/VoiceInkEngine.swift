@@ -175,6 +175,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     let assistantSession = AssistantSession()
     let assistantChat: AssistantChatService?
     private let pipeline: TranscriptionPipeline
+    private let recoveryJournalStore: RecordingRecoveryJournalStore
 
     let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "VoiceInkEngine")
     // VIPPDebug: see RecorderUIManager for the filter predicate. Tracks the stop→
@@ -186,12 +187,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         modelContext: ModelContext,
         whisperModelManager: WhisperModelManager,
         transcriptionModelManager: TranscriptionModelManager,
-        enhancementService: AIEnhancementService? = nil
+        enhancementService: AIEnhancementService? = nil,
+        recoveryJournalStore: RecordingRecoveryJournalStore = RecordingRecoveryJournalStore()
     ) {
         self.modelContext = modelContext
         self.whisperModelManager = whisperModelManager
         self.transcriptionModelManager = transcriptionModelManager
         self.enhancementService = enhancementService
+        self.recoveryJournalStore = recoveryJournalStore
         if let aiService = enhancementService?.getAIService() {
             self.assistantChat = AssistantChatService(
                 modelContext: modelContext,
@@ -229,6 +232,58 @@ class VoiceInkEngine: NSObject, ObservableObject {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true, attributes: nil)
         } catch {
             logger.error("❌ Error creating recordings directory: \(error, privacy: .public)")
+        }
+    }
+
+    /// Keep the last safely shown HUD text with the audio lineage, never with an
+    /// external destination. A later crash can therefore restore local History without
+    /// guessing at focus or delivering into an app the user may no longer be using.
+    private func persistRecoveryJournal(
+        for session: RecordingSession,
+        realtimeDraftText: String?
+    ) {
+        guard var entry = session.recoveryJournalEntry else { return }
+        entry.update(
+            realtimeDraftText: realtimeDraftText,
+            inputDevice: session.recordingInputDevice
+        )
+        do {
+            try recoveryJournalStore.persist(entry)
+            session.recoveryJournalEntry = entry
+        } catch {
+            // Preserve the previous complete atomic snapshot. It remains enough to
+            // recover the WAV; this best-effort update must not interrupt capture.
+            logger.error("Could not update active recording recovery journal id=\(entry.id.uuidString, privacy: .public) error=\(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// A journal is only disposable once the History row referencing the same WAV has
+    /// been saved. If removal itself fails, launch recovery recognizes the existing URL
+    /// and clears the stale marker without creating a second History entry.
+    private func clearRecoveryJournal(for session: RecordingSession) {
+        guard let entry = session.recoveryJournalEntry else { return }
+        do {
+            try recoveryJournalStore.remove(entry)
+            session.recoveryJournalEntry = nil
+        } catch {
+            logger.error("Could not remove recording recovery journal id=\(entry.id.uuidString, privacy: .public) error=\(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Startup failures normally own no useful audio, but never assume a failed delete
+    /// made that true. If the file survives, retaining its journal lets the next launch
+    /// repair and surface every frame that did reach disk instead of losing it silently.
+    private func discardUnusableRecordingAndJournal(for session: RecordingSession) {
+        guard let audioURL = session.audioURL else {
+            clearRecoveryJournal(for: session)
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: audioURL)
+            session.audioURL = nil
+            clearRecoveryJournal(for: session)
+        } catch {
+            logger.error("Could not remove failed-start audio; retaining crash recovery journal id=\(session.recoveryJournalEntry?.id.uuidString ?? "unknown", privacy: .public) error=\(String(describing: error), privacy: .public)")
         }
     }
 
@@ -531,12 +586,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             : .pending
                     )
                     modelContext.insert(transcription)
+                    var savedRecordingDraft = false
                     do {
                         try modelContext.save()
+                        savedRecordingDraft = true
                     } catch {
                         logger.error("Failed to persist stopped recording draft before transcription: \(error, privacy: .public)")
                     }
-                    NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
+                    if savedRecordingDraft {
+                        // The persisted History row now owns this exact WAV. Do not
+                        // remove its crash journal before that save boundary succeeds.
+                        clearRecoveryJournal(for: active)
+                        NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
+                    }
 
                     active.pipelineTranscriptionID = transcription.id
                     enqueueTranscription(for: active, transcription: transcription)
@@ -751,6 +813,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
             let permanentURL = self.recordingsDirectory.appendingPathComponent(fileName)
             session.audioURL = permanentURL
 
+            // The Core Audio writer finalizes RIFF/data lengths only on close. Create
+            // durable lineage before AUHAL can write a frame, otherwise a force-quit
+            // could leave usable PCM with neither a valid header nor a History row.
+            // A missing journal is a recovery guarantee failure, so do not start capture.
+            session.recoveryJournalEntry = try recoveryJournalStore.begin(audioURL: permanentURL)
+
             // Buffer audio chunks until the streaming session (if any) is ready to receive them.
             let pendingChunks = OSAllocatedUnfairLock(initialState: [Data]())
             self.recorder.onAudioChunk = { data in
@@ -763,6 +831,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             session.recordingInputDevice = try await self.recorder.startRecording(
                 toOutputFile: permanentURL
             )
+            persistRecoveryJournal(for: session, realtimeDraftText: nil)
 
             // Re-press / cancel / panel-gone guard: if this is no longer the live start, abort.
             let startTokenIsCurrent = session.startID == startID
@@ -791,7 +860,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 if session.startID == startID {
                     await self.recorder.stopRecording()
                     if !shouldKeepRecordingFile {
-                        session.audioURL = nil
+                        self.discardUnusableRecordingAndJournal(for: session)
                     }
                     self.removeSession(session)
                     self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
@@ -849,8 +918,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             ) else {
                 NotificationManager.shared.showNotification(title: String(localized: "No AI Model Selected"), type: .error)
                 await self.recorder.stopRecording()
-                try? FileManager.default.removeItem(at: permanentURL)
-                session.audioURL = nil
+                discardUnusableRecordingAndJournal(for: session)
                 self.removeSession(session)
                 self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
                 self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
@@ -882,6 +950,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             // partials into a destination creates a second mutable draft, races
                             // Ethan's edits/focus, and duplicates the single final delivery below.
                             session.partialTranscript = partial
+                            self.persistRecoveryJournal(
+                                for: session,
+                                realtimeDraftText: partial
+                            )
                             // Mirror to the engine's derived partial only while this is the
                             // active recording session (it always is here, but be explicit).
                             if self.activeRecordingSession?.id == session.id {
@@ -958,10 +1030,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             self.logger.error("Recording failed to start: \(error, privacy: .public)")
             await self.recorder.stopRecording()
             session.transcriptionSession?.cancel()
-            if let recordedFile = session.audioURL {
-                try? FileManager.default.removeItem(at: recordedFile)
-            }
-            session.audioURL = nil
+            discardUnusableRecordingAndJournal(for: session)
             self.removeSession(session)
             self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
             self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
@@ -1574,6 +1643,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         do {
             try modelContext.save()
+            clearRecoveryJournal(for: session)
             NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
         } catch {
             logger.error("Failed to save canceled recording: \(error, privacy: .public)")

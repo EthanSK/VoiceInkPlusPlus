@@ -240,6 +240,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // The recorded audio file for this session. Set at record-start, consumed by the pipeline.
     var audioURL: URL?
 
+    // Created before AUHAL starts so a force-quit can recover successfully written PCM
+    // even though ExtAudioFile has not finalized the WAV header. This is local recovery
+    // state only; it never contributes destination, paste, or auto-send behavior.
+    var recoveryJournalEntry: RecordingRecoveryJournalEntry?
+
     // The exact Core Audio device successfully handed to AUHAL at capture start. This belongs
     // to the recording lineage just like its WAV and frozen provider configuration; a later
     // system-default/device selection change must not alter what History reports for this row.
