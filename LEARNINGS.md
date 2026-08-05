@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-05T19:08:59Z
+**Trigger:** Ethan reported the second recording in a repeated rapid stop/start sequence sometimes did not paste and asked whether this had always happened rather than being a regression.
+**Symptom:** An intermittent GPT Live recording could show realtime HUD text, then paste nothing after stop; later recordings still worked, making the rapid-recording queue look poisoned.
+**Root cause:** The old OpenAI adapter treated an empty completed transcript as authoritative and could discard deltas already accumulated for that same item. Sequence 83 then entered completed-audio fallback, which failed; later sequences 84 and 85 succeeded, and identical empty-final failures predated the queue work back to 2026-07-29.
+**Fix:** Commit f821d87 reconciles deltas and completion per OpenAI item ID, keeps a nonempty completion authoritative, preserves only that same item's delta when completion is empty, retains WAV/HUD recovery on provider failure, and keeps pending-start/capture-owner gaps visible. Test-only compile correction 99440ce enabled the exact Mini bundle.
+**Commit:** f821d87c9644ad5d743aac98d22562305ad61adf
+**Guard:** Fresh Mac Mini direct xcrun xctest named and passed all 131 tests in 3 suites, including same-item empty completion, 24-cycle queue drain, 32-cycle Primary tail auto-send, provider recovery, HUD visibility, Primary isolation, and both Next routes. Signed v2.0.284 is installed with CDHash 76488246885eaaa541bcf668cdf47ade530fb318, Automation/audio-input entitlements, and physical rapid-cycle acceptance still pending.
+---
+
+
+---
 **Date:** 2026-08-04T19:42:26Z
 **Trigger:** Ethan reported v2.0.281 pasting normal Primary output into ChatGPT's main composer instead of the field he was using
 **Symptom:** Normal Primary dictation in ChatGPT could jump from a focused annotation or secondary field to the main composer

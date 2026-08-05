@@ -4,6 +4,18 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
+**Current installed state verified 2026-08-05:** signed v2.0.284 is installed from realtime and
+repeated-cycle hardening commit `f821d87` plus test-compile correction `99440ce`. The Mini's
+canonical Xcode action rebuilt the exact candidate and reached the known TestManager stall; the
+fresh direct `xcrun xctest` fallback then named and passed all 131 tests in 3 suites. The installed
+executable SHA-256 is `63f20ce4852d31dbb82f53dc597c0b42b95657e3d88614a1a6eb2f4b32a6817f`,
+its CDHash is `76488246885eaaa541bcf668cdf47ade530fb318`, deep/strict signing and outer
+Automation/audio-input entitlements verify, exact delivery is enabled, v2.0.283 is preserved as
+rollback, and `/Applications/VoiceInk.app` remains untouched. This release changes realtime
+finalization, provider-failure recovery, and recorder visibility across repeated rapid cycles; it
+does not change Primary or either exact Next delivery mechanism. A physical multi-cycle rapid
+Primary run and the pending ChatGPT start/move/Next scenario remain required acceptance evidence.
+
 **Current installed state verified 2026-08-04:** signed v2.0.282 is installed from the combined
 source through `d34737e`, including passive recording-start composer capture in `2cfa3a1`, recording
 input-device metadata in `34d8e32`/`2246ee7`, and the exact `self.recorder` structural-test
