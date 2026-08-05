@@ -22,6 +22,30 @@ enum TranscriptionCancellationRecovery: Equatable {
     }
 }
 
+/// Separates an explicit cancel/reset from an unexpected provider failure. A failure
+/// retains the original audio and the strongest HUD draft, while a requested cancel
+/// continues through the existing canceled-result path without a second error notice.
+enum TranscriptionFailureRecoveryDisposition: Equatable {
+    case intentionalCancellation
+    case retainAudioOnly
+    case retainAudioAndText(String)
+
+    static func resolve(
+        cancellationRequested: Bool,
+        textCandidates: [String?]
+    ) -> Self {
+        guard !cancellationRequested else {
+            return .intentionalCancellation
+        }
+        switch TranscriptionCancellationRecovery.resolve(textCandidates) {
+        case .noResult:
+            return .retainAudioOnly
+        case .recover(let text):
+            return .retainAudioAndText(text)
+        }
+    }
+}
+
 /// Handles the full post-recording pipeline:
 /// transcribe → filter → format → word-replace → AI enhance → deliver → save
 @MainActor
@@ -435,16 +459,57 @@ class TranscriptionPipeline {
                 (error as? URLError)?.code == .cancelled
             vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
 
-            let wasIntentionalCancellation = isCancelled && shouldCancel()
-            if !wasIntentionalCancellation {
+            let failureRecovery = TranscriptionFailureRecoveryDisposition.resolve(
+                cancellationRequested: shouldCancel(),
+                textCandidates: [
+                    transcription.recoverableRealtimeDraftText,
+                    recoverablePartialTranscriptNow
+                ]
+            )
+            // Unexpected failures used to live only in logs/history while the bar
+            // vanished; surface the reason unless the user deliberately canceled.
+            switch failureRecovery {
+            case .intentionalCancellation:
+                // The normal canceled-result path below retains any useful provider/HUD
+                // result without surfacing a second provider error.
+                break
+
+            case .retainAudioOnly:
+                // A provider/batch failure must not erase the original WAV. This is
+                // recovery only: `.failed` jobs never paste or auto-send through
+                // Primary or either Next route.
+                transcription.preservesOriginalAudioForRecovery = true
+                vippLog.info("pipeline: failed transcription retained original audio but no realtime draft was available")
                 let shortReason = String(errorDescription.prefix(120))
                 await MainActor.run {
                     NotificationManager.shared.showNotification(
-                        title: String(format: String(localized: "Transcription failed: %@"), shortReason),
+                        title: String(
+                            format: String(localized: "Transcription failed: %@"),
+                            shortReason
+                        ),
                         type: .error,
                         duration: 5.0
                     )
-                } // Unexpected transcription failures used to live only in logs/history while the bar vanished; always surface the actual reason unless the user deliberately canceled.
+                }
+
+            case .retainAudioAndText(let text):
+                transcription.preservesOriginalAudioForRecovery = true
+                transcription.snapshotRealtimeDraft(text)
+                let copied = ClipboardManager.copyToClipboard(text)
+                vippLog.info("pipeline: failed transcription retained realtime draft chars=\(text.count, privacy: .public) digest=\(TranscriptionLineageDigest.make(text), privacy: .public) clipboard=\(copied, privacy: .public) audio=true")
+                let shortReason = String(errorDescription.prefix(120))
+                let recoverySummary = copied
+                    ? String(localized: "Partial text copied to clipboard; audio saved in History")
+                    : String(localized: "Partial text and audio saved in History")
+                await MainActor.run {
+                    NotificationManager.shared.showNotification(
+                        // Recovery must never hide the provider/network reason. The
+                        // retained draft is useful context appended to the same failure.
+                        title: "\(String(format: String(localized: "Transcription failed: %@"), shortReason)) — \(recoverySummary)",
+                        type: .error,
+                        duration: 5.0
+                    )
+                }
             }
 
             transcription.text = String(format: String(localized: "Transcription Failed: %@"), errorDescription)

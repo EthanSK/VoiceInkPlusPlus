@@ -348,10 +348,10 @@ final class ActiveRecordingDeliveryBarrier {
         !activeDeliveryOwners.isEmpty
     }
 
-    /// True only for the narrow race where an older delivery acquired its lease first,
-    /// then Ethan pressed Start for the next recording before the older Return posted.
-    /// The reservation is already a capture owner, even though its microphone handshake
-    /// waits for the older lease to release.
+    /// The exact delivery-first race that originally justified the synchronous
+    /// recording-start reservation. Keep this narrow probe for the regression test:
+    /// production Return suppression deliberately uses the broader
+    /// `isDeliveryBlocked`, because an already-started capture is continuation intent too.
     var hasCaptureWaitingBehindDelivery: Bool {
         !activeCaptureOwners.isEmpty && !activeDeliveryOwners.isEmpty
     }

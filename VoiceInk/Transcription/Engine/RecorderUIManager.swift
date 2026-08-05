@@ -30,6 +30,49 @@ protocol RecorderPanelPresenting: AnyObject {
     func dismissRecorderPanel() async
 }
 
+enum RecorderPanelLifecyclePolicy {
+    enum IdleToggleAction: Equatable {
+        case preservePendingStart
+        case startRecording
+        case dismiss
+    }
+
+    static func shouldKeepVisible(
+        sessionCount: Int,
+        hasPendingStart: Bool,
+        hasCaptureOwner: Bool,
+        assistantVisible: Bool
+    ) -> Bool {
+        sessionCount > 0 || hasPendingStart || hasCaptureOwner || assistantVisible
+    }
+
+    static func idleToggleAction(
+        sessionCount: Int,
+        hasPendingStart: Bool,
+        hasCaptureOwner: Bool
+    ) -> IdleToggleAction {
+        // A synchronous reservation owns the next recording before its session card
+        // exists. Treating that gap as truly idle can hide the panel and make the
+        // recorder's post-start visibility guard discard the new recording.
+        if hasPendingStart || hasCaptureOwner {
+            return .preservePendingStart
+        }
+        return sessionCount > 0 ? .startRecording : .dismiss
+    }
+
+    /// Only a live start that still owns the microphone and loses its recorder panel
+    /// is an app fault. A user cancel or an overlapping normal stop legitimately
+    /// invalidates the start token and owns teardown on its own path.
+    static func shouldReportUnexpectedStartupAbort(
+        startTokenIsCurrent: Bool,
+        sessionStillOwnsMic: Bool,
+        panelIsVisible: Bool,
+        canceled: Bool
+    ) -> Bool {
+        startTokenIsCurrent && sessionStillOwnsMic && !panelIsVisible && !canceled
+    }
+}
+
 @MainActor
 class RecorderUIManager: ObservableObject, RecorderPanelPresenting, NotificationRecorderPlacementProviding {
     @Published var recorderPanelStyle: RecorderPanelStyle = .stored {
@@ -290,12 +333,25 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                         modeId: modeId,
                         isAssistantFollowUp: true
                     )
-                } else if !engine.sessions.isEmpty {
+                } else {
+                    switch RecorderPanelLifecyclePolicy.idleToggleAction(
+                        sessionCount: engine.sessions.count,
+                        hasPendingStart: engine.hasPendingRecordingStart,
+                        hasCaptureOwner: engine.hasActiveCaptureOwner
+                    ) {
+                    case .preservePendingStart:
+                        // The first press is already progressing through permission,
+                        // resource cleanup, or a delivery lease. A second press cannot
+                        // stop audio that has not started yet, but it must never hide the
+                        // bar and thereby destroy the reserved recording.
+                        vippLog.info("toggleRecorderPanel: idle press ignored while recording start owns reservation/capture; preserving bar")
+                    case .startRecording:
                     // Background transcription(s) in flight → start ANOTHER recording.
                     SoundManager.shared.playStartSound()
                     await engine.toggleRecord(modeId: modeId)
-                } else {
-                    await dismissRecorderPanel()
+                    case .dismiss:
+                        await dismissRecorderPanel()
+                    }
                 }
             case .busy:
                 await dismissRecorderPanel()
@@ -332,9 +388,16 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         // finishing background job would yank the bar out from under a still-active recording.
         // We only actually hide when there's genuinely nothing left to show.
         let hasSessions = !engine.sessions.isEmpty
+        let hasPendingStart = engine.hasPendingRecordingStart
+        let hasCaptureOwner = engine.hasActiveCaptureOwner
         let assistantVisible = engine.assistantSession.isVisible
-        if hasSessions || assistantVisible {
-            vippLog.info("dismissRecorderPanel: SUPPRESSED — sessions=\(engine.sessions.count, privacy: .public) assistantVisible=\(assistantVisible, privacy: .public) (keep bar visible)")
+        if RecorderPanelLifecyclePolicy.shouldKeepVisible(
+            sessionCount: engine.sessions.count,
+            hasPendingStart: hasPendingStart,
+            hasCaptureOwner: hasCaptureOwner,
+            assistantVisible: assistantVisible
+        ) {
+            vippLog.info("dismissRecorderPanel: SUPPRESSED — sessions=\(engine.sessions.count, privacy: .public) pendingStart=\(hasPendingStart, privacy: .public) captureOwner=\(hasCaptureOwner, privacy: .public) assistantVisible=\(assistantVisible, privacy: .public) (keep bar visible)")
             return
         }
 

@@ -15,7 +15,7 @@ LOCK_PID_FILE="$LOCK_DIR/pid"
 LAUNCHD_LABEL="com.ethansk.voiceink.live-delivery-trace.$(id -u)"
 LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
 
-PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService")))'
+PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService" || category == "OpenAIStreamingProvider")))'
 
 usage() {
   printf 'usage: %s start|status|stop|show [line-count]\n' "$0" >&2
@@ -333,6 +333,7 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:StreamingTranscriptionService]'*'Streaming final wait finished'*|\
       *'[com.prakashjoshipax.voiceink:StreamingTranscriptionService]'*'Streaming stop completed'*|\
       *'[com.prakashjoshipax.voiceink:StreamingTranscriptionService]'*'Streaming cancelled'*|\
+      *'[com.prakashjoshipax.voiceink:OpenAIStreamingProvider]'*'OpenAI completion recovered same-item delta'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground AppleScript paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground CGEvent paste'*|\

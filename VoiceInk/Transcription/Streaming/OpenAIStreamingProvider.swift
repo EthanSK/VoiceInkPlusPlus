@@ -1,5 +1,58 @@
 import Foundation
 import SwiftData
+import os
+
+/// Reconciles one OpenAI realtime transcription item without letting a later empty
+/// completion erase text the same item already emitted as deltas.
+///
+/// OpenAI's live-transcription contract uses `item_id` to pair delta and completed
+/// events. Keep that boundary in this state object so text from concurrent or later
+/// items can never be combined merely because their events arrived close together.
+struct OpenAITranscriptAccumulator {
+    enum CompletionSource: String, Equatable {
+        case completed
+        case sameItemDelta
+        case empty
+    }
+
+    struct Resolution: Equatable {
+        let text: String
+        let source: CompletionSource
+
+        /// Deliberately excludes transcript contents and item identifiers. This is the
+        /// only metadata permitted in the managed seven-day delivery trace.
+        var privacySafeLogMetadata: String {
+            "source=\(source.rawValue) chars=\(text.count)"
+        }
+    }
+
+    private var partialsByItemID: [String: String] = [:]
+
+    mutating func reset(keepingCapacity: Bool) {
+        partialsByItemID.removeAll(keepingCapacity: keepingCapacity)
+    }
+
+    mutating func append(delta: String, itemID: String) -> String {
+        let cumulative = partialsByItemID[itemID, default: ""] + delta
+        partialsByItemID[itemID] = cumulative
+        return cumulative
+    }
+
+    mutating func complete(
+        itemID: String,
+        completedTranscript: String?
+    ) -> Resolution {
+        let sameItemDelta = partialsByItemID.removeValue(forKey: itemID) ?? ""
+        if let completedTranscript,
+           !completedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Resolution(text: completedTranscript, source: .completed)
+        }
+        if !sameItemDelta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Resolution(text: sameItemDelta, source: .sameItemDelta)
+        }
+        return Resolution(text: "", source: .empty)
+    }
+}
 
 /// Incremental 16 kHz PCM16 to 24 kHz PCM16 conversion for OpenAI Realtime.
 /// The phase and preceding sample survive audio callback boundaries so chunking cannot
@@ -87,12 +140,16 @@ final class OpenAIStreamingProvider: ContextualStreamingTranscriptionProvider, @
     private var urlSession: URLSession?
     private var receiveTask: Task<Void, Never>?
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
-    private var partialsByItemID: [String: String] = [:]
+    private var transcriptAccumulator = OpenAITranscriptAccumulator()
     private var resampler = OpenAIRealtimePCMResampler()
     private let modelContext: ModelContext
     private let stateLock = NSLock()
     private var didCommitStorage = false
     private var didSignalFinalStorage = false
+    private let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "OpenAIStreamingProvider"
+    )
 
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
@@ -138,7 +195,7 @@ final class OpenAIStreamingProvider: ContextualStreamingTranscriptionProvider, @
         let task = session.webSocketTask(with: request)
         urlSession = session
         webSocketTask = task
-        partialsByItemID.removeAll(keepingCapacity: true)
+        transcriptAccumulator.reset(keepingCapacity: true)
         resampler = OpenAIRealtimePCMResampler()
         setDidCommit(false)
         resetFinalSignal()
@@ -187,7 +244,7 @@ final class OpenAIStreamingProvider: ContextualStreamingTranscriptionProvider, @
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        partialsByItemID.removeAll(keepingCapacity: false)
+        transcriptAccumulator.reset(keepingCapacity: false)
         setDidCommit(false)
         resetFinalSignal()
         eventsContinuation?.finish()
@@ -254,15 +311,24 @@ final class OpenAIStreamingProvider: ContextualStreamingTranscriptionProvider, @
         case "conversation.item.input_audio_transcription.delta":
             guard let delta = json["delta"] as? String, !delta.isEmpty else { return }
             let itemID = (json["item_id"] as? String) ?? "active"
-            let cumulative = partialsByItemID[itemID, default: ""] + delta
-            partialsByItemID[itemID] = cumulative
+            let cumulative = transcriptAccumulator.append(
+                delta: delta,
+                itemID: itemID
+            )
             eventsContinuation?.yield(.partial(text: cumulative))
 
         case "conversation.item.input_audio_transcription.completed":
             let itemID = (json["item_id"] as? String) ?? "active"
-            let final = (json["transcript"] as? String) ?? partialsByItemID[itemID, default: ""]
-            partialsByItemID[itemID] = nil
-            yieldFinalOnce(final)
+            let resolution = transcriptAccumulator.complete(
+                itemID: itemID,
+                completedTranscript: json["transcript"] as? String
+            )
+            if resolution.source == .sameItemDelta {
+                logger.notice(
+                    "OpenAI completion recovered same-item delta \(resolution.privacySafeLogMetadata, privacy: .public)"
+                )
+            }
+            yieldFinalOnce(resolution.text)
 
         case "conversation.item.input_audio_transcription.failed", "error":
             eventsContinuation?.yield(

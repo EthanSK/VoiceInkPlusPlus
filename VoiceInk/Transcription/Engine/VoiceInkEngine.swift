@@ -148,6 +148,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
     // session before either scheduled MainActor task appends one, creating two mic owners.
     private var recordingStartReservation = RecordingStartReservation()
 
+    /// Recorder-panel visibility must include the synchronous start lifecycle, not
+    /// only materialized session cards. An older pipeline may finish while this token
+    /// is waiting on permission, cleanup, or a delivery lease.
+    var hasPendingRecordingStart: Bool {
+        recordingStartReservation.pendingID != nil
+    }
+
+    /// Includes both a start reservation and a materialized recording session. This
+    /// closes the tiny consumed-reservation-to-session-card boundary for UI decisions.
+    var hasActiveCaptureOwner: Bool {
+        activeRecordingDeliveryBarrier.isDeliveryBlocked
+    }
+
     let recorder = Recorder()
     let recordingsDirectory: URL
 
@@ -693,6 +706,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
             to: session.id
         ) else {
             recordingStartIdentityTask?.cancel()
+            // Normally a failed transfer means reset already removed the reservation.
+            // Defensively release it anyway: a duplicate destination owner must not
+            // strand the start token and block every later delivery forever.
+            activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)
+            reportUnresolvedPrimaryAutoSendIfQueueDrained()
             vippLog.fault("startNewSession: capture ownership transfer refused requestID=\(startRequestID.uuidString, privacy: .public) sessionID=\(session.id.uuidString, privacy: .public)")
             return
         }
@@ -747,12 +765,29 @@ class VoiceInkEngine: NSObject, ObservableObject {
             )
 
             // Re-press / cancel / panel-gone guard: if this is no longer the live start, abort.
-            guard session.startID == startID,
-                  self.activeRecordingSession === session,
-                  self.recorderUIManager?.isRecorderPanelVisible ?? false,
+            let startTokenIsCurrent = session.startID == startID
+            let sessionStillOwnsMic = self.activeRecordingSession === session
+            let panelIsVisible = self.recorderUIManager?.isRecorderPanelVisible ?? false
+            let shouldReportUnexpectedAbort = RecorderPanelLifecyclePolicy
+                .shouldReportUnexpectedStartupAbort(
+                    startTokenIsCurrent: startTokenIsCurrent,
+                    sessionStillOwnsMic: sessionStillOwnsMic,
+                    panelIsVisible: panelIsVisible,
+                    canceled: session.shouldCancel
+                )
+            guard startTokenIsCurrent,
+                  sessionStillOwnsMic,
+                  panelIsVisible,
                   !session.shouldCancel else {
                 activeModeTask.cancel()
                 let shouldKeepRecordingFile = session.shouldCancel
+                if shouldReportUnexpectedAbort {
+                    vippLog.fault("startNewSession: recorder start aborted because its panel disappeared tokenCurrent=\(startTokenIsCurrent, privacy: .public) sessionOwnsMic=\(sessionStillOwnsMic, privacy: .public) panelVisible=\(panelIsVisible, privacy: .public) canceled=\(session.shouldCancel, privacy: .public) sessionID=\(session.id.uuidString, privacy: .public)")
+                } else {
+                    // A rapid stop/cancel can settle while recorder startup is returning.
+                    // That path already owns its teardown and is not a recording failure.
+                    vippLog.info("startNewSession: recorder startup superseded by normal lifecycle tokenCurrent=\(startTokenIsCurrent, privacy: .public) sessionOwnsMic=\(sessionStillOwnsMic, privacy: .public) panelVisible=\(panelIsVisible, privacy: .public) canceled=\(session.shouldCancel, privacy: .public) sessionID=\(session.id.uuidString, privacy: .public)")
+                }
                 if session.startID == startID {
                     await self.recorder.stopRecording()
                     if !shouldKeepRecordingFile {
@@ -761,6 +796,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     self.removeSession(session)
                     self.activeRecordingDeliveryBarrier.endCapture(owner: session.id)
                     self.reportUnresolvedPrimaryAutoSendIfQueueDrained()
+                }
+                if shouldReportUnexpectedAbort {
+                    NotificationManager.shared.showNotification(
+                        title: String(localized: "Recording stopped before startup completed"),
+                        type: .error
+                    )
                 }
                 return
             }
@@ -1069,9 +1110,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             originalKey: originalKey,
             currentIsEligiblePrimaryPaste: currentIsEligible,
             newerCandidates: newerCandidates,
-            // If the older delivery lease won first, a later physical Start is
-            // already represented by a capture reservation that must wait behind it.
-            // Treat that reservation as continuation intent before Return-down.
+            // Any newer capture owner is continuation intent before Return-down. In
+            // the narrow opposite-lease race this is still only a start reservation;
+            // after startup it is the actual recording session. Both mean Ethan has
+            // begun adding to the current Primary cohort, so the older Return waits.
             newerRecordingStartPending: activeRecordingDeliveryBarrier
                 .isDeliveryBlocked
         )

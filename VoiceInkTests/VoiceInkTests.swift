@@ -37,6 +37,7 @@ private actor TranscriptionQueueTestGate {
 @MainActor
 private final class TranscriptionQueueTestState {
     var currentIdentities = Set<TranscriptionJobIdentity>()
+    var registry = TranscriptionJobRegistry()
     var events: [String] = []
 }
 
@@ -253,6 +254,148 @@ struct VoiceInkTests {
 
         #expect(actual == expected)
         #expect(actual.count == 480 * MemoryLayout<Int16>.size)
+    }
+
+    @Test func openAIEmptyCompletionPreservesOnlyItsSameItemDelta() {
+        var accumulator = OpenAITranscriptAccumulator()
+        #expect(accumulator.append(delta: "recover ", itemID: "item-a") == "recover ")
+        #expect(accumulator.append(delta: "this", itemID: "item-a") == "recover this")
+        #expect(accumulator.append(delta: "other text", itemID: "item-b") == "other text")
+
+        let recovered = accumulator.complete(
+            itemID: "item-a",
+            completedTranscript: ""
+        )
+        #expect(recovered.text == "recover this")
+        #expect(recovered.source == .sameItemDelta)
+        #expect(recovered.privacySafeLogMetadata == "source=sameItemDelta chars=12")
+        #expect(!recovered.privacySafeLogMetadata.contains("recover this"))
+
+        let other = accumulator.complete(
+            itemID: "item-b",
+            completedTranscript: "   \n"
+        )
+        #expect(other.text == "other text")
+        #expect(other.source == .sameItemDelta)
+    }
+
+    @Test func openAINonemptyCompletionRemainsAuthoritativeAndItemsNeverMix() {
+        var accumulator = OpenAITranscriptAccumulator()
+        _ = accumulator.append(delta: "draft-a", itemID: "item-a")
+        _ = accumulator.append(delta: "draft-b", itemID: "item-b")
+
+        let first = accumulator.complete(
+            itemID: "item-a",
+            completedTranscript: "final-a"
+        )
+        #expect(first == .init(text: "final-a", source: .completed))
+
+        let missing = accumulator.complete(
+            itemID: "item-c",
+            completedTranscript: nil
+        )
+        #expect(missing == .init(text: "", source: .empty))
+
+        let second = accumulator.complete(
+            itemID: "item-b",
+            completedTranscript: nil
+        )
+        #expect(second == .init(text: "draft-b", source: .sameItemDelta))
+    }
+
+    @Test func recorderPanelLifecycleKeepsStartReservationsVisible() {
+        #expect(RecorderPanelLifecyclePolicy.shouldKeepVisible(
+            sessionCount: 0,
+            hasPendingStart: true,
+            hasCaptureOwner: false,
+            assistantVisible: false
+        ))
+        #expect(RecorderPanelLifecyclePolicy.shouldKeepVisible(
+            sessionCount: 0,
+            hasPendingStart: false,
+            hasCaptureOwner: true,
+            assistantVisible: false
+        ))
+        #expect(!RecorderPanelLifecyclePolicy.shouldKeepVisible(
+            sessionCount: 0,
+            hasPendingStart: false,
+            hasCaptureOwner: false,
+            assistantVisible: false
+        ))
+        #expect(RecorderPanelLifecyclePolicy.idleToggleAction(
+            sessionCount: 0,
+            hasPendingStart: true,
+            hasCaptureOwner: false
+        ) == .preservePendingStart)
+        #expect(RecorderPanelLifecyclePolicy.idleToggleAction(
+            sessionCount: 1,
+            hasPendingStart: false,
+            hasCaptureOwner: false
+        ) == .startRecording)
+        #expect(RecorderPanelLifecyclePolicy.idleToggleAction(
+            sessionCount: 0,
+            hasPendingStart: false,
+            hasCaptureOwner: false
+        ) == .dismiss)
+
+        #expect(RecorderPanelLifecyclePolicy.shouldReportUnexpectedStartupAbort(
+            startTokenIsCurrent: true,
+            sessionStillOwnsMic: true,
+            panelIsVisible: false,
+            canceled: false
+        ))
+        #expect(!RecorderPanelLifecyclePolicy.shouldReportUnexpectedStartupAbort(
+            startTokenIsCurrent: false,
+            sessionStillOwnsMic: false,
+            panelIsVisible: true,
+            canceled: false
+        ))
+        #expect(!RecorderPanelLifecyclePolicy.shouldReportUnexpectedStartupAbort(
+            startTokenIsCurrent: true,
+            sessionStillOwnsMic: true,
+            panelIsVisible: false,
+            canceled: true
+        ))
+    }
+
+    @Test func recorderPanelWiresLiveReservationAndCaptureOwnershipIntoVisibility() throws {
+        let managerSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        let dismissStart = try #require(managerSource.range(
+            of: "    func dismissRecorderPanel() async {"
+        ))
+        let dismissEnd = try #require(managerSource.range(
+            of: "    // Force-hide the panel regardless of in-flight sessions.",
+            range: dismissStart.upperBound..<managerSource.endIndex
+        ))
+        let dismissBody = managerSource[
+            dismissStart.lowerBound..<dismissEnd.lowerBound
+        ]
+        #expect(dismissBody.contains(
+            "let hasPendingStart = engine.hasPendingRecordingStart"
+        ))
+        #expect(dismissBody.contains(
+            "let hasCaptureOwner = engine.hasActiveCaptureOwner"
+        ))
+        #expect(dismissBody.contains("hasPendingStart: hasPendingStart"))
+        #expect(dismissBody.contains("hasCaptureOwner: hasCaptureOwner"))
+
+        let engineSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+        )
+        let lifecycleStart = try #require(engineSource.range(
+            of: "    var hasPendingRecordingStart: Bool {"
+        ))
+        let lifecycleEnd = try #require(engineSource.range(
+            of: "    let recorder = Recorder()",
+            range: lifecycleStart.upperBound..<engineSource.endIndex
+        ))
+        let lifecycleBody = engineSource[
+            lifecycleStart.lowerBound..<lifecycleEnd.lowerBound
+        ]
+        #expect(lifecycleBody.contains("recordingStartReservation.pendingID != nil"))
+        #expect(lifecycleBody.contains("activeRecordingDeliveryBarrier.isDeliveryBlocked"))
     }
 
     @Test func openAIProviderRegistersLiveTranscribeAsStreamingOnly() {
@@ -1498,22 +1641,22 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func aStartReservedBehindTheOlderDeliveryLeaseCountsAsContinuationIntent() async {
+    @Test func anyActiveCaptureOwnerCountsAsContinuationIntentAtReturnBoundary() async {
         let barrier = ActiveRecordingDeliveryBarrier()
-        let olderDeliveryID = UUID()
         let newerStartID = UUID()
         let trackerSequence: UInt64 = 41
         var tracker = PrimaryQueuedAutoSendTracker()
 
-        #expect(await barrier.acquireDelivery(owner: olderDeliveryID) { true })
         barrier.beginCapture(owner: newerStartID)
 
         let resolution = PrimaryQueuedAutoSendPolicy.resolve(
             originalKey: .enter,
             currentIsEligiblePrimaryPaste: true,
             newerCandidates: [],
-            newerRecordingStartPending:
-                barrier.hasCaptureWaitingBehindDelivery
+            // Match the production expression exactly. An already-started newer
+            // capture is just as much continuation intent as a reservation waiting
+            // behind a short older paste lease.
+            newerRecordingStartPending: barrier.isDeliveryBlocked
         )
         tracker.observeSuccessfulPrimaryPaste(
             sequence: trackerSequence,
@@ -1526,8 +1669,134 @@ struct VoiceInkTests {
             hasOutstandingSuccessor: barrier.isDeliveryBlocked
         ).isEmpty)
 
-        barrier.releaseDelivery(owner: olderDeliveryID)
         barrier.endCapture(owner: newerStartID)
+    }
+
+    @MainActor
+    @Test func serialQueueDrainsTwentyFourRegisteredJobsAfterOneRecordedFailure() async throws {
+        let barrier = ActiveRecordingDeliveryBarrier()
+        let state = TranscriptionQueueTestState()
+        let queue = SerialTranscriptionJobQueue()
+        let cycleCount = 24
+        let failedIndex = 9
+
+        for index in 0..<cycleCount {
+            let cycleIndex = index
+            let reservationID = UUID()
+            let recordingSessionID = UUID()
+            barrier.beginCapture(owner: reservationID)
+            #expect(barrier.transferCapture(
+                from: reservationID,
+                to: recordingSessionID
+            ))
+            barrier.endCapture(owner: recordingSessionID)
+
+            let registered = state.registry.register(
+                recordingSessionID: recordingSessionID,
+                transcriptionID: UUID(),
+                audioURL: URL(fileURLWithPath: "/tmp/repeated-primary-\(index).wav")
+            )
+            let identity = try #require(registered)
+            state.currentIdentities.insert(identity)
+            queue.enqueue(
+                identity,
+                isCurrent: { state.currentIdentities.contains($0) },
+                onDiscard: { discarded in
+                    state.events.append("discard:\(discarded.enqueueSequence)")
+                },
+                operation: { running in
+                    let acquired = await barrier.acquireDelivery(
+                        owner: running.transcriptionID,
+                        policy: .primaryPasteDuringCapture
+                    ) { state.currentIdentities.contains(running) }
+                    #expect(acquired)
+                    defer {
+                        barrier.releaseDelivery(owner: running.transcriptionID)
+                        state.currentIdentities.remove(running)
+                        state.registry.remove(running)
+                    }
+                    state.events.append(
+                        cycleIndex == failedIndex
+                            ? "failed:\(cycleIndex)"
+                            : "delivered:\(cycleIndex)"
+                    )
+                }
+            )
+        }
+
+        await queue.waitUntilIdle()
+        #expect(state.events.count == cycleCount)
+        #expect(state.events[failedIndex] == "failed:\(failedIndex)")
+        #expect(state.events[(failedIndex + 1)...].first == "delivered:\(failedIndex + 1)")
+        #expect(!state.events.contains(where: { $0.hasPrefix("discard:") }))
+        #expect(state.registry.isEmpty)
+        #expect(state.currentIdentities.isEmpty)
+        #expect(barrier.activeCaptureOwners.isEmpty)
+        #expect(barrier.activeDeliveryOwners.isEmpty)
+    }
+
+    @Test func startTransferFailureReleasesReservationAndPanelLossIsObservable() throws {
+        let engineSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+        )
+        let transferStart = try #require(engineSource.range(
+            of: "guard activeRecordingDeliveryBarrier.transferCapture("
+        ))
+        let transferEnd = try #require(engineSource.range(
+            of: "        // Born .recording",
+            range: transferStart.upperBound..<engineSource.endIndex
+        ))
+        let transferFailure = engineSource[
+            transferStart.lowerBound..<transferEnd.lowerBound
+        ]
+        #expect(transferFailure.contains(
+            "activeRecordingDeliveryBarrier.endCapture(owner: startRequestID)"
+        ))
+        #expect(transferFailure.contains(
+            "capture ownership transfer refused"
+        ))
+
+        let abortStart = try #require(engineSource.range(
+            of: "let startTokenIsCurrent = session.startID == startID"
+        ))
+        let abortEnd = try #require(engineSource.range(
+            of: "            session.liveRecordingState = .recording",
+            range: abortStart.upperBound..<engineSource.endIndex
+        ))
+        let abortBody = engineSource[
+            abortStart.lowerBound..<abortEnd.lowerBound
+        ]
+        #expect(abortBody.contains("startNewSession: recorder start aborted"))
+        #expect(abortBody.contains("Recording stopped before startup completed"))
+    }
+
+    @Test func providerFailureRecoveryDistinguishesCancellationAudioAndHUDText() {
+        #expect(TranscriptionFailureRecoveryDisposition.resolve(
+            cancellationRequested: true,
+            textCandidates: ["already visible"]
+        ) == .intentionalCancellation)
+        #expect(TranscriptionFailureRecoveryDisposition.resolve(
+            cancellationRequested: false,
+            textCandidates: [nil, "  "]
+        ) == .retainAudioOnly)
+        #expect(TranscriptionFailureRecoveryDisposition.resolve(
+            cancellationRequested: false,
+            textCandidates: [nil, "  recover these words  "]
+        ) == .retainAudioAndText("recover these words"))
+    }
+
+    @Test func openAIRecoveryTelemetryIsAllowlistedWithoutTranscriptContents() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                ".agents/skills/learnings/scripts/live-delivery-trace.sh"
+            ),
+            encoding: .utf8
+        )
+        #expect(script.contains("category == \"OpenAIStreamingProvider\""))
+        #expect(script.contains("OpenAI completion recovered same-item delta"))
     }
 
     @Test func threeQueuedPrimaryPastesGiveAutoSendOnlyToTheNewestTail() {
@@ -1598,6 +1867,41 @@ struct VoiceInkTests {
         }
 
         #expect(effectiveKeys == [.none, .none, .enter])
+        #expect(registry.isEmpty)
+    }
+
+    @Test func manyRepeatedPrimaryCyclesGiveExactlyOneAutoSendToTheTail() throws {
+        var registry = TranscriptionJobRegistry()
+        var identities: [TranscriptionJobIdentity] = []
+        for index in 0..<32 {
+            identities.append(try #require(registry.register(
+                recordingSessionID: UUID(),
+                transcriptionID: UUID(),
+                audioURL: URL(fileURLWithPath: "/tmp/primary-cohort-\(index).wav")
+            )))
+        }
+
+        var issuedSequences: [UInt64] = []
+        for identity in identities {
+            let successors = registry.newerIdentities(after: identity).map {
+                PrimaryQueuedAutoSendCandidate(
+                    enqueueSequence: $0.enqueueSequence,
+                    isEligiblePrimaryPaste: true
+                )
+            }
+            let resolution = PrimaryQueuedAutoSendPolicy.resolve(
+                originalKey: .enter,
+                currentIsEligiblePrimaryPaste: true,
+                newerCandidates: successors
+            )
+            if resolution.effectiveKey == .enter {
+                issuedSequences.append(identity.enqueueSequence)
+            }
+            registry.remove(identity)
+        }
+
+        let tail = try #require(identities.last)
+        #expect(issuedSequences == [tail.enqueueSequence])
         #expect(registry.isEmpty)
     }
 
