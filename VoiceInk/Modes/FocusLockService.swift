@@ -189,10 +189,11 @@ final class FocusLockService: ObservableObject {
         fileprivate enum Mode: Equatable {
             case preparedTargetedInput
             case directExactElement
-            /// ChatGPT build 6119 can temporarily make the retained Codex composer
-            /// unreadable after it moves to the background. This mode opens exactly
-            /// one targeted-input activation session, then requires the original
-            /// task/window/editor identity to resolve again without any AX focus write.
+            /// Audited ChatGPT builds can temporarily make the retained Codex
+            /// composer unreadable after it moves to the background. This mode opens
+            /// exactly one targeted-input activation session, then requires the
+            /// original task/window/editor identity to resolve again without any AX
+            /// focus write.
             case openAIRetainedExactInput
             /// Telegram hides its window subtree while backgrounded. This mode owns
             /// one bounded targeted-input activation session solely to reveal the
@@ -542,14 +543,34 @@ final class FocusLockService: ObservableObject {
             shortVersion: "26.727.51351",
             build: "6119",
             chromium: "150.0.7871.182"
+        ),
+        // ChatGPT 26.730.61639 build 6234 moved to Chromium 151 but its packaged
+        // renderer still composes the idle action inside FooterActions and retains
+        // a distinct Stop state. Tuple membership only enables the existing bounded
+        // proof: the exact editor/window/task, one enabled pressable nearby control,
+        // Send-versus-Stop state, and the irreversible-boundary recheck must all pass.
+        (
+            shortVersion: "26.730.61639",
+            build: "6234",
+            chromium: "151.0.7922.71"
         )
     ]
-    private static let auditedChatGPTRetainedPreparationBuild = (
-        applicationBundleName: "ChatGPT.app",
-        shortVersion: "26.727.51351",
-        build: "6119",
-        chromium: "150.0.7871.182"
-    )
+    private static let auditedChatGPTRetainedPreparationBuilds = [
+        (
+            shortVersion: "26.727.51351",
+            build: "6119",
+            chromium: "150.0.7871.182"
+        ),
+        // Build 6234 preserves the same passive recording-start contract: identify
+        // one exact lower composer only while ChatGPT already owns the active window,
+        // never set AXFocused or activate the app, and revalidate the complete tuple
+        // and structure before returning a tentative Next-only target.
+        (
+            shortVersion: "26.730.61639",
+            build: "6234",
+            chromium: "151.0.7922.71"
+        )
+    ]
 
     private init() {}
 
@@ -1445,11 +1466,12 @@ final class FocusLockService: ObservableObject {
         return session
     }
 
-    /// ChatGPT build 6119 keeps the exact captured Codex composer internally selected,
-    /// but its AX wrapper can become unreadable after the app moves to the background.
-    /// Open one targeted-input activation session first, then require the complete
-    /// capture-time task/window/editor identity to resolve again and match ChatGPT's own
-    /// internal focus. This route never activates the app or writes an AX focus pointer.
+    /// Audited ChatGPT builds keep the exact captured Codex composer internally
+    /// selected, but its AX wrapper can become unreadable after the app moves to the
+    /// background. Open one targeted-input activation session first, then require the
+    /// complete capture-time task/window/editor identity to resolve again and match
+    /// ChatGPT's own internal focus. This route never activates the app or writes an
+    /// AX focus pointer.
     private func prepareRetainedOpenAIBackgroundDelivery(
         to target: Target,
         keyboardFocus: (element: AXUIElement, pid: pid_t),
@@ -3466,13 +3488,15 @@ final class FocusLockService: ObservableObject {
         build: String?,
         chromium: String?
     ) -> Bool {
-        bundleIdentifier == "com.openai.codex"
-            && applicationBundleName
-                == auditedChatGPTRetainedPreparationBuild.applicationBundleName
-            && shortVersion
-                == auditedChatGPTRetainedPreparationBuild.shortVersion
-            && build == auditedChatGPTRetainedPreparationBuild.build
-            && chromium == auditedChatGPTRetainedPreparationBuild.chromium
+        guard bundleIdentifier == "com.openai.codex",
+              applicationBundleName == "ChatGPT.app" else {
+            return false
+        }
+        return auditedChatGPTRetainedPreparationBuilds.contains { candidate in
+            shortVersion == candidate.shortVersion
+                && build == candidate.build
+                && chromium == candidate.chromium
+        }
     }
 
     static func semanticSendGeometryMatches(
