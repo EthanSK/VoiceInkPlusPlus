@@ -25,9 +25,9 @@ private actor FakeChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport {
             self.currentSnapshot = ChatGPTVoiceInputSnapshot(
                 applicationPID: applicationPID,
                 isInputRunning: currentSnapshot.isInputRunning,
-                microphoneState: currentSnapshot.microphoneState == .listening
-                    ? .muted
-                    : .listening
+                microphoneState: currentSnapshot.microphoneState.map {
+                    $0 == .listening ? .muted : .listening
+                }
             )
         }
         return true
@@ -126,7 +126,7 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         #expect(alreadyMutedState.ownedMutedApplicationPID == nil)
     }
 
-    @Test func unverifiedToggleNeverCreatesRestorationOwnership() async {
+    @Test func aReadableFailedToggleIsNotInvertedAtStop() async {
         let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
             isInputRunning: true,
@@ -140,7 +140,7 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         var postPIDs = await transport.postedPIDs()
         var state = await coordinator.stateForTesting()
         #expect(postPIDs == [pid])
-        #expect(state.ownedMutedApplicationPID == nil)
+        #expect(state.ownedMutedApplicationPID == pid)
 
         await coordinator.setCaptureActive(false)
         await coordinator.waitForPendingTransitionsForTesting()
@@ -148,6 +148,57 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         state = await coordinator.stateForTesting()
         #expect(postPIDs == [pid])
         #expect(!state.captureActive)
+        #expect(state.ownedMutedApplicationPID == nil)
+    }
+
+    @Test func unreadableBackgroundControlUsesOnePairedLease() async {
+        let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
+            applicationPID: pid,
+            isInputRunning: true,
+            microphoneState: nil
+        ))
+        let coordinator = makeCoordinator(transport)
+
+        await coordinator.setCaptureActive(true)
+        await coordinator.waitForPendingTransitionsForTesting()
+        var state = await coordinator.stateForTesting()
+        var postPIDs = await transport.postedPIDs()
+        #expect(state.captureActive)
+        #expect(state.ownedMutedApplicationPID == pid)
+        #expect(postPIDs == [pid])
+
+        await coordinator.setCaptureActive(false)
+        await coordinator.waitForPendingTransitionsForTesting()
+        state = await coordinator.stateForTesting()
+        postPIDs = await transport.postedPIDs()
+        #expect(!state.captureActive)
+        #expect(state.ownedMutedApplicationPID == nil)
+        #expect(postPIDs == [pid, pid])
+    }
+
+    @Test func endedUnreadableVoiceSessionIsNotInvertedAtStop() async {
+        let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
+            applicationPID: pid,
+            isInputRunning: true,
+            microphoneState: nil
+        ))
+        let coordinator = makeCoordinator(transport)
+
+        await coordinator.setCaptureActive(true)
+        await coordinator.waitForPendingTransitionsForTesting()
+        await transport.setSnapshot(.init(
+            applicationPID: pid,
+            isInputRunning: false,
+            microphoneState: nil
+        ))
+
+        await coordinator.setCaptureActive(false)
+        await coordinator.waitForPendingTransitionsForTesting()
+        let state = await coordinator.stateForTesting()
+        let postPIDs = await transport.postedPIDs()
+        #expect(!state.captureActive)
+        #expect(state.ownedMutedApplicationPID == nil)
+        #expect(postPIDs == [pid])
     }
 
     @Test func userReenabledInputRelinquishesOwnershipWithoutInverseToggle() async {

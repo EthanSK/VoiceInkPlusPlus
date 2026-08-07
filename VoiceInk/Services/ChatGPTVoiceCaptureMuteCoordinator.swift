@@ -36,14 +36,15 @@ protocol ChatGPTVoiceMuteTransport: Sendable {
 /// state, activates ChatGPT, or moves the pointer.
 ///
 /// Core Audio proves that an actual ChatGPT Voice session exists, but ChatGPT deliberately keeps
-/// that process input stream running while its Voice microphone is muted. Mute ownership therefore
-/// uses a separate read-only Accessibility state check against the exact `Mute microphone` /
-/// `Unmute microphone` control. Accessibility is never used to activate ChatGPT, set focus, press
-/// the control, or move the pointer; the only mutation remains the user-configured keyboard command.
-/// VoiceInk++ deliberately does not poll that tree while recording—the rejected polling experiment
-/// caused lag. Restoration performs one bounded check and occurs only for the same process while the
-/// control still proves the muted state we own; a user-visible unmute therefore relinquishes the
-/// lease without an inverse toggle.
+/// that process input stream running while its Voice microphone is muted. A separate read-only
+/// Accessibility state check recognizes the exact `Mute microphone` / `Unmute microphone` control
+/// when ChatGPT exposes it. That control is not reliably readable while ChatGPT is backgrounded, so
+/// an active session with an unreadable control uses one paired shortcut lease: one toggle at capture
+/// start and at most one inverse toggle at capture stop for the same still-active process. A readable
+/// already-muted control is never toggled, and a readable user unmute relinquishes the lease.
+/// Accessibility is never used to activate ChatGPT, set focus, press the control, or move the
+/// pointer; the only mutation remains the user-configured keyboard command. VoiceInk++ deliberately
+/// does not poll that tree while recording—the rejected polling experiment caused lag.
 actor ChatGPTVoiceCaptureMuteCoordinator {
     static let shared = ChatGPTVoiceCaptureMuteCoordinator(
         transport: SystemChatGPTVoiceMuteTransport()
@@ -110,28 +111,34 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
             logger.debug("Capture began while ChatGPT had no active input stream; microphone toggle was not posted pid=\(before.applicationPID, privacy: .public)")
             return
         }
-        guard before.microphoneState == .listening else {
-            // Already-muted and unreadable controls are both fail-closed. VoiceInk++ must not
-            // unmute a user-owned state merely because hardware capture began.
-            logger.debug("Capture began without one verified listening ChatGPT Voice control; microphone toggle was not posted pid=\(before.applicationPID, privacy: .public)")
+        guard before.microphoneState != .muted else {
+            // A readable muted control belongs to the user; never invert it at recording start.
+            logger.debug("Capture began while ChatGPT Voice was already muted; microphone toggle was not posted pid=\(before.applicationPID, privacy: .public)")
             return
+        }
+        if before.microphoneState == nil {
+            logger.notice("ChatGPT Voice control was unreadable; using one paired shortcut lease for the active session pid=\(before.applicationPID, privacy: .public)")
         }
         guard await transport.postMicrophoneToggle(to: before.applicationPID) else {
             logger.error("Could not post the configured ChatGPT Voice microphone shortcut pid=\(before.applicationPID, privacy: .public)")
             return
         }
-        guard await transport.waitForMicrophoneState(
+        let verifiedMuted = await transport.waitForMicrophoneState(
             .muted,
             applicationPID: before.applicationPID
-        ) else {
-            // Event creation/posting is not success. Without the read-only control-state proof we do not
-            // claim ownership and therefore will not risk a later inverse toggle.
-            logger.error("ChatGPT Voice microphone shortcut was not verified as muted pid=\(before.applicationPID, privacy: .public)")
-            return
-        }
+        )
 
+        // ChatGPT's background Voice surface can disappear from its AX tree immediately after the
+        // supported shortcut runs. The event itself is paired only for this same active Voice PID;
+        // the stop boundary re-checks session presence and any readable user-visible state before
+        // issuing the inverse. This preserves the proven background mute without polling or pointer
+        // input while still avoiding a later toggle after the Voice session ends or the user unmutes.
         ownedMutedApplicationPID = before.applicationPID
-        logger.notice("VoiceInk++ verified and owns ChatGPT Voice microphone suppression pid=\(before.applicationPID, privacy: .public)")
+        if verifiedMuted {
+            logger.notice("VoiceInk++ verified and owns ChatGPT Voice microphone suppression pid=\(before.applicationPID, privacy: .public)")
+        } else {
+            logger.notice("VoiceInk++ owns one paired ChatGPT Voice microphone shortcut lease without readable post-state pid=\(before.applicationPID, privacy: .public)")
+        }
     }
 
     private func restoreChatGPTVoiceIfOwned() async {
@@ -142,10 +149,22 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
             logger.notice("ChatGPT process changed or exited; stale microphone-suppression ownership was discarded pid=\(ownedPID, privacy: .public)")
             return
         }
-        guard current.microphoneState == .muted else {
+        guard current.isInputRunning else {
             ownedMutedApplicationPID = nil
-            logger.notice("ChatGPT Voice microphone was no longer provably muted by VoiceInk++; restoration ownership was relinquished pid=\(ownedPID, privacy: .public)")
+            logger.notice("ChatGPT Voice session ended; microphone-suppression ownership was discarded without an inverse toggle pid=\(ownedPID, privacy: .public)")
             return
+        }
+        switch current.microphoneState {
+        case .listening:
+            ownedMutedApplicationPID = nil
+            logger.notice("ChatGPT Voice microphone was visibly unmuted; restoration ownership was relinquished pid=\(ownedPID, privacy: .public)")
+            return
+        case .muted:
+            break
+        case nil:
+            // The same active Voice PID remains, but its background control is unreadable. Pair the
+            // single shortcut posted at capture start exactly once; never retry an unobserved result.
+            logger.notice("ChatGPT Voice control remained unreadable; pairing the owned microphone shortcut pid=\(ownedPID, privacy: .public)")
         }
         guard await transport.postMicrophoneToggle(to: ownedPID) else {
             // Keep the lease rather than lying that we restored it. A later real capture cycle can
