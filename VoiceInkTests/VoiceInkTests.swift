@@ -1294,6 +1294,7 @@ struct VoiceInkTests {
 
         // Even a same-text rewrite is a different pasteboard generation and must not
         // let an older restore task overwrite the newer owner's clipboard.
+        pasteboard.clearContents()
         pasteboard.setString("second transcript", forType: .string)
         #expect(!second.isOwned(on: pasteboard))
     }
