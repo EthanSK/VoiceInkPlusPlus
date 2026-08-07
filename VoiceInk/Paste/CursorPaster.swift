@@ -107,6 +107,7 @@ class CursorPaster {
     private static let appleScriptPasteTimeout: TimeInterval = 2.0
     private static let postPasteSettlementNanoseconds: UInt64 = 150_000_000
     private static let maximumClipboardLeaseAttempts = 2
+    @MainActor
     private static let foregroundPasteCoordinator = ForegroundPasteTransactionCoordinator()
 
     private enum PasteCommandResult: Equatable {
