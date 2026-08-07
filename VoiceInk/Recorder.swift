@@ -190,6 +190,10 @@ class Recorder: NSObject, ObservableObject {
             }
 
             startAudioMeterTimer()
+            // Suppress only an already-active ChatGPT Voice listener, after real AUHAL capture
+            // succeeds. This dedicated lease is intentionally separate from the YouTube/media
+            // lifecycle and from transcription completion; only microphone capture owns it.
+            await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)
             pauseMedia()
             // Complementary to pauseMedia(): broadcast "recording started" so the external YouTube
             // helper app can pause a playing YouTube tab in Chrome (which MediaRemote can't reach).
@@ -248,6 +252,7 @@ class Recorder: NSObject, ObservableObject {
         }
 
         resetAudioMeter()
+        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)
         audioRestorationTask?.cancel()
         audioRestorationTask = Task {
             guard !Task.isCancelled else { return }
@@ -279,6 +284,7 @@ class Recorder: NSObject, ObservableObject {
         }
 
         startAudioMeterTimer()
+        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)
         muteSystemAudio()
         logger.info("Recording capture resumed into the existing WAV/realtime session; playback is unchanged")
     }
@@ -304,6 +310,7 @@ class Recorder: NSObject, ObservableObject {
         }
 
         resetAudioMeter()
+        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)
 
         audioRestorationTask?.cancel()
         if playbackDisposition == .preserveCurrentPlayback {
