@@ -1272,7 +1272,7 @@ struct VoiceInkTests {
         ))
         #expect(first.isOwned(on: pasteboard))
         #expect(pasteboard.string(forType: ClipboardManager.pasteSessionType) == "lease-a")
-        #expect(!pasteboard.types.contains(NSPasteboard.PasteboardType(
+        #expect(!(pasteboard.types ?? []).contains(NSPasteboard.PasteboardType(
             "org.nspasteboard.TransientType"
         )))
 
@@ -1288,7 +1288,7 @@ struct VoiceInkTests {
         ))
         #expect(second.isOwned(on: pasteboard))
         #expect(!first.isOwned(on: pasteboard))
-        #expect(pasteboard.types.contains(NSPasteboard.PasteboardType(
+        #expect((pasteboard.types ?? []).contains(NSPasteboard.PasteboardType(
             "org.nspasteboard.TransientType"
         )))
 
