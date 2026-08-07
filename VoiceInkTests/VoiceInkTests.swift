@@ -1256,6 +1256,150 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func foregroundPasteboardLeaseRejectsStaleAndCrossSessionPayloads() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(
+            "VoiceInkTests.foregroundPasteboardLease.\(UUID().uuidString)"
+        ))
+        defer { pasteboard.clearContents() }
+        pasteboard.clearContents()
+        pasteboard.setString("pre-existing clipboard", forType: .string)
+
+        let first = try #require(CursorPaster.preparePasteboardLease(
+            "first transcript",
+            transient: false,
+            sessionID: "lease-a",
+            on: pasteboard
+        ))
+        #expect(first.isOwned(on: pasteboard))
+        #expect(pasteboard.string(forType: ClipboardManager.pasteSessionType) == "lease-a")
+        #expect(!pasteboard.types.contains(NSPasteboard.PasteboardType(
+            "org.nspasteboard.TransientType"
+        )))
+
+        pasteboard.clearContents()
+        pasteboard.setString("pre-existing clipboard", forType: .string)
+        #expect(!first.isOwned(on: pasteboard))
+
+        let second = try #require(CursorPaster.preparePasteboardLease(
+            "second transcript",
+            transient: true,
+            sessionID: "lease-b",
+            on: pasteboard
+        ))
+        #expect(second.isOwned(on: pasteboard))
+        #expect(!first.isOwned(on: pasteboard))
+        #expect(pasteboard.types.contains(NSPasteboard.PasteboardType(
+            "org.nspasteboard.TransientType"
+        )))
+
+        // Even a same-text rewrite is a different pasteboard generation and must not
+        // let an older restore task overwrite the newer owner's clipboard.
+        pasteboard.setString("second transcript", forType: .string)
+        #expect(!second.isOwned(on: pasteboard))
+    }
+
+    @MainActor
+    @Test func foregroundPasteTransactionsAcquireInFIFOOrder() async {
+        let coordinator = ForegroundPasteTransactionCoordinator()
+        let firstID = UUID()
+        let secondID = UUID()
+        let thirdID = UUID()
+        var acquired: [String] = []
+
+        await coordinator.acquire(firstID)
+        let second = Task { @MainActor in
+            await coordinator.acquire(secondID)
+            acquired.append("second")
+        }
+        for _ in 0..<20 {
+            if coordinator.waitingCount == 1 { break }
+            await Task.yield()
+        }
+        #expect(coordinator.waitingCount == 1)
+        let third = Task { @MainActor in
+            await coordinator.acquire(thirdID)
+            acquired.append("third")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(acquired.isEmpty)
+        #expect(coordinator.waitingCount == 2)
+
+        coordinator.release(firstID)
+        await second.value
+        #expect(acquired == ["second"])
+        #expect(coordinator.activeLeaseID == secondID)
+
+        coordinator.release(secondID)
+        await third.value
+        #expect(acquired == ["second", "third"])
+        #expect(coordinator.activeLeaseID == thirdID)
+        coordinator.release(thirdID)
+        #expect(coordinator.activeLeaseID == nil)
+    }
+
+    @Test func foregroundPasteChecksExactLeaseBeforeEveryIrreversibleKeyBoundary() throws {
+        let source = try repositorySource("VoiceInk/Paste/CursorPaster.swift")
+        let start = try #require(source.range(
+            of: "    private static func pasteFromClipboard("
+        ))
+        let end = try #require(source.range(
+            of: "    private static func wait(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let commandLease = try #require(body.range(of: "boundary: \"beforeCommandDown\""))
+        let commandDown = try #require(body.range(of: "cmdDown.post(tap: .cghidEventTap)"))
+        let vLease = try #require(body.range(of: "boundary: \"beforeVDown\""))
+        let vDown = try #require(body.range(of: "vDown.post(tap: .cghidEventTap)"))
+
+        #expect(commandLease.lowerBound < commandDown.lowerBound)
+        #expect(commandDown.lowerBound < vLease.lowerBound)
+        #expect(vLease.lowerBound < vDown.lowerBound)
+        #expect(body.contains("cmdUp.post(tap: .cghidEventTap)"))
+
+        let transactionStart = try #require(source.range(
+            of: "    private static func performPasteSession("
+        ))
+        let transactionEnd = try #require(source.range(
+            of: "    static func preparePasteboardLease("
+        ))
+        let transactionBody = String(source[
+            transactionStart.lowerBound..<transactionEnd.lowerBound
+        ])
+        #expect(transactionBody.contains("foregroundPasteCoordinator.acquire"))
+        #expect(transactionBody.contains("foregroundPasteCoordinator.release"))
+        #expect(transactionBody.contains("maximumClipboardLeaseAttempts"))
+        #expect(transactionBody.contains("sessionID: sessionID"))
+    }
+
+    @Test func recordingContextSelectedTextCaptureNeverMutatesClipboard() throws {
+        let source = try repositorySource("VoiceInk/Services/SelectedTextService.swift")
+        let start = try #require(source.range(
+            of: "    private static let selectedTextStrategies: [TextStrategy] = ["
+        ))
+        let end = try #require(source.range(
+            of: "    static func fetchSelectedText()",
+            range: start.upperBound..<source.endIndex
+        ))
+        let strategies = String(source[start.lowerBound..<end.lowerBound])
+
+        #expect(strategies.contains(".accessibility"))
+        #expect(strategies.contains(".appleScript"))
+        #expect(!strategies.contains(".menuAction"))
+        #expect(!strategies.contains(".shortcut"))
+        #expect(!strategies.contains(".auto"))
+    }
+
+    @Test func liveTraceAllowsOnlyPrivacySafePasteboardLeaseMetadata() throws {
+        let source = try repositorySource(
+            ".agents/skills/learnings/scripts/live-delivery-trace.sh"
+        )
+        #expect(source.contains("Foreground pasteboard transaction"))
+        #expect(source.contains("Foreground pasteboard lease"))
+        #expect(!source.contains("expectedText"))
+    }
+
+    @MainActor
     @Test func deliveryLeaseMakesANewerCaptureHandshakeWaitWithoutLosingItsReservation() async {
         let barrier = ActiveRecordingDeliveryBarrier()
         let deliveryID = UUID()

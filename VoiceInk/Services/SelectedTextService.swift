@@ -9,7 +9,6 @@ final class SelectedTextService {
     private static let textManager = SelectedTextManager.shared
     private static let selectedTextStrategies: [TextStrategy] = [
         .accessibility,
-        .menuAction,
         .appleScript
     ]
 
@@ -20,6 +19,13 @@ final class SelectedTextService {
         }
 
         do {
+            // Recording context capture can overlap an older Primary transcript paste.
+            // SelectedTextKit's menu/shortcut strategies copy through NSPasteboard,
+            // then restore their backup after any observed change. Our transcript write
+            // can satisfy that poll and make the backup overwrite the exact payload just
+            // before Command-V. Keep this path clipboard-free: AX covers native/Electron
+            // selections and AppleScript covers supported browsers without mutating the
+            // pasteboard. Paste delivery separately verifies its own lease as a backstop.
             return normalized(try await textManager.getSelectedText(strategies: selectedTextStrategies))
         } catch {
             logger.debug("SelectedTextKit failed to capture selected text: \(error, privacy: .public)")

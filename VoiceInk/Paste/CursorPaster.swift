@@ -4,6 +4,73 @@ import Carbon
 import Darwin
 import os
 
+struct ForegroundPasteboardLease: Equatable {
+    let sessionID: String
+    let expectedText: String
+    let changeCount: Int
+
+    var logID: String {
+        String(sessionID.prefix(8))
+    }
+
+    func isOwned(on pasteboard: NSPasteboard) -> Bool {
+        pasteboard.changeCount == changeCount &&
+            pasteboard.string(forType: .string) == expectedText &&
+            pasteboard.string(forType: ClipboardManager.pasteSessionType) == sessionID
+    }
+}
+
+@MainActor
+final class ForegroundPasteTransactionCoordinator {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private(set) var activeLeaseID: UUID?
+    private var waiters: [Waiter] = []
+
+    var waitingCount: Int {
+        waiters.count
+    }
+
+    func acquire(_ id: UUID) async {
+        if activeLeaseID == nil {
+            activeLeaseID = id
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(Waiter(id: id, continuation: continuation))
+        }
+    }
+
+    func release(_ id: UUID, settlementNanoseconds: UInt64 = 0) {
+        guard activeLeaseID == id else { return }
+        if settlementNanoseconds == 0 {
+            advance(after: id)
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: settlementNanoseconds)
+            self?.advance(after: id)
+        }
+    }
+
+    private func advance(after id: UUID) {
+        guard activeLeaseID == id else { return }
+        guard !waiters.isEmpty else {
+            activeLeaseID = nil
+            return
+        }
+
+        let next = waiters.removeFirst()
+        activeLeaseID = next.id
+        next.continuation.resume()
+    }
+}
+
 class CursorPaster {
     private typealias ClipboardItemSnapshot = [(NSPasteboard.PasteboardType, Data)]
     private typealias ClipboardSnapshot = [ClipboardItemSnapshot]
@@ -38,6 +105,27 @@ class CursorPaster {
     private static let pasteShortcutEventDelay: TimeInterval = 0.01
     private static let minimumClipboardRestoreDelay: TimeInterval = 0.25
     private static let appleScriptPasteTimeout: TimeInterval = 2.0
+    private static let postPasteSettlementNanoseconds: UInt64 = 150_000_000
+    private static let maximumClipboardLeaseAttempts = 2
+    private static let foregroundPasteCoordinator = ForegroundPasteTransactionCoordinator()
+
+    private enum PasteCommandResult: Equatable {
+        case commandPosted
+        case commandNotPosted
+        case actionGuardRefused
+        case clipboardLeaseLost
+
+        var publicResult: PasteResult {
+            switch self {
+            case .commandPosted:
+                return .commandPosted
+            case .actionGuardRefused:
+                return .actionGuardRefused
+            case .commandNotPosted, .clipboardLeaseLost:
+                return .commandNotPosted
+            }
+        }
+    }
 
     static func pasteAtCursor(_ text: String) {
         Task {
@@ -71,40 +159,113 @@ class CursorPaster {
     ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
-        let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
+        var savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
         let sessionID = UUID().uuidString
+        let transactionID = UUID()
+        let wasQueued = foregroundPasteCoordinator.activeLeaseID != nil
+        await foregroundPasteCoordinator.acquire(transactionID)
+        var settlementNanoseconds: UInt64 = 0
+        defer {
+            // Keep every VoiceInk foreground paste mutation FIFO. A successful Cmd-V
+            // returns immediately to its caller so current auto-send stays fast, while
+            // only a later pasteboard mutation waits for the target's event loop to
+            // consume this payload.
+            foregroundPasteCoordinator.release(
+                transactionID,
+                settlementNanoseconds: settlementNanoseconds
+            )
+        }
+        logger.info("Foreground pasteboard transaction acquired queued=\(wasQueued, privacy: .public) waiting=\(foregroundPasteCoordinator.waitingCount, privacy: .public) textChars=\(text.count, privacy: .public)")
 
-        guard ClipboardManager.setClipboard(
-            text,
-            transient: shouldRestoreClipboard,
-            sessionID: shouldRestoreClipboard ? sessionID : nil
-        ) else {
-            logger.error("Failed to prepare clipboard for paste")
-            return .commandNotPosted
+        var finalLease: ForegroundPasteboardLease?
+        var commandResult: PasteCommandResult = .commandNotPosted
+        for attempt in 1...maximumClipboardLeaseAttempts {
+            guard let lease = preparePasteboardLease(
+                text,
+                transient: shouldRestoreClipboard,
+                sessionID: sessionID,
+                on: pasteboard
+            ) else {
+                logger.error("Failed to prepare clipboard for paste attempt=\(attempt, privacy: .public) textChars=\(text.count, privacy: .public)")
+                commandResult = .commandNotPosted
+                break
+            }
+            finalLease = lease
+            logger.info("Foreground pasteboard lease prepared lease=\(lease.logID, privacy: .public) attempt=\(attempt, privacy: .public) ownershipVerified=true changeCount=\(lease.changeCount, privacy: .public) textChars=\(text.count, privacy: .public) payloadDigest=\(TranscriptionLineageDigest.make(text), privacy: .public)")
+
+            await wait(attempt == 1 ? prePasteDelay : pasteShortcutEventDelay)
+
+            // Clipboard preparation intentionally precedes the delay, but Cmd-V is
+            // irreversible. Revalidate both the current-input action boundary and our
+            // exact pasteboard lease. A lost lease is rewritten once; V is never posted
+            // while the pasteboard contains pre-existing or another session's payload.
+            guard canPost() else {
+                logger.error("Refused foreground paste because the exact-input action guard changed")
+                commandResult = .actionGuardRefused
+                break
+            }
+            guard logPasteboardOwnership(lease, on: pasteboard, boundary: "beforeCommand") else {
+                if shouldRestoreClipboard {
+                    savedContents = snapshotClipboard(from: pasteboard)
+                }
+                commandResult = .clipboardLeaseLost
+                continue
+            }
+
+            commandResult = await postPasteCommand(
+                canPost: canPost,
+                lease: lease,
+                on: pasteboard
+            )
+            if commandResult == .clipboardLeaseLost {
+                if shouldRestoreClipboard {
+                    savedContents = snapshotClipboard(from: pasteboard)
+                }
+                continue
+            }
+            break
         }
 
-        await wait(prePasteDelay)
-
-        // Clipboard preparation intentionally precedes the delay, but Cmd-V is
-        // irreversible. Revalidate the saved exact input at this last boundary so a
-        // newer click cannot receive the transcription or trigger a compensating focus
-        // rewrite. A refused paste leaves the transcript safely on the clipboard.
-        guard canPost() else {
-            logger.error("Refused foreground paste because the exact-input action guard changed")
-            return .actionGuardRefused
+        if commandResult == .commandPosted {
+            settlementNanoseconds = postPasteSettlementNanoseconds
         }
-
-        let pasteResult = await postPasteCommand(canPost: canPost)
-        if shouldRestoreClipboard, pasteResult != .actionGuardRefused {
+        if shouldRestoreClipboard,
+           commandResult != .actionGuardRefused,
+           let finalLease {
             scheduleClipboardRestore(
                 savedContents,
-                expectedText: text,
-                sessionID: sessionID,
+                lease: finalLease,
                 on: pasteboard
             )
         }
+        if commandResult == .clipboardLeaseLost {
+            logger.error("Foreground pasteboard lease could not be reacquired; Cmd-V was not posted textChars=\(text.count, privacy: .public)")
+        }
 
-        return pasteResult
+        return commandResult.publicResult
+    }
+
+    static func preparePasteboardLease(
+        _ text: String,
+        transient: Bool,
+        sessionID: String,
+        on pasteboard: NSPasteboard
+    ) -> ForegroundPasteboardLease? {
+        guard ClipboardManager.setClipboard(
+            text,
+            transient: transient,
+            sessionID: sessionID,
+            on: pasteboard
+        ) else {
+            return nil
+        }
+
+        let lease = ForegroundPasteboardLease(
+            sessionID: sessionID,
+            expectedText: text,
+            changeCount: pasteboard.changeCount
+        )
+        return lease.isOwned(on: pasteboard) ? lease : nil
     }
 
     private static func snapshotClipboard(from pasteboard: NSPasteboard) -> ClipboardSnapshot {
@@ -120,20 +281,28 @@ class CursorPaster {
 
     @MainActor
     private static func postPasteCommand(
-        canPost: @escaping @MainActor () -> Bool
-    ) async -> PasteResult {
+        canPost: @escaping @MainActor () -> Bool,
+        lease: ForegroundPasteboardLease,
+        on pasteboard: NSPasteboard
+    ) async -> PasteCommandResult {
         guard canPost() else { return .actionGuardRefused }
+        guard logPasteboardOwnership(lease, on: pasteboard, boundary: "beforeCommandDown") else {
+            return .clipboardLeaseLost
+        }
         if PasteMethod.current() == .appleScript {
             return await pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
         } else {
-            return await pasteFromClipboard(canPost: canPost)
+            return await pasteFromClipboard(
+                canPost: canPost,
+                lease: lease,
+                on: pasteboard
+            )
         }
     }
 
     private static func scheduleClipboardRestore(
         _ savedContents: ClipboardSnapshot,
-        expectedText: String,
-        sessionID: String,
+        lease: ForegroundPasteboardLease,
         on pasteboard: NSPasteboard
     ) {
         let delay = max(
@@ -143,7 +312,7 @@ class CursorPaster {
 
         Task { @MainActor in
             await wait(delay)
-            guard pasteboardStillOwnedByPasteSession(pasteboard, expectedText: expectedText, sessionID: sessionID) else {
+            guard lease.isOwned(on: pasteboard) else {
                 return
             }
             pasteboard.clearContents()
@@ -153,13 +322,18 @@ class CursorPaster {
         }
     }
 
-    private static func pasteboardStillOwnedByPasteSession(
-        _ pasteboard: NSPasteboard,
-        expectedText: String,
-        sessionID: String
+    @discardableResult
+    private static func logPasteboardOwnership(
+        _ lease: ForegroundPasteboardLease,
+        on pasteboard: NSPasteboard,
+        boundary: String
     ) -> Bool {
-        pasteboard.string(forType: .string) == expectedText &&
-            pasteboard.string(forType: ClipboardManager.pasteSessionType) == sessionID
+        let textMatches = pasteboard.string(forType: .string) == lease.expectedText
+        let markerMatches = pasteboard.string(forType: ClipboardManager.pasteSessionType) == lease.sessionID
+        let changeCountMatches = pasteboard.changeCount == lease.changeCount
+        let verified = textMatches && markerMatches && changeCountMatches
+        logger.info("Foreground pasteboard lease boundary lease=\(lease.logID, privacy: .public) boundary=\(boundary, privacy: .public) ownershipVerified=\(verified, privacy: .public) expectedChangeCount=\(lease.changeCount, privacy: .public) actualChangeCount=\(pasteboard.changeCount, privacy: .public) textMatches=\(textMatches, privacy: .public) markerMatches=\(markerMatches, privacy: .public)")
+        return verified
     }
 
     private static func pasteboardItems(from snapshot: ClipboardSnapshot) -> [NSPasteboardItem] {
@@ -226,8 +400,10 @@ class CursorPaster {
     // Posts Cmd+V via CGEvent without modifying the active input source.
     @MainActor
     private static func pasteFromClipboard(
-        canPost: @escaping @MainActor () -> Bool
-    ) async -> PasteResult {
+        canPost: @escaping @MainActor () -> Bool,
+        lease: ForegroundPasteboardLease,
+        on pasteboard: NSPasteboard
+    ) async -> PasteCommandResult {
         guard AXIsProcessTrusted() else {
             logger.error("Accessibility permission is required to paste with simulated key events")
             return .commandNotPosted
@@ -248,6 +424,9 @@ class CursorPaster {
         vUp.flags     = .maskCommand
 
         guard canPost() else { return .actionGuardRefused }
+        guard logPasteboardOwnership(lease, on: pasteboard, boundary: "beforeCommandDown") else {
+            return .clipboardLeaseLost
+        }
         cmdDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
         // Cmd-down and V-down are separated only to match a real shortcut. Re-prove
@@ -256,6 +435,10 @@ class CursorPaster {
         guard canPost() else {
             cmdUp.post(tap: .cghidEventTap)
             return .actionGuardRefused
+        }
+        guard logPasteboardOwnership(lease, on: pasteboard, boundary: "beforeVDown") else {
+            cmdUp.post(tap: .cghidEventTap)
+            return .clipboardLeaseLost
         }
         vDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)

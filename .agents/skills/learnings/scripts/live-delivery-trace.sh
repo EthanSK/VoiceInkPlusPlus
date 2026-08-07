@@ -338,6 +338,8 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground AppleScript paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Cancelled foreground CGEvent paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to prepare clipboard for paste'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Foreground pasteboard transaction'*|\
+      *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Foreground pasteboard lease'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Accessibility permission is required to paste'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Failed to create Cmd+V keyboard events'*|\
       *'[com.prakashjoshipax.voiceink:CursorPaster]'*'Issued humanized foreground CGEvent auto-send'* )
