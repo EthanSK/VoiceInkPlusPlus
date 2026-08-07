@@ -367,6 +367,24 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Paste transport failures
 
+### Clipboard-mutating selected-text capture during recording-context setup
+
+- **State:** REJECTED after a physical rapid-recording regression in v2.0.285.
+- **Attempt:** Let SelectedTextKit's `.menuAction` strategy snapshot the global pasteboard, issue
+  Copy, poll for a change, and restore its snapshot while VoiceInk++ independently finalized and
+  delivered older Primary transcripts.
+- **Observed result:** An older transcript's legitimate pasteboard write satisfied the selection
+  poll. The selection task then restored its stale snapshot during `CursorPaster`'s pre-paste delay,
+  and the unguarded Command-V pasted that stale value even though recording and transcription
+  lineage were correct.
+- **Resolution:** Recording-context selected-text capture is clipboard-free (`.accessibility` and
+  `.appleScript` only). Foreground paste owns a unique marker, text, and pasteboard generation,
+  revalidates that lease before Command-down and V-down, serializes every VoiceInk foreground paste,
+  and reacquires at most once before failing closed.
+- **Do not retry:** Do not restore `.menuAction`, `.shortcut`, or `.auto` to recording-context
+  capture unless the selection mechanism can prove it never mutates the global pasteboard. Generic
+  pasteboard restoration timing is not a substitute for transaction ownership.
+
 ### `CGEvent.postToPid` Command-V (`b694eac`)
 
 - **State:** REJECTED.

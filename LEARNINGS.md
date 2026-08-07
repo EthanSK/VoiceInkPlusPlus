@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-07T15:40:46Z
+**Trigger:** Ethan repeatedly reproduced the previous clipboard value pasting when starting a new recording before the prior result finished.
+**Symptom:** Rapid recording B could paste an older clipboard value even though A and B had distinct audio and transcript lineage.
+**Root cause:** SelectedTextKit menuAction capture snapshotted and later restored the pre-existing clipboard; transcript A's VoiceInk clipboard write woke that poll during CursorPaster's pre-paste delay, and foreground Command-V posted without revalidating clipboard ownership.
+**Fix:** Commits 167e533 and 31e27b0 remove clipboard-mutating recording-context capture, serialize foreground paste transactions, mark every payload with an exact session lease, verify marker text and changeCount before Command and V, reacquire once on ownership loss, and keep restore ownership-guarded without changing Next/latch routes.
+**Commit:** c7091ca194f57a07bd9d08da34905b134a10a46c
+**Guard:** Mac Mini canonical action built the exact candidate then hit the known TestManager stall; fresh direct xcrun xctest named and passed 141 tests in 4 suites including clipboard lease/FIFO, primaryPasteLeaseCrossesActiveCaptureWhileExclusiveWorkStillWaits, Primary isolation, both Next routes, realtime HUD-only, and crash recovery. Signed v2.0.287 is installed; one physical rapid A/B run remains required.
+---
+
+
+---
 **Date:** 2026-08-05T23:16:59Z
 **Trigger:** Ethan asked that unfinished and interrupted recordings are never lost and remain usable in VoiceInk++ History.
 **Symptom:** An interrupted or force-quit recording could leave a partial WAV and live HUD transcript without a recoverable History entry after relaunch.
