@@ -318,7 +318,6 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                 //   transcribing is explicitly desired and now race-free.
                 // ═══════════════════════════════════════════════════════════════
                 vippLog.info("toggleRecorderPanel: toggle during \(String(describing: engine.recordingState), privacy: .public) → START NEW SESSION (record-while-transcribing; serial-queue makes this safe)")
-                SoundManager.shared.playStartSound()
                 await engine.toggleRecord(modeId: modeId)
             case .idle:
                 // .idle now also covers "a previous session is transcribing in the
@@ -328,7 +327,6 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                 // recording — UNLESS the assistant is awaiting a follow-up, which takes
                 // precedence as before.
                 if engine.assistantSession.canSendFollowUp {
-                    SoundManager.shared.playStartSound()
                     await engine.toggleRecord(
                         modeId: modeId,
                         isAssistantFollowUp: true
@@ -347,7 +345,6 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                         vippLog.info("toggleRecorderPanel: idle press ignored while recording start owns reservation/capture; preserving bar")
                     case .startRecording:
                     // Background transcription(s) in flight → start ANOTHER recording.
-                    SoundManager.shared.playStartSound()
                     await engine.toggleRecord(modeId: modeId)
                     case .dismiss:
                         await dismissRecorderPanel()
@@ -357,7 +354,6 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                 await dismissRecorderPanel()
             }
         } else {
-            SoundManager.shared.playStartSound()
             isRecorderPanelVisible = true
             await engine.toggleRecord(modeId: modeId)
         }

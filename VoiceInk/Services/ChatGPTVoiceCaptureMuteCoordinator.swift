@@ -79,6 +79,19 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
         }
     }
 
+    /// Finish listener suppression before VoiceInk++ opens the shared Core Audio input.
+    ///
+    /// The background ChatGPT shortcut can stop/reconfigure its existing input stream. Posting it
+    /// after AUHAL capture started produced valid WAV containers with no recognisable speech on the
+    /// shared Scarlett device. Start and resume therefore await this exact queued transition before
+    /// touching capture hardware. Stop/pause still enqueue restoration after hardware has released
+    /// the input, preserving rapid-session ordering without delaying final transcription.
+    func prepareForCapture() async {
+        setCaptureActive(true)
+        let tail = transitionTail
+        await tail.value
+    }
+
     func waitForPendingTransitionsForTesting() async {
         let tail = transitionTail
         await tail.value
