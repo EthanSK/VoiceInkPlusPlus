@@ -179,6 +179,12 @@ For live compatibility work or an intermittent rapid-recording report, use `scri
 
 Treat a UI-automation denial as a safety boundary, not an invitation to recreate the blocked tool with ad-hoc Accessibility mutations against Ethan's live app. In particular, never repeatedly post ChatGPT/Codex private activation-state events merely to inspect its background AX tree: this can destabilize keyboard focus and restart the app. Prefer existing VoiceInk++ traces, offline bundle inspection, or a disposable app/task. Distinguish `/Applications/ChatGPT.app` from `/Applications/Codex.app` by saved bundle URL/executable because both may report `com.openai.codex`. A unit test, AX success code, or mocked Send button never proves ChatGPT submission; require the actual intended app surface to clear/reset without focus theft, and compare recorder start/stop latency with the accepted baseline before release.
 
+Never use bare `launchctl submit` for a one-shot GUI relaunch. Launchd can infer `KeepAlive`, so an
+interrupted cleanup turns `sleep; open -a <app>` into an endless focus-stealing loop. Prefer one
+bounded awaited delay plus one launch. If detachment is unavoidable, require explicit cleanup and
+prove the exact label absent afterward; preflight ChatGPT restart work for stale
+`com.ethansk.chatgpt-relaunch*` labels.
+
 For recorder lag or fan/load reports, sample VoiceInk++ and the wider process tree before assigning
 causality. Group zombies by PPID and identify every high-CPU helper by PID, PPID, elapsed time,
 command, cwd, and session ID. A `cua_node` child can outlive a one-off Computer Use inspection; map

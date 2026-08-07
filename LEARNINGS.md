@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-07T23:26:06Z
+**Trigger:** Ethan reported that ChatGPT repeatedly stole focus during the VoiceInk++ mute work and required every UI-affecting action to stop immediately.
+**Symptom:** ChatGPT forced itself to the foreground about every ten seconds even though the active investigation used only background tools.
+**Root cause:** Three earlier `launchctl submit` jobs each ran `sleep 3|4; open -a /Applications/ChatGPT.app`. Launchd marked the submitted jobs `keepalive | inferred program`; the originating turn aborted before cleanup, so the commands were relaunched roughly 1,645 times each. VoiceInk++ emitted no mute event during the observed interval and its mute coordinator contains no activation, `open`, AppleScript, AX action/write, or pointer path.
+**Fix:** Booted out all three exact `com.ethansk.chatgpt-relaunch*` labels, verified them absent twice with no matching shell/process, stopped the v2.0.292 release, and removed the exact ChatGPT mute keybinding as a temporary fail-closed kill switch while Ethan decides whether the synthetic targeted-shortcut mechanism is acceptable.
+**Commit:** investigation-only
+**Guard:** Never use bare `launchctl submit` for a one-shot GUI relaunch. Prefer one bounded awaited delay plus one launch; if a detached job is genuinely necessary, make cleanup explicit and verify its label is absent before the task can finish or restart. Preflight future ChatGPT restarts for stale `com.ethansk.chatgpt-relaunch*` labels.
+---
+
+---
 **Date:** 2026-08-07T15:40:46Z
 **Trigger:** Ethan repeatedly reproduced the previous clipboard value pasting when starting a new recording before the prior result finished.
 **Symptom:** Rapid recording B could paste an older clipboard value even though A and B had distinct audio and transcript lineage.

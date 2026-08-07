@@ -757,6 +757,21 @@ No row may be promoted merely because a later build reused part of it.
   Ethan explicitly asks to revive the integration. The combined policy would then be
   `voiceInkRecordingActive || youtubeVideoPlaying`, but that policy is not an implementation.
 
+### Bare `launchctl submit` for a delayed ChatGPT relaunch
+
+- **State:** PROCESS FAILURE.
+- **Failure:** Three one-shot restart attempts submitted `sleep 3|4; open -a
+  /Applications/ChatGPT.app` as launchd jobs. Launchd inferred `KeepAlive`; when the originating turn
+  aborted before cleanup, each job repeatedly activated ChatGPT about every ten seconds and amassed
+  roughly 1,645 runs.
+- **Rule:** Never use bare `launchctl submit` for a one-shot GUI relaunch. Use one bounded awaited
+  delay followed by one launch when possible. If detachment is genuinely required, cleanup must be
+  explicit and the exact label must be proven absent afterward; preflight future restarts for stale
+  `com.ethansk.chatgpt-relaunch*` labels.
+- **Reconsider only if:** A tested wrapper provably self-removes before exit and an independent
+  postcondition confirms no submitted label or relaunch process remains after success, failure, or
+  task interruption.
+
 ### VAD, playback state, music labels, or polished-text style as the sole intended-speaker gate
 
 - **State:** REJECTED as standalone hard gates.
