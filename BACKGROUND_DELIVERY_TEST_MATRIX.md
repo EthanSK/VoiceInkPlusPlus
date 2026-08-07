@@ -4,6 +4,20 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
+**Current installed state verified 2026-08-07:** signed v2.0.287 is installed from rapid-paste
+implementation commit `c7091ca` (core fix `167e533`, isolation correction `31e27b0`). The Mini's
+canonical Xcode action rebuilt the exact candidate and reached the known TestManager stall; the
+fresh direct `xcrun xctest` fallback then named and passed all 141 tests in 4 suites. The installed
+executable SHA-256 is `7435d5568b52b8bdf573eb646dd0a181220195267a2ede94b3a0d25de58b7872`,
+its CDHash is `da83ad16dabb46bb5ce08996aef850948bf063b5`, deep/strict signing and outer
+Automation/audio-input entitlements verify, v2.0.285 is preserved as rollback, and
+`/Applications/VoiceInk.app` remains byte-identical. Physical sequences 5/6/7 accepted the rapid
+A/B/C Primary cohort: every exact clipboard lease remained owned before Command and V, A and B
+pasted in order without Return while a successor was active, C pasted last and issued the sole
+Return, and Ethan confirmed the visible result worked. Recording-context selected-text capture is
+now clipboard-free; this release does not change either exact Next/latch route and incorporates the
+v2.0.286 crash-recovery work.
+
 **Current installed state verified 2026-08-05:** signed v2.0.284 is installed from realtime and
 repeated-cycle hardening commit `f821d87` plus test-compile correction `99440ce`. The Mini's
 canonical Xcode action rebuilt the exact candidate and reached the known TestManager stall; the

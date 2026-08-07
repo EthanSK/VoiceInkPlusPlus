@@ -31,7 +31,7 @@ Each entry looks like:
 **Root cause:** SelectedTextKit menuAction capture snapshotted and later restored the pre-existing clipboard; transcript A's VoiceInk clipboard write woke that poll during CursorPaster's pre-paste delay, and foreground Command-V posted without revalidating clipboard ownership.
 **Fix:** Commits 167e533 and 31e27b0 remove clipboard-mutating recording-context capture, serialize foreground paste transactions, mark every payload with an exact session lease, verify marker text and changeCount before Command and V, reacquire once on ownership loss, and keep restore ownership-guarded without changing Next/latch routes.
 **Commit:** c7091ca194f57a07bd9d08da34905b134a10a46c
-**Guard:** Mac Mini canonical action built the exact candidate then hit the known TestManager stall; fresh direct xcrun xctest named and passed 141 tests in 4 suites including clipboard lease/FIFO, primaryPasteLeaseCrossesActiveCaptureWhileExclusiveWorkStillWaits, Primary isolation, both Next routes, realtime HUD-only, and crash recovery. Signed v2.0.287 is installed; one physical rapid A/B run remains required.
+**Guard:** Mac Mini canonical action built the exact candidate then hit the known TestManager stall; fresh direct xcrun xctest named and passed 141 tests in 4 suites including clipboard lease/FIFO, primaryPasteLeaseCrossesActiveCaptureWhileExclusiveWorkStillWaits, Primary isolation, both Next routes, realtime HUD-only, and crash recovery. Signed v2.0.287 is installed. Physical sequences 5/6/7 formed a rapid A/B/C cohort: every lease stayed ownershipVerified=true before Command and V, A and B pasted with Return suppressed while a successor was active, C pasted last and issued the sole Return, and Ethan confirmed the visible result worked.
 ---
 
 
