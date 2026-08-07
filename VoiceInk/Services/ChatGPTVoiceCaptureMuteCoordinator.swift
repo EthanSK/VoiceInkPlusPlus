@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import CoreAudio
 import CoreGraphics
@@ -6,16 +7,22 @@ import Darwin
 import Foundation
 import os
 
+enum ChatGPTVoiceMicrophoneState: Equatable, Hashable, Sendable {
+    case listening
+    case muted
+}
+
 struct ChatGPTVoiceInputSnapshot: Equatable, Sendable {
     let applicationPID: pid_t
     let isInputRunning: Bool
+    let microphoneState: ChatGPTVoiceMicrophoneState?
 }
 
 protocol ChatGPTVoiceMuteTransport: Sendable {
     func snapshot() async -> ChatGPTVoiceInputSnapshot?
     func postMicrophoneToggle(to applicationPID: pid_t) async -> Bool
-    func waitForInputState(
-        _ isInputRunning: Bool,
+    func waitForMicrophoneState(
+        _ microphoneState: ChatGPTVoiceMicrophoneState,
         applicationPID: pid_t
     ) async -> Bool
 }
@@ -25,21 +32,24 @@ protocol ChatGPTVoiceMuteTransport: Sendable {
 /// This is intentionally driven by `Recorder`'s real hardware-capture boundaries rather than by
 /// transcription jobs or `RecordingActivityNotifier`: a finished recording may keep transcribing
 /// after the microphone belongs to a newer session, while the notifier is reserved for the proven
-/// YouTube playback bridge. The coordinator never uses Accessibility, changes global input state,
-/// activates ChatGPT, or moves the pointer.
+/// YouTube playback bridge. The coordinator never mutates Accessibility, changes global input
+/// state, activates ChatGPT, or moves the pointer.
 ///
-/// A mute is owned only after Core Audio proves that ChatGPT changed from an active input stream to
-/// an inactive one following our one targeted shortcut. Restoration is therefore safe and bounded:
-/// it occurs only for the same running ChatGPT process, only while input is still inactive, and only
-/// after the matching capture stop/pause. If input becomes active independently, the user or
-/// ChatGPT has overridden us and ownership is relinquished without sending another toggle.
+/// Core Audio proves that an actual ChatGPT Voice session exists, but ChatGPT deliberately keeps
+/// that process input stream running while its Voice microphone is muted. Mute ownership therefore
+/// uses a separate read-only Accessibility state check against the exact `Mute microphone` /
+/// `Unmute microphone` control. Accessibility is never used to activate ChatGPT, set focus, press
+/// the control, or move the pointer; the only mutation remains the user-configured keyboard command.
+/// VoiceInk++ deliberately does not poll that tree while recording—the rejected polling experiment
+/// caused lag. Restoration performs one bounded check and occurs only for the same process while the
+/// control still proves the muted state we own; a user-visible unmute therefore relinquishes the
+/// lease without an inverse toggle.
 actor ChatGPTVoiceCaptureMuteCoordinator {
     static let shared = ChatGPTVoiceCaptureMuteCoordinator(
         transport: SystemChatGPTVoiceMuteTransport()
     )
 
     private let transport: any ChatGPTVoiceMuteTransport
-    private let ownershipPollNanoseconds: UInt64
     private let logger = Logger(
         subsystem: "com.ethansk.VoiceInkPlusPlus",
         category: "ChatGPTVoiceCaptureMute"
@@ -48,15 +58,10 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
     private var lastRequestedCaptureState = false
     private var appliedCaptureState = false
     private var ownedMutedApplicationPID: pid_t?
-    private var ownershipMonitorTask: Task<Void, Never>?
     private var transitionTail: Task<Void, Never> = Task {}
 
-    init(
-        transport: any ChatGPTVoiceMuteTransport,
-        ownershipPollNanoseconds: UInt64 = 100_000_000
-    ) {
+    init(transport: any ChatGPTVoiceMuteTransport) {
         self.transport = transport
-        self.ownershipPollNanoseconds = ownershipPollNanoseconds
     }
 
     /// Queue the actual microphone-capture state. Transitions are FIFO so an older stop can never
@@ -94,29 +99,32 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
     }
 
     private func suppressChatGPTVoiceIfNeeded() async {
-        guard ownedMutedApplicationPID == nil else {
-            startOwnershipMonitorIfNeeded()
-            return
-        }
+        guard ownedMutedApplicationPID == nil else { return }
         guard let before = await transport.snapshot() else {
             logger.debug("Capture began without one resolvable ChatGPT application; listener suppression is a no-op")
             return
         }
         guard before.isInputRunning else {
-            // Core Audio cannot distinguish an absent Voice session from one Ethan already muted.
-            // Both must remain untouched: toggling either would risk starting or unmuting listening.
+            // An absent Voice session must remain untouched: a blind toggle could affect a later
+            // session or another app state that VoiceInk++ does not own.
             logger.debug("Capture began while ChatGPT had no active input stream; microphone toggle was not posted pid=\(before.applicationPID, privacy: .public)")
+            return
+        }
+        guard before.microphoneState == .listening else {
+            // Already-muted and unreadable controls are both fail-closed. VoiceInk++ must not
+            // unmute a user-owned state merely because hardware capture began.
+            logger.debug("Capture began without one verified listening ChatGPT Voice control; microphone toggle was not posted pid=\(before.applicationPID, privacy: .public)")
             return
         }
         guard await transport.postMicrophoneToggle(to: before.applicationPID) else {
             logger.error("Could not post the configured ChatGPT Voice microphone shortcut pid=\(before.applicationPID, privacy: .public)")
             return
         }
-        guard await transport.waitForInputState(
-            false,
+        guard await transport.waitForMicrophoneState(
+            .muted,
             applicationPID: before.applicationPID
         ) else {
-            // Event creation/posting is not success. Without Core Audio confirmation we do not
+            // Event creation/posting is not success. Without the read-only control-state proof we do not
             // claim ownership and therefore will not risk a later inverse toggle.
             logger.error("ChatGPT Voice microphone shortcut was not verified as muted pid=\(before.applicationPID, privacy: .public)")
             return
@@ -124,11 +132,9 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
 
         ownedMutedApplicationPID = before.applicationPID
         logger.notice("VoiceInk++ verified and owns ChatGPT Voice microphone suppression pid=\(before.applicationPID, privacy: .public)")
-        startOwnershipMonitorIfNeeded()
     }
 
     private func restoreChatGPTVoiceIfOwned() async {
-        stopOwnershipMonitor()
         guard let ownedPID = ownedMutedApplicationPID else { return }
         guard let current = await transport.snapshot(),
               current.applicationPID == ownedPID else {
@@ -136,9 +142,9 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
             logger.notice("ChatGPT process changed or exited; stale microphone-suppression ownership was discarded pid=\(ownedPID, privacy: .public)")
             return
         }
-        guard !current.isInputRunning else {
+        guard current.microphoneState == .muted else {
             ownedMutedApplicationPID = nil
-            logger.notice("ChatGPT input became active outside VoiceInk++; restoration ownership was relinquished pid=\(ownedPID, privacy: .public)")
+            logger.notice("ChatGPT Voice microphone was no longer provably muted by VoiceInk++; restoration ownership was relinquished pid=\(ownedPID, privacy: .public)")
             return
         }
         guard await transport.postMicrophoneToggle(to: ownedPID) else {
@@ -148,7 +154,7 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
             return
         }
 
-        let restored = await transport.waitForInputState(true, applicationPID: ownedPID)
+        let restored = await transport.waitForMicrophoneState(.listening, applicationPID: ownedPID)
         ownedMutedApplicationPID = nil
         if restored {
             logger.notice("VoiceInk++ verified ChatGPT Voice microphone restoration pid=\(ownedPID, privacy: .public)")
@@ -159,57 +165,6 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
         }
     }
 
-    private func startOwnershipMonitorIfNeeded() {
-        guard ownershipMonitorTask == nil,
-              let ownedPID = ownedMutedApplicationPID,
-              appliedCaptureState else { return }
-
-        let transport = self.transport
-        let interval = ownershipPollNanoseconds
-        ownershipMonitorTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: interval)
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled else { return }
-                let current = await transport.snapshot()
-                await self?.handleOwnershipObservation(current, expectedPID: ownedPID)
-                guard await self?.stillOwnsSuppression(for: ownedPID) == true else { return }
-            }
-        }
-    }
-
-    private func handleOwnershipObservation(
-        _ current: ChatGPTVoiceInputSnapshot?,
-        expectedPID: pid_t
-    ) {
-        guard appliedCaptureState,
-              ownedMutedApplicationPID == expectedPID else { return }
-        guard let current,
-              current.applicationPID == expectedPID else {
-            ownedMutedApplicationPID = nil
-            ownershipMonitorTask = nil
-            logger.notice("ChatGPT process changed or exited during capture; microphone-suppression ownership was discarded pid=\(expectedPID, privacy: .public)")
-            return
-        }
-        guard !current.isInputRunning else {
-            ownedMutedApplicationPID = nil
-            ownershipMonitorTask = nil
-            logger.notice("ChatGPT input was re-enabled externally during capture; VoiceInk++ will not override or restore that user state pid=\(expectedPID, privacy: .public)")
-            return
-        }
-    }
-
-    private func stillOwnsSuppression(for applicationPID: pid_t) -> Bool {
-        appliedCaptureState && ownedMutedApplicationPID == applicationPID
-    }
-
-    private func stopOwnershipMonitor() {
-        ownershipMonitorTask?.cancel()
-        ownershipMonitorTask = nil
-    }
 }
 
 final class SystemChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport, @unchecked Sendable {
@@ -266,8 +221,8 @@ final class SystemChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport, @uncheck
         }.value
     }
 
-    func waitForInputState(
-        _ isInputRunning: Bool,
+    func waitForMicrophoneState(
+        _ microphoneState: ChatGPTVoiceMicrophoneState,
         applicationPID: pid_t
     ) async -> Bool {
         for _ in 0..<8 {
@@ -280,7 +235,7 @@ final class SystemChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport, @uncheck
                   current.applicationPID == applicationPID else {
                 return false
             }
-            if current.isInputRunning == isInputRunning {
+            if current.microphoneState == microphoneState {
                 return true
             }
         }
@@ -315,8 +270,137 @@ final class SystemChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport, @uncheck
         }
         return ChatGPTVoiceInputSnapshot(
             applicationPID: application.processIdentifier,
-            isInputRunning: inputIsRunning
+            isInputRunning: inputIsRunning,
+            microphoneState: microphoneState(applicationPID: application.processIdentifier)
         )
+    }
+
+    /// Reads only the current accessible label of ChatGPT Voice's microphone button. The previous
+    /// listener experiment failed because `AXPress` could report success without changing state and
+    /// its pointer fallback stole Ethan's mouse. This bounded traversal performs no AX action or
+    /// attribute write; it exists solely to make the proven keyboard-command lease reversible.
+    static func microphoneState(applicationPID: pid_t) -> ChatGPTVoiceMicrophoneState? {
+        guard AXIsProcessTrusted(),
+              isExpectedChatGPTApplicationPID(applicationPID) else {
+            return nil
+        }
+
+        let application = AXUIElementCreateApplication(applicationPID)
+        let windows = elementArrayAttribute(kAXWindowsAttribute, from: application)
+        var queue = (windows.isEmpty ? [application] : windows).map { ($0, 0) }
+        var index = 0
+        var visited: [AXUIElement] = []
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(120))
+
+        while index < queue.count,
+              visited.count < 700,
+              ContinuousClock.now < deadline {
+            let (element, depth) = queue[index]
+            index += 1
+            guard !visited.contains(where: { CFEqual($0, element) }) else { continue }
+            visited.append(element)
+
+            if stringAttribute(kAXRoleAttribute, from: element) == kAXButtonRole,
+               boolAttribute(kAXEnabledAttribute, from: element) != false {
+                for attribute in [
+                    kAXTitleAttribute,
+                    kAXDescriptionAttribute,
+                    kAXHelpAttribute,
+                    kAXValueAttribute
+                ] {
+                    guard let label = stringAttribute(attribute, from: element),
+                          let state = microphoneState(accessibilityLabel: label) else {
+                        continue
+                    }
+                    return state
+                }
+            }
+
+            guard depth < 14 else { continue }
+            let children = mergedChildren(of: element)
+            queue.append(contentsOf: children.map { ($0, depth + 1) })
+        }
+
+        return nil
+    }
+
+    static func microphoneState(
+        accessibilityLabel: String
+    ) -> ChatGPTVoiceMicrophoneState? {
+        let normalized = accessibilityLabel
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch normalized {
+        case "mute microphone":
+            return .listening
+        case "unmute microphone":
+            return .muted
+        default:
+            return nil
+        }
+    }
+
+    private static func mergedChildren(of element: AXUIElement) -> [AXUIElement] {
+        let attributes = [
+            "AXChildrenInNavigationOrder",
+            kAXVisibleChildrenAttribute,
+            kAXChildrenAttribute
+        ]
+        var merged: [AXUIElement] = []
+        for attribute in attributes {
+            for candidate in elementArrayAttribute(attribute, from: element)
+                where !merged.contains(where: { CFEqual($0, candidate) }) {
+                merged.append(candidate)
+            }
+        }
+        return merged
+    }
+
+    private static func elementArrayAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success,
+        let elements = value as? [AXUIElement] else {
+            return []
+        }
+        return elements
+    }
+
+    private static func stringAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    private static func boolAttribute(
+        _ attribute: String,
+        from element: AXUIElement
+    ) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success,
+        let number = value as? NSNumber else {
+            return nil
+        }
+        return number.boolValue
     }
 
     static func belongsToChatGPTApplication(_ executablePath: String) -> Bool {

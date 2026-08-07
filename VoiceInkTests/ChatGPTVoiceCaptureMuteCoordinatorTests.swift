@@ -24,20 +24,21 @@ private actor FakeChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport {
            currentSnapshot.applicationPID == applicationPID {
             self.currentSnapshot = ChatGPTVoiceInputSnapshot(
                 applicationPID: applicationPID,
-                isInputRunning: !currentSnapshot.isInputRunning
+                isInputRunning: currentSnapshot.isInputRunning,
+                microphoneState: currentSnapshot.microphoneState == .listening
+                    ? .muted
+                    : .listening
             )
         }
         return true
     }
 
-    func waitForInputState(
-        _ isInputRunning: Bool,
+    func waitForMicrophoneState(
+        _ microphoneState: ChatGPTVoiceMicrophoneState,
         applicationPID: pid_t
     ) async -> Bool {
-        currentSnapshot == ChatGPTVoiceInputSnapshot(
-            applicationPID: applicationPID,
-            isInputRunning: isInputRunning
-        )
+        currentSnapshot?.applicationPID == applicationPID
+            && currentSnapshot?.microphoneState == microphoneState
     }
 
     func setSnapshot(_ snapshot: ChatGPTVoiceInputSnapshot?) {
@@ -63,7 +64,8 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
     @Test func activeVoiceIsMutedAndOwnedThenRestored() async {
         let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
-            isInputRunning: true
+            isInputRunning: true,
+            microphoneState: .listening
         ))
         let coordinator = makeCoordinator(transport)
 
@@ -84,6 +86,7 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         let restoredSnapshot = await transport.snapshot()
         #expect(postPIDs == [pid, pid])
         #expect(restoredSnapshot?.isInputRunning == true)
+        #expect(restoredSnapshot?.microphoneState == .listening)
     }
 
     @Test func absentOrAlreadyInactiveVoiceIsNeverToggledOrOwned() async {
@@ -98,7 +101,8 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
 
         let inactive = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
-            isInputRunning: false
+            isInputRunning: false,
+            microphoneState: nil
         ))
         let inactiveCoordinator = makeCoordinator(inactive)
         await inactiveCoordinator.setCaptureActive(true)
@@ -107,12 +111,26 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         let inactiveState = await inactiveCoordinator.stateForTesting()
         #expect(inactivePostPIDs.isEmpty)
         #expect(inactiveState.ownedMutedApplicationPID == nil)
+
+        let alreadyMuted = FakeChatGPTVoiceMuteTransport(snapshot: .init(
+            applicationPID: pid,
+            isInputRunning: true,
+            microphoneState: .muted
+        ))
+        let alreadyMutedCoordinator = makeCoordinator(alreadyMuted)
+        await alreadyMutedCoordinator.setCaptureActive(true)
+        await alreadyMutedCoordinator.waitForPendingTransitionsForTesting()
+        let alreadyMutedPostPIDs = await alreadyMuted.postedPIDs()
+        let alreadyMutedState = await alreadyMutedCoordinator.stateForTesting()
+        #expect(alreadyMutedPostPIDs.isEmpty)
+        #expect(alreadyMutedState.ownedMutedApplicationPID == nil)
     }
 
     @Test func unverifiedToggleNeverCreatesRestorationOwnership() async {
         let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
-            isInputRunning: true
+            isInputRunning: true,
+            microphoneState: .listening
         ))
         await transport.setChangesStateOnPost(false)
         let coordinator = makeCoordinator(transport)
@@ -135,13 +153,18 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
     @Test func userReenabledInputRelinquishesOwnershipWithoutInverseToggle() async {
         let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
-            isInputRunning: true
+            isInputRunning: true,
+            microphoneState: .listening
         ))
         let coordinator = makeCoordinator(transport)
 
         await coordinator.setCaptureActive(true)
         await coordinator.waitForPendingTransitionsForTesting()
-        await transport.setSnapshot(.init(applicationPID: pid, isInputRunning: true))
+        await transport.setSnapshot(.init(
+            applicationPID: pid,
+            isInputRunning: true,
+            microphoneState: .listening
+        ))
 
         await coordinator.setCaptureActive(false)
         await coordinator.waitForPendingTransitionsForTesting()
@@ -154,7 +177,8 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
     @Test func pauseResumeAndRapidCyclesEndInTheNewestCaptureState() async {
         let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
-            isInputRunning: true
+            isInputRunning: true,
+            microphoneState: .listening
         ))
         let coordinator = makeCoordinator(transport)
 
@@ -169,19 +193,25 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         #expect(state.captureActive)
         #expect(state.ownedMutedApplicationPID == pid)
         #expect(postPIDs == [pid, pid, pid])
-        #expect(snapshot?.isInputRunning == false)
+        #expect(snapshot?.isInputRunning == true)
+        #expect(snapshot?.microphoneState == .muted)
     }
 
     @Test func aChangedChatGPTProcessIsNeverRestored() async {
         let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
             applicationPID: pid,
-            isInputRunning: true
+            isInputRunning: true,
+            microphoneState: .listening
         ))
         let coordinator = makeCoordinator(transport)
 
         await coordinator.setCaptureActive(true)
         await coordinator.waitForPendingTransitionsForTesting()
-        await transport.setSnapshot(.init(applicationPID: pid + 1, isInputRunning: false))
+        await transport.setSnapshot(.init(
+            applicationPID: pid + 1,
+            isInputRunning: true,
+            microphoneState: .muted
+        ))
         await coordinator.setCaptureActive(false)
         await coordinator.waitForPendingTransitionsForTesting()
 
@@ -226,6 +256,18 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         #expect(!SystemChatGPTVoiceMuteTransport.hasExpectedShortcutBinding(at: file))
     }
 
+    @Test func accessibilityLabelsDistinguishListeningFromMutedWithoutInferringAudioState() {
+        #expect(SystemChatGPTVoiceMuteTransport.microphoneState(
+            accessibilityLabel: "Mute microphone"
+        ) == .listening)
+        #expect(SystemChatGPTVoiceMuteTransport.microphoneState(
+            accessibilityLabel: " Unmute microphone \n"
+        ) == .muted)
+        #expect(SystemChatGPTVoiceMuteTransport.microphoneState(
+            accessibilityLabel: "Mute speaker"
+        ) == nil)
+    }
+
     @Test func recorderHardwareCaptureOwnsTheLeaseAndNoTranscriptionOrNotifierPathDoes() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -262,7 +304,7 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         #expect(!transcriptionSources.contains("ChatGPTVoiceCaptureMuteCoordinator"))
     }
 
-    @Test func targetedShortcutCannotActivateChatGPTOrMoveThePointer() throws {
+    @Test func targetedShortcutAndReadOnlyStateCannotMutateAccessibilityOrPointer() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -275,18 +317,17 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
 
         #expect(source.contains("keyDown.postToPid(applicationPID)"))
         #expect(source.contains("keyUp.postToPid(applicationPID)"))
+        #expect(source.contains("AXUIElementCopyAttributeValue"))
         #expect(!source.contains(".activate(options:"))
         #expect(!source.contains("CGEvent(mouseEventSource:"))
-        #expect(!source.contains("AXUIElement"))
+        #expect(!source.contains("AXUIElementPerformAction"))
+        #expect(!source.contains("AXUIElementSetAttributeValue"))
         #expect(!source.contains("RecordingActivityNotifier.post"))
     }
 
     private func makeCoordinator(
         _ transport: FakeChatGPTVoiceMuteTransport
     ) -> ChatGPTVoiceCaptureMuteCoordinator {
-        ChatGPTVoiceCaptureMuteCoordinator(
-            transport: transport,
-            ownershipPollNanoseconds: 60_000_000_000
-        )
+        ChatGPTVoiceCaptureMuteCoordinator(transport: transport)
     }
 }
