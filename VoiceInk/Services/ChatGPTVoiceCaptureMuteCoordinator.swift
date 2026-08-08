@@ -79,19 +79,6 @@ actor ChatGPTVoiceCaptureMuteCoordinator {
         }
     }
 
-    /// Finish listener suppression before VoiceInk++ opens the shared Core Audio input.
-    ///
-    /// The background ChatGPT shortcut can stop/reconfigure its existing input stream. Posting it
-    /// after AUHAL capture started produced valid WAV containers with no recognisable speech on the
-    /// shared Scarlett device. Start and resume therefore await this exact queued transition before
-    /// touching capture hardware. Stop/pause still enqueue restoration after hardware has released
-    /// the input, preserving rapid-session ordering without delaying final transcription.
-    func prepareForCapture() async {
-        setCaptureActive(true)
-        let tail = transitionTail
-        await tail.value
-    }
-
     func waitForPendingTransitionsForTesting() async {
         let tail = transitionTail
         await tail.value
@@ -300,10 +287,15 @@ final class SystemChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport, @uncheck
                 object: processObject
             ) == 1
         }
+        // Do not traverse ChatGPT's Electron AX tree when no live Voice input exists. This is an
+        // optional courtesy feature; an inactive session must remain a cheap, read-only no-op.
+        let state = inputIsRunning
+            ? microphoneState(applicationPID: application.processIdentifier)
+            : nil
         return ChatGPTVoiceInputSnapshot(
             applicationPID: application.processIdentifier,
             isInputRunning: inputIsRunning,
-            microphoneState: microphoneState(applicationPID: application.processIdentifier)
+            microphoneState: state
         )
     }
 
@@ -318,6 +310,7 @@ final class SystemChatGPTVoiceMuteTransport: ChatGPTVoiceMuteTransport, @uncheck
         }
 
         let application = AXUIElementCreateApplication(applicationPID)
+        AXUIElementSetMessagingTimeout(application, 0.2)
         let windows = elementArrayAttribute(kAXWindowsAttribute, from: application)
         var queue = (windows.isEmpty ? [application] : windows).map { ($0, 0) }
         var index = 0

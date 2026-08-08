@@ -177,17 +177,6 @@ class Recorder: NSObject, ObservableObject {
         recorder = coreAudioRecorder
 
         do {
-            // ChatGPT Voice can reconfigure its existing Core Audio input when its supported mute
-            // shortcut runs. Complete that transition before opening AUHAL; doing it after capture
-            // starts produced valid but speechless WAVs on the shared Scarlett device in v2.0.290.
-            await ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()
-
-            // The start sound also opens the default Scarlett output. Playing it before the
-            // ChatGPT preflight can transiently make ChatGPT's Core Audio input report inactive,
-            // which falsely skips listener suppression. Keep the audible acknowledgement after
-            // mute preparation but before VoiceInk++ opens its own AUHAL input.
-            SoundManager.shared.playStartSound()
-
             // Offload hardware start to avoid shortcut lag.
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 audioSetupQueue.async {
@@ -201,6 +190,10 @@ class Recorder: NSObject, ObservableObject {
             }
 
             startAudioMeterTimer()
+            // ChatGPT Voice suppression is optional and deliberately begins only after AUHAL is
+            // already recording. Missing shortcuts, unreadable state, slow AX/Core Audio probes,
+            // or failed toggles can never delay, fail, or reorder normal VoiceInk++ capture.
+            await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)
             pauseMedia()
             // Complementary to pauseMedia(): broadcast "recording started" so the external YouTube
             // helper app can pause a playing YouTube tab in Chrome (which MediaRemote can't reach).
@@ -278,27 +271,20 @@ class Recorder: NSObject, ObservableObject {
         guard let currentRecorder = recorder else {
             throw CoreAudioRecorderError.audioUnitNotInitialized
         }
-        await ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()
-        do {
-            try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Void, Error>) in
-                audioSetupQueue.async {
-                    do {
-                        try currentRecorder.resumeRecording()
-                        continuation.resume()
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            audioSetupQueue.async {
+                do {
+                    try currentRecorder.resumeRecording()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
-        } catch {
-            // Preparation may have muted a live ChatGPT Voice session. If AUHAL cannot resume,
-            // relinquish that lease immediately because VoiceInk++ owns no active capture.
-            await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)
-            throw error
         }
 
         startAudioMeterTimer()
+        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)
         muteSystemAudio()
         logger.info("Recording capture resumed into the existing WAV/realtime session; playback is unchanged")
     }

@@ -89,25 +89,6 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         #expect(restoredSnapshot?.microphoneState == .listening)
     }
 
-    @Test func capturePreparationReturnsOnlyAfterTheMuteTransitionCompletes() async {
-        let transport = FakeChatGPTVoiceMuteTransport(snapshot: .init(
-            applicationPID: pid,
-            isInputRunning: true,
-            microphoneState: .listening
-        ))
-        let coordinator = makeCoordinator(transport)
-
-        await coordinator.prepareForCapture()
-
-        let state = await coordinator.stateForTesting()
-        let postPIDs = await transport.postedPIDs()
-        let snapshot = await transport.snapshot()
-        #expect(state.captureActive)
-        #expect(state.ownedMutedApplicationPID == pid)
-        #expect(postPIDs == [pid])
-        #expect(snapshot?.microphoneState == .muted)
-    }
-
     @Test func absentOrAlreadyInactiveVoiceIsNeverToggledOrOwned() async {
         let absent = FakeChatGPTVoiceMuteTransport(snapshot: nil)
         let absentCoordinator = makeCoordinator(absent)
@@ -371,25 +352,21 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
             .joined(separator: "\n")
 
         #expect(recorder.components(separatedBy:
-            "ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()"
+            "ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)"
         ).count - 1 == 2)
         #expect(recorder.components(separatedBy:
             "ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)"
-        ).count - 1 == 3)
+        ).count - 1 == 2)
+        #expect(!recorder.contains("prepareForCapture"))
 
-        let startPreparation = try #require(recorder.range(of:
-            "ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()"
-        ))
         let hardwareStart = try #require(recorder.range(of:
             "coreAudioRecorder.startRecording(toOutputFile: url, deviceID: deviceID)"
         ))
-        let startSound = try #require(recorder.range(of:
-            "SoundManager.shared.playStartSound()"
+        let optionalStartMute = try #require(recorder.range(of:
+            "ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)"
         ))
-        #expect(startPreparation.lowerBound < hardwareStart.lowerBound)
-        #expect(startPreparation.lowerBound < startSound.lowerBound)
-        #expect(startSound.lowerBound < hardwareStart.lowerBound)
-        #expect(!recorderUIManager.contains("SoundManager.shared.playStartSound()"))
+        #expect(hardwareStart.lowerBound < optionalStartMute.lowerBound)
+        #expect(recorderUIManager.contains("SoundManager.shared.playStartSound()"))
 
         let resumeFunction = try #require(recorder.range(of:
             "    func resumeRecording() async throws {"
@@ -398,16 +375,13 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
             "    func stopRecording("
         ))
         let resumeBody = recorder[resumeFunction.lowerBound..<stopFunction.lowerBound]
-        let resumePreparation = try #require(resumeBody.range(of:
-            "ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()"
-        ))
         let hardwareResume = try #require(resumeBody.range(of:
             "currentRecorder.resumeRecording()"
         ))
-        #expect(resumePreparation.lowerBound < hardwareResume.lowerBound)
-        #expect(resumeBody.contains(
-            "ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)"
+        let optionalResumeMute = try #require(resumeBody.range(of:
+            "ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)"
         ))
+        #expect(hardwareResume.lowerBound < optionalResumeMute.lowerBound)
         #expect(!notifier.contains("ChatGPTVoiceCaptureMuteCoordinator.shared"))
         #expect(!transcriptionSources.contains("ChatGPTVoiceCaptureMuteCoordinator"))
     }
@@ -426,6 +400,8 @@ struct ChatGPTVoiceCaptureMuteCoordinatorTests {
         #expect(source.contains("keyDown.postToPid(applicationPID)"))
         #expect(source.contains("keyUp.postToPid(applicationPID)"))
         #expect(source.contains("AXUIElementCopyAttributeValue"))
+        #expect(source.contains("AXUIElementSetMessagingTimeout(application, 0.2)"))
+        #expect(source.contains("let state = inputIsRunning"))
         #expect(!source.contains(".activate(options:"))
         #expect(!source.contains("CGEvent(mouseEventSource:"))
         #expect(!source.contains("AXUIElementPerformAction"))
