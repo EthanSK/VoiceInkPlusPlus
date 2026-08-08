@@ -853,7 +853,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private func convertAndWriteToFile(inputBuffer: inout AudioBufferList, frameCount: UInt32) {
         guard let file = audioFile else { return }
 
-        let inputChannels = bufferList.mBuffers.mNumberChannels
+        let inputChannels = inputBuffer.mBuffers.mNumberChannels
         let inputSampleRate = deviceFormat.mSampleRate
         let outputSampleRate = outputFormat.mSampleRate
 
