@@ -5,9 +5,9 @@ import AVFoundation
 import os
 import Atomics
 
-/// Selects only physical microphone channels for dictation instead of averaging every channel
-/// exposed by a multi-channel interface. Devices such as Scarlett also expose loopback/playback
-/// channels; including those in the mono transcription stream can drown out and attenuate speech.
+/// Restricts dictation to the device's preferred stereo input pair instead of averaging every
+/// channel exposed by a multi-channel interface. Devices such as Scarlett can expose many routed
+/// inputs; the system-preferred pair is the narrowest safe hint Core Audio provides.
 struct AudioInputChannelSelection: Equatable {
     let deviceChannelIndices: [Int32]
 
@@ -32,6 +32,34 @@ struct AudioInputChannelSelection: Equatable {
             return Int32(channel - 1)
         }
         return AudioInputChannelSelection(deviceChannelIndices: preferred)
+    }
+}
+
+/// Chooses one signal from a mapped stereo pair without the 6 dB attenuation caused by averaging
+/// an active microphone with an idle input. The decision is per render buffer, allocation-free,
+/// and also supports mono or full-layout fallback buffers.
+struct AudioInputMonoMixdown {
+    static func dominantChannelIndex(
+        samples: UnsafePointer<Float32>,
+        frameCount: Int,
+        channelCount: Int
+    ) -> Int {
+        guard frameCount > 0, channelCount > 1 else { return 0 }
+
+        var dominantChannel = 0
+        var dominantEnergy: Double = -1
+        for channel in 0..<channelCount {
+            var energy: Double = 0
+            for frame in 0..<frameCount {
+                let sample = Double(samples[frame * channelCount + channel])
+                energy += sample * sample
+            }
+            if energy > dominantEnergy {
+                dominantEnergy = energy
+                dominantChannel = channel
+            }
+        }
+        return dominantChannel
     }
 }
 
@@ -537,8 +565,72 @@ final class CoreAudioRecorder: @unchecked Sendable {
             throw CoreAudioRecorderError.failedToSetFormat(status: kAudio_ParamError)
         }
 
+        let mappedFormatStatus = setCallbackFormat(
+            channelCount: channelCount,
+            sampleRate: deviceFormat.mSampleRate,
+            audioUnit: audioUnit
+        )
+        if mappedFormatStatus == noErr {
+            var channelMap = selection.deviceChannelIndices
+            let mapStatus = channelMap.withUnsafeMutableBytes { bytes in
+                AudioUnitSetProperty(
+                    audioUnit,
+                    kAudioOutputUnitProperty_ChannelMap,
+                    kAudioUnitScope_Output,
+                    1,
+                    bytes.baseAddress,
+                    UInt32(bytes.count)
+                )
+            }
+            if mapStatus == noErr {
+                let mappedChannels = selection.deviceChannelIndices.map { $0 + 1 }
+                logger.notice("🎙️ Capturing preferred device input channels: \(mappedChannels, privacy: .public)")
+                return channelCount
+            }
+            logger.error("Preferred audio input channel map was rejected status=\(mapStatus, privacy: .public); falling back to the complete device input layout")
+        } else {
+            logger.error("Preferred audio input callback format was rejected status=\(mappedFormatStatus, privacy: .public); falling back to the complete device input layout")
+        }
+
+        // Channel narrowing is an optimization, never a prerequisite for recording. Restore the
+        // same full-device callback format VoiceInk used before this feature. If a previous device
+        // left a narrow map on this reusable AUHAL, best-effort reset it to identity; devices that
+        // do not implement ChannelMap still retain Core Audio's default identity mapping.
+        let fallbackChannelCount = deviceFormat.mChannelsPerFrame
+        let fallbackFormatStatus = setCallbackFormat(
+            channelCount: fallbackChannelCount,
+            sampleRate: deviceFormat.mSampleRate,
+            audioUnit: audioUnit
+        )
+        guard fallbackFormatStatus == noErr else {
+            throw CoreAudioRecorderError.failedToSetFormat(status: fallbackFormatStatus)
+        }
+
+        var identityMap = (0..<fallbackChannelCount).map { Int32($0) }
+        let identityMapStatus = identityMap.withUnsafeMutableBytes { bytes in
+            AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_ChannelMap,
+                kAudioUnitScope_Output,
+                1,
+                bytes.baseAddress,
+                UInt32(bytes.count)
+            )
+        }
+        if identityMapStatus != noErr {
+            logger.warning("Complete-layout identity channel map was unavailable status=\(identityMapStatus, privacy: .public); using the device's default mapping")
+        }
+        logger.notice("🎙️ Capturing complete device input layout channels=\(fallbackChannelCount, privacy: .public)")
+        return fallbackChannelCount
+    }
+
+    private func setCallbackFormat(
+        channelCount: UInt32,
+        sampleRate: Double,
+        audioUnit: AudioUnit
+    ) -> OSStatus {
         var callbackFormat = AudioStreamBasicDescription(
-            mSampleRate: deviceFormat.mSampleRate,
+            mSampleRate: sampleRate,
             mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
             mBytesPerPacket: UInt32(MemoryLayout<Float32>.size) * channelCount,
@@ -549,7 +641,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
             mReserved: 0
         )
 
-        var status = AudioUnitSetProperty(
+        return AudioUnitSetProperty(
             audioUnit,
             kAudioUnitProperty_StreamFormat,
             kAudioUnitScope_Output,
@@ -557,30 +649,6 @@ final class CoreAudioRecorder: @unchecked Sendable {
             &callbackFormat,
             UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         )
-        guard status == noErr else {
-            logger.error("Failed to set audio format: \(status, privacy: .public)")
-            throw CoreAudioRecorderError.failedToSetFormat(status: status)
-        }
-
-        var channelMap = selection.deviceChannelIndices
-        status = channelMap.withUnsafeMutableBytes { bytes in
-            AudioUnitSetProperty(
-                audioUnit,
-                kAudioOutputUnitProperty_ChannelMap,
-                kAudioUnitScope_Output,
-                1,
-                bytes.baseAddress,
-                UInt32(bytes.count)
-            )
-        }
-        guard status == noErr else {
-            logger.error("Failed to map audio input channels: \(status, privacy: .public)")
-            throw CoreAudioRecorderError.failedToSetFormat(status: status)
-        }
-
-        let mappedChannels = selection.deviceChannelIndices.map { $0 + 1 }
-        logger.notice("🎙️ Capturing device input channels: \(mappedChannels, privacy: .public)")
-        return channelCount
     }
 
     private func setupInputCallback() throws {
@@ -825,22 +893,25 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
         let samples = data.assumingMemoryBound(to: Float32.self)
         let channelCount = Int(bufferList.mBuffers.mNumberChannels)
-        let totalSamples = Int(frameCount) * channelCount
-
-        guard totalSamples > 0 else { return }
+        guard channelCount > 0 else { return }
+        let dominantChannel = AudioInputMonoMixdown.dominantChannelIndex(
+            samples: samples,
+            frameCount: Int(frameCount),
+            channelCount: channelCount
+        )
 
         var sum: Float = 0.0
         var peak: Float = 0.0
 
-        for i in 0..<totalSamples {
-            let sample = abs(samples[i])
+        for frame in 0..<Int(frameCount) {
+            let sample = abs(samples[frame * channelCount + dominantChannel])
             sum += sample * sample
             if sample > peak {
                 peak = sample
             }
         }
 
-        let rms = sqrt(sum / Float(totalSamples))
+        let rms = sqrt(sum / Float(frameCount))
         let avgDb = 20.0 * log10(max(rms, 0.000001))
         let peakDb = 20.0 * log10(max(peak, 0.000001))
 
@@ -853,13 +924,19 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private func convertAndWriteToFile(inputBuffer: inout AudioBufferList, frameCount: UInt32) {
         guard let file = audioFile else { return }
 
-        let inputChannels = inputBuffer.mBuffers.mNumberChannels
+        let inputChannels = Int(inputBuffer.mBuffers.mNumberChannels)
         let inputSampleRate = deviceFormat.mSampleRate
         let outputSampleRate = outputFormat.mSampleRate
 
         // Get input samples
         guard let inputData = inputBuffer.mBuffers.mData else { return }
         let inputSamples = inputData.assumingMemoryBound(to: Float32.self)
+        guard inputChannels > 0 else { return }
+        let dominantChannel = AudioInputMonoMixdown.dominantChannelIndex(
+            samples: inputSamples,
+            frameCount: Int(frameCount),
+            channelCount: inputChannels
+        )
 
         // Calculate output frame count after sample rate conversion
         let ratio = outputSampleRate / inputSampleRate
@@ -871,14 +948,10 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
         // Convert Float32 multi-channel → Int16 mono (with sample rate conversion if needed)
         if inputSampleRate == outputSampleRate {
-            // Direct conversion, just format change and channel mixing
+            // Direct conversion from the strongest mapped input. Averaging an active mono mic
+            // with an idle stereo partner would attenuate speech by 6 dB.
             for i in 0..<Int(frameCount) {
-                var sample: Float32 = 0
-                // Mix all channels to mono
-                for ch in 0..<Int(inputChannels) {
-                    sample += inputSamples[i * Int(inputChannels) + ch]
-                }
-                sample /= Float32(inputChannels)
+                let sample = inputSamples[i * inputChannels + dominantChannel]
 
                 // Convert to Int16 with clipping
                 let scaled = sample * 32767.0
@@ -892,17 +965,12 @@ final class CoreAudioRecorder: @unchecked Sendable {
                 let inputIndexInt = Int(inputIndex)
                 let frac = Float32(inputIndex - Double(inputIndexInt))
 
-                var sample: Float32 = 0
                 let idx1 = min(inputIndexInt, Int(frameCount) - 1)
                 let idx2 = min(inputIndexInt + 1, Int(frameCount) - 1)
 
-                // Mix channels and interpolate
-                for ch in 0..<Int(inputChannels) {
-                    let s1 = inputSamples[idx1 * Int(inputChannels) + ch]
-                    let s2 = inputSamples[idx2 * Int(inputChannels) + ch]
-                    sample += s1 + frac * (s2 - s1)
-                }
-                sample /= Float32(inputChannels)
+                let s1 = inputSamples[idx1 * inputChannels + dominantChannel]
+                let s2 = inputSamples[idx2 * inputChannels + dominantChannel]
+                let sample = s1 + frac * (s2 - s1)
 
                 // Convert to Int16
                 let scaled = sample * 32767.0
@@ -1079,7 +1147,8 @@ final class CoreAudioRecorder: @unchecked Sendable {
                 bytes.baseAddress!
             )
         }
-        return status == noErr ? channels : nil
+        let expectedSize = UInt32(MemoryLayout<UInt32>.size * channels.count)
+        return status == noErr && propertySize == expectedSize ? channels : nil
     }
 
     /// Checks if a device is currently available using Apple's kAudioDevicePropertyDeviceIsAlive

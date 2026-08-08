@@ -190,10 +190,6 @@ class Recorder: NSObject, ObservableObject {
             }
 
             startAudioMeterTimer()
-            // ChatGPT Voice suppression is optional and deliberately begins only after AUHAL is
-            // already recording. Missing shortcuts, unreadable state, slow AX/Core Audio probes,
-            // or failed toggles can never delay, fail, or reorder normal VoiceInk++ capture.
-            await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)
             pauseMedia()
             // Complementary to pauseMedia(): broadcast "recording started" so the external YouTube
             // helper app can pause a playing YouTube tab in Chrome (which MediaRemote can't reach).
@@ -252,7 +248,6 @@ class Recorder: NSObject, ObservableObject {
         }
 
         resetAudioMeter()
-        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)
         audioRestorationTask?.cancel()
         audioRestorationTask = Task {
             guard !Task.isCancelled else { return }
@@ -284,7 +279,6 @@ class Recorder: NSObject, ObservableObject {
         }
 
         startAudioMeterTimer()
-        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(true)
         muteSystemAudio()
         logger.info("Recording capture resumed into the existing WAV/realtime session; playback is unchanged")
     }
@@ -310,7 +304,6 @@ class Recorder: NSObject, ObservableObject {
         }
 
         resetAudioMeter()
-        await ChatGPTVoiceCaptureMuteCoordinator.shared.setCaptureActive(false)
 
         audioRestorationTask?.cancel()
         if playbackDisposition == .preserveCurrentPlayback {
