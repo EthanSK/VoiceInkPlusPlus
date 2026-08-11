@@ -29,6 +29,7 @@ class Recorder: NSObject, ObservableObject {
     private var audioMuteTask: Task<Void, Never>?
     private var mediaPauseTask: Task<Void, Never>?
     private var audioRestorationTask: Task<Void, Never>?
+    private var chatGPTVoiceMuteLease: ChatGPTVoiceCaptureMuteLease?
     private let smoothedValuesLock = NSLock()
     private var smoothedAverage: Float = 0
     private var smoothedPeak: Float = 0
@@ -177,6 +178,15 @@ class Recorder: NSObject, ObservableObject {
         recorder = coreAudioRecorder
 
         do {
+            // ChatGPT Voice's built-in mute command is posted directly to its verified PID before
+            // AUHAL opens. The best-effort coordinator never activates ChatGPT or touches the
+            // pointer, and an absent/inactive/unreadable Voice surface cannot fail recording.
+            // Keep the start sound after this bounded preflight so Ethan never starts speaking
+            // while listener suppression is still deciding; no mute work runs after the sound.
+            let muteLease = await ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()
+            chatGPTVoiceMuteLease = muteLease
+            SoundManager.shared.playStartSound()
+
             // Offload hardware start to avoid shortcut lag.
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 audioSetupQueue.async {
@@ -248,6 +258,10 @@ class Recorder: NSObject, ObservableObject {
         }
 
         resetAudioMeter()
+        if let muteLease = chatGPTVoiceMuteLease {
+            chatGPTVoiceMuteLease = nil
+            await ChatGPTVoiceCaptureMuteCoordinator.shared.releaseCapture(muteLease)
+        }
         audioRestorationTask?.cancel()
         audioRestorationTask = Task {
             guard !Task.isCancelled else { return }
@@ -266,16 +280,26 @@ class Recorder: NSObject, ObservableObject {
         guard let currentRecorder = recorder else {
             throw CoreAudioRecorderError.audioUnitNotInitialized
         }
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
-            audioSetupQueue.async {
-                do {
-                    try currentRecorder.resumeRecording()
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
+        let muteLease = await ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()
+        chatGPTVoiceMuteLease = muteLease
+        do {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                audioSetupQueue.async {
+                    do {
+                        try currentRecorder.resumeRecording()
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } catch {
+            if chatGPTVoiceMuteLease == muteLease {
+                chatGPTVoiceMuteLease = nil
+            }
+            await ChatGPTVoiceCaptureMuteCoordinator.shared.releaseCapture(muteLease)
+            throw error
         }
 
         startAudioMeterTimer()
@@ -291,6 +315,10 @@ class Recorder: NSObject, ObservableObject {
         mediaPauseTask?.cancel()
         mediaPauseTask = nil
         stopAudioMeter()
+        // Capture this generation before awaiting the serial hardware queue. A newer recording may
+        // start while this stop is suspended; its lease must not be cleared or restored by us.
+        let muteLease = chatGPTVoiceMuteLease
+        chatGPTVoiceMuteLease = nil
 
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
@@ -304,6 +332,9 @@ class Recorder: NSObject, ObservableObject {
         }
 
         resetAudioMeter()
+        if let muteLease {
+            await ChatGPTVoiceCaptureMuteCoordinator.shared.releaseCapture(muteLease)
+        }
 
         audioRestorationTask?.cancel()
         if playbackDisposition == .preserveCurrentPlayback {
