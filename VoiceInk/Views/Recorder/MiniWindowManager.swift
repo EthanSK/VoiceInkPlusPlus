@@ -73,6 +73,53 @@ enum RecorderDisplayReusePolicy {
     }
 }
 
+enum RecorderPanelApplicationVisibilityPolicy {
+    static func shouldRecoverHiddenApplication(applicationIsHidden: Bool) -> Bool {
+        applicationIsHidden
+    }
+}
+
+@MainActor
+enum RecorderPanelApplicationVisibility {
+    private struct MaskedWindow {
+        let window: NSWindow
+        let originalAlpha: CGFloat
+    }
+
+    /// `orderFrontRegardless()` cannot make any panel visible while the owning
+    /// application is globally hidden (for example, after a release launcher used
+    /// `open -j`). Recover that AppKit state without activation, then immediately keep
+    /// every non-recorder window ordered out so starting dictation reveals only the
+    /// black HUD and never raises VoiceInk++'s main/settings/history windows.
+    @discardableResult
+    static func prepareForHUDPresentation() -> Bool {
+        guard RecorderPanelApplicationVisibilityPolicy.shouldRecoverHiddenApplication(
+            applicationIsHidden: NSApp.isHidden
+        ) else {
+            return false
+        }
+
+        let maskedWindows = NSApp.windows.compactMap { window -> MaskedWindow? in
+            guard !(window is MiniRecorderPanel),
+                  !(window is NotchRecorderPanel),
+                  !NotificationManager.shared.isNotificationWindow(window) else {
+                return nil
+            }
+            return MaskedWindow(window: window, originalAlpha: window.alphaValue)
+        }
+
+        // `unhideWithoutActivation()` and `orderOut` are separate WindowServer
+        // operations. Mask unrelated windows first so a main/settings/history window
+        // cannot flash for one compositor frame. Keep an active error notification
+        // unmasked: it is truthful diagnostic evidence and must survive HUD recovery.
+        maskedWindows.forEach { $0.window.alphaValue = 0 }
+        NSApp.unhideWithoutActivation()
+        maskedWindows.forEach { $0.window.orderOut(nil) }
+        maskedWindows.forEach { $0.window.alphaValue = $0.originalAlpha }
+        return true
+    }
+}
+
 struct RecorderPanelPresentationReport: Equatable {
     let expectedScreenCount: Int
     let materializedPanelCount: Int

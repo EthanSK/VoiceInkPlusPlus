@@ -196,6 +196,14 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
             return false
         }
 
+        // A globally hidden application owns no WindowServer-visible panels even when
+        // every NSPanel is materialized at correct screen geometry. Recover only that
+        // AppKit state, without activation, before judging physical HUD visibility.
+        // The helper keeps all unrelated VoiceInk++ windows ordered out.
+        if RecorderPanelApplicationVisibility.prepareForHUDPresentation() {
+            vippLog.info("recorder HUD: recovered hidden application without activation")
+        }
+
         let firstReport: RecorderPanelPresentationReport
         switch recorderPanelStyle {
         case .notch:

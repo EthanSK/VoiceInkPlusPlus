@@ -23,6 +23,11 @@ class NotificationManager {
     }
 
     @MainActor
+    func isNotificationWindow(_ window: NSWindow) -> Bool {
+        notificationWindow === window
+    }
+
+    @MainActor
     func showNotification(
         title: String,
         type: AppNotificationView.NotificationType,
@@ -99,7 +104,10 @@ class NotificationManager {
         // keeps the report armed so a later presentation attempt can show the message.
         guard positionWindow(panel) else { return }
         panel.alphaValue = 0
-        panel.makeKeyAndOrderFront(nil as Any?)
+        // This is deliberately a nonactivating diagnostic surface. Making the panel
+        // key is both unnecessary and rejected by AppKit; order it above other apps
+        // without changing Ethan's keyboard focus.
+        panel.orderFrontRegardless()
         
         self.notificationWindow = panel
         

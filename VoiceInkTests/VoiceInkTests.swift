@@ -230,6 +230,65 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func recorderHUDRecoversHiddenApplicationWithoutActivation() throws {
+        #expect(RecorderPanelApplicationVisibilityPolicy.shouldRecoverHiddenApplication(
+            applicationIsHidden: true
+        ))
+        #expect(!RecorderPanelApplicationVisibilityPolicy.shouldRecoverHiddenApplication(
+            applicationIsHidden: false
+        ))
+
+        let panelSource = try repositorySource(
+            "VoiceInk/Views/Recorder/MiniWindowManager.swift"
+        )
+        let helperStart = try #require(panelSource.range(
+            of: "    static func prepareForHUDPresentation() -> Bool {"
+        ))
+        let helperEnd = try #require(panelSource.range(
+            of: "\n}\n\nstruct RecorderPanelPresentationReport",
+            range: helperStart.upperBound..<panelSource.endIndex
+        ))
+        let helper = panelSource[helperStart.lowerBound..<helperEnd.lowerBound]
+        let mask = try #require(helper.range(
+            of: "maskedWindows.forEach { $0.window.alphaValue = 0 }"
+        ))
+        let unhide = try #require(helper.range(
+            of: "NSApp.unhideWithoutActivation()",
+            range: mask.upperBound..<helper.endIndex
+        ))
+        let orderOut = try #require(helper.range(
+            of: "maskedWindows.forEach { $0.window.orderOut(nil) }",
+            range: unhide.upperBound..<helper.endIndex
+        ))
+        let restoreAlpha = try #require(helper.range(
+            of: "maskedWindows.forEach { $0.window.alphaValue = $0.originalAlpha }",
+            range: orderOut.upperBound..<helper.endIndex
+        ))
+        #expect(mask.lowerBound < unhide.lowerBound)
+        #expect(unhide.lowerBound < orderOut.lowerBound)
+        #expect(orderOut.lowerBound < restoreAlpha.lowerBound)
+        #expect(helper.contains("!NotificationManager.shared.isNotificationWindow(window)"))
+        #expect(!helper.contains("activate("))
+        #expect(!helper.contains("makeKey"))
+        #expect(!helper.contains("orderFrontRegardless"))
+
+        let managerSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        let showStart = try #require(managerSource.range(
+            of: "    private func showRecorderPanel("
+        ))
+        let firstReport = try #require(managerSource.range(
+            of: "        let firstReport: RecorderPanelPresentationReport",
+            range: showStart.upperBound..<managerSource.endIndex
+        ))
+        let preparation = try #require(managerSource.range(
+            of: "RecorderPanelApplicationVisibility.prepareForHUDPresentation()",
+            range: showStart.upperBound..<firstReport.lowerBound
+        ))
+        #expect(preparation.lowerBound < firstReport.lowerBound)
+    }
+
     @Test func recorderPanelVisibilityClaimRequiresEveryMirroredWindowOnScreen() {
         #expect(!RecorderPanelPresentationPolicy.isComplete(
             expectedScreenCount: 2,
@@ -630,6 +689,9 @@ struct VoiceInkTests {
         let source = try repositorySource(
             "VoiceInk/Notifications/NotificationManager.swift"
         )
+        #expect(source.contains("panel.orderFrontRegardless()"))
+        #expect(!source.contains("panel.makeKeyAndOrderFront"))
+
         let positioningStart = try #require(source.range(
             of: "    private func positionWindow(_ window: NSWindow) -> Bool {"
         ))
