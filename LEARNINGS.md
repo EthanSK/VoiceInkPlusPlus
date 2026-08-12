@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-12T21:36:38Z
+**Trigger:** Ethan reported mouse-triggered VoiceInk++ appeared dead; unified logs showed recorder HUD presentation failed with three panels materialized and zero on screen.
+**Symptom:** Build 296 played the shortcut/start path but the black recorder HUD never appeared; every attempt logged expected=3 materialized=3 visibleOnScreen=0.
+**Root cause:** The signed release was launched with open -gj. The -j flag left NSRunningApplication hidden=true, so all three correctly positioned NSPanels existed in WindowServer but could not become on-screen; reopening the same instance with open -g did not clear hidden state.
+**Fix:** Commit f3a5a61 recovers a globally hidden application with NSApp.unhideWithoutActivation before HUD verification, masks and orders out unrelated windows, preserves active diagnostic notifications, and keeps recording activation gated on verified on-screen panels. Signed v2.0.297 was launched with open -g and verified inactive but hidden=false.
+**Commit:** f3a5a61
+**Guard:** Mac Mini release gate named and passed 175 tests in six suites after the canonical TestManager runner stalled and the permitted direct xctest fallback ran the already-built bundle. recorderHUDRecoversHiddenApplicationWithoutActivation pins nonactivation and mask-unhide-orderOut-alpha ordering; release guidance forbids open -j. Physical repeated Primary acceptance remains required.
+---
+
+
+---
 **Date:** 2026-08-12T00:00:58Z
 **Trigger:** Ethan heard the recording-start sound but saw no black VoiceInk++ HUD; the next recording made it appear.
 **Symptom:** Recording audio started and GPT Live streamed while the black recorder HUD was absent until a later recording recreated or reordered its panels.

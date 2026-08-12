@@ -79,6 +79,11 @@ Ethan uses a Logitech G502 X LIGHTSPEED with Logitech G HUB, but any programmabl
 | `make clean` | Remove the shared dependency directory |
 | `make help` | List the available targets |
 
+When starting an installed background build, use `open -g /Applications/VoiceInkPlusPlus.app`.
+Never add `-j`: that globally hides the application, and AppKit cannot put any recorder panel on
+screen while its owner remains hidden. VoiceInk++ defensively recovers that state at HUD
+presentation, but the release launcher must not create it.
+
 ## Local-build limitations
 
 The ad-hoc local configuration intentionally omits capabilities that require Ethan's Apple signing setup:
