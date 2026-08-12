@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-12T00:00:58Z
+**Trigger:** Ethan heard the recording-start sound but saw no black VoiceInk++ HUD; the next recording made it appear.
+**Symptom:** Recording audio started and GPT Live streamed while the black recorder HUD was absent until a later recording recreated or reordered its panels.
+**Root cause:** RecorderUIManager set isRecorderPanelVisible optimistically and the reusable per-display managers returned no postcondition proving a real NSPanel was visible on-screen; launch reset, display teardown, and delayed style-rebuild races could also erase or resurrect panels.
+**Fix:** Commit 228c2e7 makes mini/notch presentation return a concrete verified report, gates recording start on at least one visible on-screen panel, repairs mirrored panels on display/wake events, serializes launch reset, makes style changes transactional, and replaces delayed audio-device toggles with an explicit one-way stop intent.
+**Commit:** 228c2e7
+**Guard:** Focused HUD lifecycle tests plus Primary/Next/realtime/second-chance guards and the exact v2.0.296 Mac Mini release gate; physical acceptance must prove repeated first/rapid starts always show the HUD without focus theft.
+---
+
+
+---
 **Date:** 2026-08-07T23:26:06Z
 **Trigger:** Ethan reported that ChatGPT repeatedly stole focus during the VoiceInk++ mute work and required every UI-affecting action to stop immediately.
 **Symptom:** ChatGPT forced itself to the foreground about every ten seconds even though the active investigation used only background tools.
