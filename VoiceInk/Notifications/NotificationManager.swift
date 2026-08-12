@@ -94,7 +94,10 @@ class NotificationManager {
         panel.hasShadow = false
         panel.isMovableByWindowBackground = false
         
-        positionWindow(panel)
+        // Display teardown/wake can briefly leave AppKit with no NSScreen. Error
+        // reporting must never crash precisely while diagnosing that state. The caller
+        // keeps the report armed so a later presentation attempt can show the message.
+        guard positionWindow(panel) else { return }
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil as Any?)
         
@@ -116,8 +119,12 @@ class NotificationManager {
     }
 
     @MainActor
-    private func positionWindow(_ window: NSWindow) {
-        let activeScreen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens[0]
+    private func positionWindow(_ window: NSWindow) -> Bool {
+        guard let activeScreen = NSApp.keyWindow?.screen
+            ?? NSScreen.main
+            ?? NSScreen.screens.first else {
+            return false
+        }
         let screenRect = activeScreen.visibleFrame
         let notificationRect = window.frame
 
@@ -137,6 +144,7 @@ class NotificationManager {
                 bottomReservedHeight: bottomReservedHeight
             )
         )
+        return true
     }
 
     static func notificationOrigin(

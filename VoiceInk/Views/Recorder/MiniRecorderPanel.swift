@@ -87,6 +87,10 @@ class MiniRecorderPanel: NSPanel {
         let metrics = MiniRecorderPanel.calculateWindowMetrics(for: screen)
         setFrame(metrics, display: true)
         orderFrontRegardless()
+        // Flush the first hosted frame so a window that passed the manager's visibility
+        // postcondition cannot remain blank. Do not make this nonactivating panel key or
+        // steal focus from the app Ethan is dictating into.
+        displayIfNeeded()
     }
     
 } 

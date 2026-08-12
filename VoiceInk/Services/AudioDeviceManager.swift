@@ -492,7 +492,13 @@ class AudioDeviceManager: ObservableObject {
                         )
                     } else {
                         self.logger.error("No audio input devices available!")
-                        NotificationCenter.default.post(name: .toggleRecorderPanel, object: nil)
+                        // Preserve normal stop/transcribe/deliver semantics, but send an
+                        // explicit one-way intent. A delayed generic toggle can arrive
+                        // after teardown and accidentally start a deviceless recording.
+                        NotificationCenter.default.post(
+                            name: .stopRecorderForAudioDeviceLoss,
+                            object: nil
+                        )
                     }
                 }
                 return

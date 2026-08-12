@@ -175,22 +175,112 @@ struct VoiceInkTests {
     }
 
     @Test func recorderWindowsReuseStableDisplaySetAndRebuildOnChange() {
+        let displays = [1, 2, 3].map {
+            RecorderDisplayReusePolicy.ScreenIdentity(value: "display:\($0)")
+        }
         #expect(RecorderDisplayReusePolicy.shouldReuse(
-            existingDisplayIDs: [1, 2, 3],
-            currentDisplayIDs: [1, 2, 3]
+            existingDisplayIDs: displays,
+            currentDisplayIDs: displays
         ))
         #expect(!RecorderDisplayReusePolicy.shouldReuse(
             existingDisplayIDs: [],
-            currentDisplayIDs: [1, 2, 3]
+            currentDisplayIDs: displays
         ))
         #expect(!RecorderDisplayReusePolicy.shouldReuse(
-            existingDisplayIDs: [1, 2, 3],
-            currentDisplayIDs: [1, 3]
+            existingDisplayIDs: displays,
+            currentDisplayIDs: [displays[0], displays[2]]
         ))
         #expect(!RecorderDisplayReusePolicy.shouldReuse(
-            existingDisplayIDs: [1, 2, 3],
-            currentDisplayIDs: [2, 1, 3]
+            existingDisplayIDs: displays,
+            currentDisplayIDs: [displays[1], displays[0], displays[2]]
         ))
+        #expect(RecorderDisplayReusePolicy.windowSetPlan(
+            existingDisplayIDs: displays,
+            currentDisplayIDs: []
+        ) == .keepExisting)
+        #expect(RecorderDisplayReusePolicy.windowSetPlan(
+            existingDisplayIDs: displays,
+            currentDisplayIDs: displays
+        ) == .reuse)
+        #expect(RecorderDisplayReusePolicy.windowSetPlan(
+            existingDisplayIDs: displays,
+            currentDisplayIDs: [displays[0], displays[2]]
+        ) == .rebuild)
+
+        let missingNumberFallback = RecorderDisplayReusePolicy.screenIdentity(
+            displayID: nil,
+            fallbackIndex: 1,
+            frame: NSRect(x: 1_440, y: 0, width: 1_920, height: 1_080),
+            backingScaleFactor: 2
+        )
+        #expect(missingNumberFallback.value.hasPrefix("fallback:1:"))
+        #expect(missingNumberFallback != displays[1])
+    }
+
+    @Test func recorderPanelShowFailsClosedWhenNoDisplaysMaterialize() {
+        #expect(!RecorderPanelPresentationPolicy.isComplete(
+            expectedScreenCount: 0,
+            materializedPanelCount: 0,
+            visibleOnScreenPanelCount: 0
+        ))
+        #expect(!RecorderPanelPresentationPolicy.isComplete(
+            expectedScreenCount: 2,
+            materializedPanelCount: 0,
+            visibleOnScreenPanelCount: 0
+        ))
+    }
+
+    @Test func recorderPanelVisibilityClaimRequiresEveryMirroredWindowOnScreen() {
+        #expect(!RecorderPanelPresentationPolicy.isComplete(
+            expectedScreenCount: 2,
+            materializedPanelCount: 2,
+            visibleOnScreenPanelCount: 1
+        ))
+        #expect(RecorderPanelPresentationPolicy.isComplete(
+            expectedScreenCount: 2,
+            materializedPanelCount: 2,
+            visibleOnScreenPanelCount: 2
+        ))
+
+        let partial = RecorderPanelPresentationReport(
+            expectedScreenCount: 2,
+            materializedPanelCount: 2,
+            visibleOnScreenPanelCount: 1
+        )
+        #expect(partial.hasVisiblePanel)
+        #expect(!partial.isComplete)
+
+        #expect(RecorderPanelPresentationIssueLevel.none.shouldReport(.incomplete))
+        #expect(RecorderPanelPresentationIssueLevel.incomplete.shouldReport(.failure))
+        #expect(!RecorderPanelPresentationIssueLevel.failure.shouldReport(.incomplete))
+        #expect(!RecorderPanelPresentationIssueLevel.failure.shouldReport(.failure))
+    }
+
+    @Test func recorderDisplayEventsRemirrorOnlyWhileLogicallyVisible() throws {
+        #expect(RecorderPanelPresentationPolicy.shouldRemirror(isLogicallyVisible: true))
+        #expect(!RecorderPanelPresentationPolicy.shouldRemirror(isLogicallyVisible: false))
+
+        let source = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        #expect(source.contains("NSApplication.didChangeScreenParametersNotification"))
+        #expect(source.contains("NSWorkspace.didWakeNotification"))
+        #expect(source.contains("NSWorkspace.screensDidWakeNotification"))
+        #expect(source.contains("NSWorkspace.sessionDidBecomeActiveNotification"))
+        #expect(!source.contains("NSWorkspace.activeSpaceDidChangeNotification"))
+        #expect(source.contains("queue: .main"))
+        #expect(source.contains("Task { @MainActor in"))
+
+        let handlerStart = try #require(source.range(
+            of: "    private func handleRecorderDisplayEnvironmentChange"
+        ))
+        let handlerEnd = try #require(source.range(
+            of: "    @objc public func handleToggleRecorderPanelNotification",
+            range: handlerStart.upperBound..<source.endIndex
+        ))
+        let handler = source[handlerStart.lowerBound..<handlerEnd.lowerBound]
+        #expect(handler.contains("isLogicallyVisible: isRecorderPanelVisible"))
+        #expect(handler.contains("showRecorderPanel(reason: notification.name.rawValue)"))
     }
 
     @Test func openAILiveTranscribeUsesAccuracyContextAndStructuredHints() throws {
@@ -396,6 +486,158 @@ struct VoiceInkTests {
         ]
         #expect(lifecycleBody.contains("recordingStartReservation.pendingID != nil"))
         #expect(lifecycleBody.contains("activeRecordingDeliveryBarrier.isDeliveryBlocked"))
+    }
+
+    @Test func recorderPanelVisibilityIsPublishedOnlyAfterVerifiedPresentation() throws {
+        let source = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        #expect(source.contains(
+            "@Published private(set) var isRecorderPanelVisible = false"
+        ))
+
+        let toggleStart = try #require(source.range(
+            of: "    func toggleRecorderPanel("
+        ))
+        let toggleEnd = try #require(source.range(
+            of: "    /// Genuine Primary triple-click:",
+            range: toggleStart.upperBound..<source.endIndex
+        ))
+        let toggleBody = source[toggleStart.lowerBound..<toggleEnd.lowerBound]
+        let presentationGuard = try #require(toggleBody.range(
+            of: "guard showRecorderPanel("
+        ))
+        let presentationGuardEnd = try #require(toggleBody.range(
+            of: ") else { return }",
+            range: presentationGuard.upperBound..<toggleBody.endIndex
+        ))
+        let presentationGuardBody = toggleBody[
+            presentationGuard.lowerBound..<presentationGuardEnd.upperBound
+        ]
+        #expect(presentationGuardBody.contains("reason: \"recording start\""))
+        #expect(presentationGuardBody.contains("rearmFailureNotification: true"))
+        let visibleClaim = try #require(toggleBody.range(
+            of: "isRecorderPanelVisible = true",
+            range: presentationGuardEnd.upperBound..<toggleBody.endIndex
+        ))
+        #expect(presentationGuard.lowerBound < visibleClaim.lowerBound)
+
+        let showStart = try #require(source.range(
+            of: "    private func showRecorderPanel("
+        ))
+        let showEnd = try #require(source.range(
+            of: "    private func recordSuccessfulPresentation(",
+            range: showStart.upperBound..<source.endIndex
+        ))
+        let showBody = source[showStart.lowerBound..<showEnd.lowerBound]
+        let partialBranch = try #require(showBody.range(
+            of: "if retryReport.hasVisiblePanel"
+        ))
+        let totalFailure = try #require(showBody.range(
+            of: "vippLog.fault(\"recorder HUD: presentation failed",
+            range: partialBranch.upperBound..<showBody.endIndex
+        ))
+        let partialBody = showBody[partialBranch.lowerBound..<totalFailure.lowerBound]
+        #expect(partialBody.contains("reportIncompleteRecorderPresentationIfNeeded()"))
+        #expect(partialBody.contains("return true"))
+    }
+
+    @Test func recorderPanelStyleRebuildCannotResurrectAfterDismiss() throws {
+        let source = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        let rebuildStart = try #require(source.range(
+            of: "    private func rebuildVisiblePanel(previousStyle: RecorderPanelStyle) -> Bool {"
+        ))
+        let rebuildEnd = try #require(source.range(
+            of: "    // MARK: - Recorder Panel Management",
+            range: rebuildStart.upperBound..<source.endIndex
+        ))
+        let rebuildBody = source[rebuildStart.lowerBound..<rebuildEnd.lowerBound]
+
+        #expect(rebuildBody.contains("let shouldRemainVisible = isRecorderPanelVisible"))
+        #expect(rebuildBody.contains("guard shouldRemainVisible else"))
+        let replacement = try #require(rebuildBody.range(
+            of: "if showRecorderPanel(reason: \"recorder style changed\")"
+        ))
+        let oldStyleDestruction = try #require(rebuildBody.range(
+            of: "destroyWindowManager(for: previousStyle)",
+            range: replacement.upperBound..<rebuildBody.endIndex
+        ))
+        let failedReplacementCleanup = try #require(rebuildBody.range(
+            of: "destroyWindowManager(for: recorderPanelStyle)",
+            range: oldStyleDestruction.upperBound..<rebuildBody.endIndex
+        ))
+        #expect(replacement.lowerBound < oldStyleDestruction.lowerBound)
+        #expect(oldStyleDestruction.lowerBound < failedReplacementCleanup.lowerBound)
+        #expect(!rebuildBody.contains("Task.sleep"))
+        #expect(!rebuildBody.contains("Task {"))
+
+        #expect(source.contains("if !rebuildVisiblePanel(previousStyle: oldValue)"))
+        #expect(source.contains("recorderPanelStyle = oldValue"))
+    }
+
+    @Test func launchResetCompletesBeforeAnyShortcutStartsRecording() throws {
+        let source = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        let toggleStart = try #require(source.range(
+            of: "    func toggleRecorderPanel("
+        ))
+        let toggleEnd = try #require(source.range(
+            of: "        vippLog.info(\"toggleRecorderPanel: enter",
+            range: toggleStart.upperBound..<source.endIndex
+        ))
+        let prefix = source[toggleStart.lowerBound..<toggleEnd.lowerBound]
+        let reset = try #require(prefix.range(of: "await resetOnLaunch()"))
+        let engine = try #require(prefix.range(
+            of: "guard let engine = engine else { return }",
+            range: reset.upperBound..<prefix.endIndex
+        ))
+        #expect(reset.lowerBound < engine.lowerBound)
+        #expect(source.contains("case .running:"))
+        #expect(source.contains("launchResetWaiters.append(continuation)"))
+    }
+
+    @Test func missingAudioDeviceRequestsExplicitStopInsteadOfToggle() throws {
+        let source = try repositorySource(
+            "VoiceInk/Services/AudioDeviceManager.swift"
+        )
+        let failureStart = try #require(source.range(
+            of: "self.logger.error(\"No audio input devices available!\")"
+        ))
+        let failureEnd = try #require(source.range(
+            of: "                    }\n                }\n                return",
+            range: failureStart.upperBound..<source.endIndex
+        ))
+        let failureBody = source[failureStart.lowerBound..<failureEnd.lowerBound]
+        #expect(failureBody.contains("name: .stopRecorderForAudioDeviceLoss"))
+        #expect(!failureBody.contains("name: .toggleRecorderPanel"))
+
+        let managerSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecorderUIManager.swift"
+        )
+        let handlerStart = try #require(managerSource.range(
+            of: "    @objc public func handleStopRecorderForAudioDeviceLossNotification()"
+        ))
+        let handler = managerSource[handlerStart.lowerBound..<managerSource.endIndex]
+        #expect(handler.contains("case .recording, .paused:"))
+        #expect(handler.contains("stopPasteDestination: .primaryCurrentInput"))
+        #expect(handler.contains("case .idle, .transcribing, .enhancing, .busy:"))
+    }
+
+    @Test func notificationPositioningFailsSafelyWhenAppKitReportsNoScreens() throws {
+        let source = try repositorySource(
+            "VoiceInk/Notifications/NotificationManager.swift"
+        )
+        let positioningStart = try #require(source.range(
+            of: "    private func positionWindow(_ window: NSWindow) -> Bool {"
+        ))
+        let positioning = source[positioningStart.lowerBound..<source.endIndex]
+        #expect(positioning.contains("?? NSScreen.screens.first else"))
+        #expect(positioning.contains("return false"))
+        #expect(!positioning.contains("NSScreen.screens[0]"))
+        #expect(source.contains("guard positionWindow(panel) else { return }"))
     }
 
     @Test func openAIProviderRegistersLiveTranscribeAsStreamingOnly() {

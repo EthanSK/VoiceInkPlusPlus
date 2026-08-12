@@ -73,12 +73,32 @@ enum RecorderPanelLifecyclePolicy {
     }
 }
 
+enum RecorderPanelPresentationIssueLevel: Int {
+    case none
+    case incomplete
+    case failure
+
+    /// A display episode may escalate from partial mirroring to total loss, but a
+    /// later lower-severity observation must not add noise after the stronger warning.
+    func shouldReport(_ candidate: Self) -> Bool {
+        candidate.rawValue > rawValue
+    }
+}
+
 @MainActor
 class RecorderUIManager: ObservableObject, RecorderPanelPresenting, NotificationRecorderPlacementProviding {
     @Published var recorderPanelStyle: RecorderPanelStyle = .stored {
         didSet {
             guard oldValue != recorderPanelStyle else { return }
-            rebuildVisiblePanel(previousStyle: oldValue)
+            guard !isRestoringRecorderPanelStyle else { return }
+            if !rebuildVisiblePanel(previousStyle: oldValue) {
+                // A style preference is not allowed to replace a proven visible HUD
+                // with a phantom one. Keep the old presentation and preference until
+                // the requested style can materialize on a later explicit attempt.
+                isRestoringRecorderPanelStyle = true
+                recorderPanelStyle = oldValue
+                isRestoringRecorderPanelStyle = false
+            }
             UserDefaults.standard.set(recorderPanelStyle.rawValue, forKey: "RecorderType")
         }
     }
@@ -88,23 +108,29 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         set { recorderPanelStyle = RecorderPanelStyle(rawValue: newValue) ?? .mini }
     }
 
-    @Published var isRecorderPanelVisible = false {
-        didSet {
-            guard oldValue != isRecorderPanelVisible else { return }
-
-            if isRecorderPanelVisible {
-                showRecorderPanel()
-            } else {
-                hideRecorderPanel()
-            }
-        }
-    }
+    // This is both UI truth and the ownership boundary for recorder-only shortcuts
+    // such as Next Track and Escape. Set it only after at least one materialized,
+    // ordered panel intersects its screen. Incomplete mirroring warns and is repaired
+    // by display events; zero real panels must never accompany an optimistic `true`.
+    @Published private(set) var isRecorderPanelVisible = false
 
     private var notchWindowManager: NotchWindowManager?
     private var miniWindowManager: MiniWindowManager?
 
     private weak var engine: VoiceInkEngine?
     private var recorder: Recorder?
+    private var reportedRecorderPresentationIssue: RecorderPanelPresentationIssueLevel = .none
+    private var isRestoringRecorderPanelStyle = false
+    private var displayEnvironmentObservers: [NSObjectProtocol] = []
+
+    private enum LaunchResetState {
+        case pending
+        case running
+        case complete
+    }
+
+    private var launchResetState: LaunchResetState = .pending
+    private var launchResetWaiters: [CheckedContinuation<Void, Never>] = []
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderUIManager")
 
@@ -122,6 +148,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         self.recorder = recorder
         NotificationManager.shared.setRecorderPlacementProvider(self)
         setupNotifications()
+        setupDisplayEnvironmentNotifications()
     }
 
     /// Returns the full bottom reservation occupied by the visible mini recorder
@@ -153,9 +180,23 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
 
     // MARK: - Recorder Panel Management
 
-    private func showRecorderPanel() {
-        guard let engine = engine, let recorder = recorder else { return }
+    @discardableResult
+    private func showRecorderPanel(
+        reason: String,
+        rearmFailureNotification: Bool = false
+    ) -> Bool {
+        if rearmFailureNotification {
+            // Every explicit Primary start deserves visible feedback if it cannot
+            // begin; deduplication is only for repeated system repair events.
+            reportedRecorderPresentationIssue = .none
+        }
+        guard let engine = engine, let recorder = recorder else {
+            logger.fault("Recorder HUD presentation failed before dependencies were configured")
+            reportRecorderPresentationFailureIfNeeded()
+            return false
+        }
 
+        let firstReport: RecorderPanelPresentationReport
         switch recorderPanelStyle {
         case .notch:
             if notchWindowManager == nil {
@@ -194,7 +235,12 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                     }
                 )
             }
-            notchWindowManager?.show()
+            firstReport = notchWindowManager?.show()
+                ?? RecorderPanelPresentationReport(
+                    expectedScreenCount: NSScreen.screens.count,
+                    materializedPanelCount: 0,
+                    visibleOnScreenPanelCount: 0
+                )
         case .mini:
             if miniWindowManager == nil {
                 miniWindowManager = MiniWindowManager(
@@ -231,8 +277,93 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                     }
                 )
             }
-            miniWindowManager?.show()
+            firstReport = miniWindowManager?.show()
+                ?? RecorderPanelPresentationReport(
+                    expectedScreenCount: NSScreen.screens.count,
+                    materializedPanelCount: 0,
+                    visibleOnScreenPanelCount: 0
+                )
         }
+
+        if firstReport.isComplete {
+            recordSuccessfulPresentation(firstReport, reason: reason, attempt: 1)
+            return true
+        }
+
+        // A second synchronous order/re-read repairs stale geometry and transiently
+        // hidden reusable panels without inventing a timing delay. Initial recording
+        // still requires at least one verified on-screen panel; incomplete mirroring is
+        // visible and repairable rather than allowed to erase the primary function.
+        let retryReport: RecorderPanelPresentationReport
+        switch recorderPanelStyle {
+        case .notch:
+            retryReport = notchWindowManager?.show() ?? firstReport
+        case .mini:
+            retryReport = miniWindowManager?.show() ?? firstReport
+        }
+
+        if retryReport.isComplete {
+            recordSuccessfulPresentation(retryReport, reason: reason, attempt: 2)
+            return true
+        }
+
+        if retryReport.hasVisiblePanel {
+            vippLog.error("recorder HUD: partial presentation reason=\(reason, privacy: .public) style=\(self.recorderPanelStyle.rawValue, privacy: .public) expected=\(retryReport.expectedScreenCount, privacy: .public) materialized=\(retryReport.materializedPanelCount, privacy: .public) visibleOnScreen=\(retryReport.visibleOnScreenPanelCount, privacy: .public)")
+            reportIncompleteRecorderPresentationIfNeeded()
+            return true
+        }
+
+        vippLog.fault("recorder HUD: presentation failed reason=\(reason, privacy: .public) style=\(self.recorderPanelStyle.rawValue, privacy: .public) expected=\(retryReport.expectedScreenCount, privacy: .public) materialized=\(retryReport.materializedPanelCount, privacy: .public) visibleOnScreen=\(retryReport.visibleOnScreenPanelCount, privacy: .public)")
+        if !isRecorderPanelVisible {
+            // A failed initial attempt may have materialized only some displays. None
+            // may linger because the recording is intentionally not starting and the
+            // visible-bar shortcut ownership flag remains false.
+            hideRecorderPanel()
+        }
+        reportRecorderPresentationFailureIfNeeded()
+        return false
+    }
+
+    private func recordSuccessfulPresentation(
+        _ report: RecorderPanelPresentationReport,
+        reason: String,
+        attempt: Int
+    ) {
+        reportedRecorderPresentationIssue = .none
+        vippLog.info("recorder HUD: presentation verified reason=\(reason, privacy: .public) style=\(self.recorderPanelStyle.rawValue, privacy: .public) attempt=\(attempt, privacy: .public) screens=\(report.expectedScreenCount, privacy: .public)")
+    }
+
+    private func reportRecorderPresentationFailureIfNeeded() {
+        guard NSApp.keyWindow?.screen != nil
+                || NSScreen.main != nil
+                || NSScreen.screens.first != nil else {
+            // Keep the report re-armed. The next display event can present it once a
+            // screen exists; the privacy-safe fault log above remains authoritative.
+            return
+        }
+        guard reportedRecorderPresentationIssue.shouldReport(.failure) else { return }
+        reportedRecorderPresentationIssue = .failure
+        let title = isRecorderPanelVisible
+            ? String(localized: "Recorder controls could not be restored. VoiceInk++ kept the current recorder state.")
+            : String(localized: "Recorder controls could not be shown. Recording did not start.")
+        NotificationManager.shared.showNotification(
+            title: title,
+            type: .error,
+            playSound: false
+        )
+    }
+
+    private func reportIncompleteRecorderPresentationIfNeeded() {
+        guard NSApp.keyWindow?.screen != nil
+                || NSScreen.main != nil
+                || NSScreen.screens.first != nil else { return }
+        guard reportedRecorderPresentationIssue.shouldReport(.incomplete) else { return }
+        reportedRecorderPresentationIssue = .incomplete
+        NotificationManager.shared.showNotification(
+            title: String(localized: "Recorder controls are visible on only some displays. VoiceInk++ will retry when the display environment changes."),
+            type: .error,
+            playSound: false
+        )
     }
 
     private func hideRecorderPanel() {
@@ -244,21 +375,35 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         }
     }
 
-    private func rebuildVisiblePanel(previousStyle: RecorderPanelStyle) {
-        guard isRecorderPanelVisible else { return }
+    @discardableResult
+    private func rebuildVisiblePanel(previousStyle: RecorderPanelStyle) -> Bool {
+        // A hidden style can discard its stale manager immediately. For a visible HUD,
+        // materialize and verify the replacement first; only then remove the proven old
+        // panels. This makes a failed style preference transactional instead of leaving
+        // Next/Escape ownership attached to zero physical windows.
+        let shouldRemainVisible = isRecorderPanelVisible
+        guard shouldRemainVisible else {
+            destroyWindowManager(for: previousStyle)
+            return true
+        }
 
-        switch previousStyle {
+        if showRecorderPanel(reason: "recorder style changed") {
+            destroyWindowManager(for: previousStyle)
+            return true
+        }
+
+        destroyWindowManager(for: recorderPanelStyle)
+        return false
+    }
+
+    private func destroyWindowManager(for style: RecorderPanelStyle) {
+        switch style {
         case .notch:
             notchWindowManager?.destroyWindow()
             notchWindowManager = nil
         case .mini:
             miniWindowManager?.destroyWindow()
             miniWindowManager = nil
-        }
-
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            showRecorderPanel()
         }
     }
 
@@ -268,6 +413,10 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         modeId: UUID? = nil,
         stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput
     ) async {
+        // The shortcut monitor can become live while launch cleanup is still draining.
+        // Join that one reset instead of letting an unstructured launch task erase a
+        // first recording that has already reserved or opened the microphone.
+        await resetOnLaunch()
         guard let engine = engine else { return }
 
         vippLog.info("toggleRecorderPanel: enter panelVisible=\(self.isRecorderPanelVisible, privacy: .public) state=\(String(describing: engine.recordingState), privacy: .public) modeId=\(modeId?.uuidString ?? "nil", privacy: .public)")
@@ -354,6 +503,10 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                 await dismissRecorderPanel()
             }
         } else {
+            guard showRecorderPanel(
+                reason: "recording start",
+                rearmFailureNotification: true
+            ) else { return }
             isRecorderPanelVisible = true
             await engine.toggleRecord(modeId: modeId)
         }
@@ -402,8 +555,8 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         // no assistant, so this is a clean post-delivery dismiss.
         vippLog.info("dismissRecorderPanel: HIDE bar (state=\(String(describing: engine.recordingState), privacy: .public))")
 
-        hideRecorderPanel()
         isRecorderPanelVisible = false
+        hideRecorderPanel()
         engine.assistantSession.reset()
     }
 
@@ -412,18 +565,40 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
     private func forceDismissRecorderPanel() async {
         guard let engine = engine else { return }
         vippLog.info("forceDismissRecorderPanel: HIDE bar unconditionally (state=\(String(describing: engine.recordingState), privacy: .public))")
-        hideRecorderPanel()
         isRecorderPanelVisible = false
+        hideRecorderPanel()
         engine.assistantSession.reset()
     }
 
     func resetOnLaunch() async {
-        guard let engine = engine else { return }
+        switch launchResetState {
+        case .complete:
+            return
+        case .running:
+            await withCheckedContinuation { continuation in
+                launchResetWaiters.append(continuation)
+            }
+            return
+        case .pending:
+            launchResetState = .running
+        }
+
+        guard let engine = engine else {
+            launchResetState = .pending
+            let waiters = launchResetWaiters
+            launchResetWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            return
+        }
         logger.notice("Resetting recording state on launch")
         await engine.resetRecordingSession()
         // resetRecordingSession() empties `sessions`, so the guarded dismiss would hide
         // anyway, but force-hide to be unambiguous on launch.
         await forceDismissRecorderPanel()
+        launchResetState = .complete
+        let waiters = launchResetWaiters
+        launchResetWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     func cancelRecording() async {
@@ -448,10 +623,66 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleStopRecorderForAudioDeviceLossNotification),
+            name: .stopRecorderForAudioDeviceLoss,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleDismissRecorderPanelNotification),
             name: .dismissRecorderPanel,
             object: nil
         )
+    }
+
+    private func setupDisplayEnvironmentNotifications() {
+        observeDisplayEnvironmentNotification(
+            center: .default,
+            name: NSApplication.didChangeScreenParametersNotification
+        )
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification
+        ] {
+            observeDisplayEnvironmentNotification(
+                center: workspaceCenter,
+                name: name
+            )
+        }
+    }
+
+    private func observeDisplayEnvironmentNotification(
+        center: NotificationCenter,
+        name: Notification.Name
+    ) {
+        let observer = center.addObserver(
+            forName: name,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            // NSWorkspace delivery is not expressed as actor isolation in its API.
+            // Queue on the main run loop and make the MainActor hop explicit so Swift 6
+            // cannot enter AppKit window code through an off-actor selector thunk.
+            Task { @MainActor in
+                self?.handleRecorderDisplayEnvironmentChange(notification)
+            }
+        }
+        displayEnvironmentObservers.append(observer)
+    }
+
+    private func handleRecorderDisplayEnvironmentChange(_ notification: Notification) {
+        guard RecorderPanelPresentationPolicy.shouldRemirror(
+            isLogicallyVisible: isRecorderPanelVisible
+        ) else { return }
+
+        // Physical display state is authoritative while the HUD owns recorder
+        // controls. Re-run the idempotent nonactivating presentation on every relevant
+        // system event so a wake, unplug, or rearrangement cannot require a second
+        // recording to repair the black bar.
+        _ = showRecorderPanel(reason: notification.name.rawValue)
     }
 
     @objc public func handleToggleRecorderPanelNotification() {
@@ -471,6 +702,27 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                 await cancelRecording()
             case .idle, .busy, nil:
                 await dismissRecorderPanel()
+            }
+        }
+    }
+
+    @objc public func handleStopRecorderForAudioDeviceLossNotification() {
+        Task { @MainActor in
+            guard let engine else { return }
+            switch engine.recordingState {
+            case .recording, .paused:
+                // Preserve the old device-loss contract: finish the captured audio as
+                // a normal Primary current-input result, but never let a delayed event
+                // toggle from idle into an unintended new recording.
+                await engine.toggleRecord(
+                    stopPasteDestination: .primaryCurrentInput
+                )
+            case .starting:
+                // No stable capture exists to finalize yet; safely retain/cancel any
+                // partial startup state rather than waiting forever for a vanished mic.
+                await cancelRecording()
+            case .idle, .transcribing, .enhancing, .busy:
+                vippLog.info("audio device loss: explicit stop ignored because no live capture owns the microphone")
             }
         }
     }

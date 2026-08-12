@@ -4,7 +4,7 @@ import AppKit
 @MainActor
 class NotchWindowManager {
     private struct WindowEntry {
-        let displayID: CGDirectDisplayID
+        let screenIdentity: RecorderDisplayReusePolicy.ScreenIdentity
         let panel: NotchRecorderPanel
         let windowController: NSWindowController
     }
@@ -47,27 +47,34 @@ class NotchWindowManager {
         }
     }
 
-    func show() {
+    @discardableResult
+    func show() -> RecorderPanelPresentationReport {
         let screens = NSScreen.screens
-        let currentDisplayIDs = screens.compactMap {
-            RecorderDisplayReusePolicy.displayID(for: $0)
+        let currentDisplayIDs = screens.enumerated().map { index, screen in
+            RecorderDisplayReusePolicy.screenIdentity(for: screen, index: index)
         }
-        let existingDisplayIDs = windows.map(\.displayID)
+        let existingDisplayIDs = windows.map(\.screenIdentity)
 
-        // Match MiniWindowManager's reuse boundary. Each notch panel owns a full
-        // SwiftUI recorder hierarchy, so recreating one per display on every start
-        // multiplies startup and animation work for no visible benefit.
-        guard currentDisplayIDs.count == screens.count,
-              RecorderDisplayReusePolicy.shouldReuse(
-                existingDisplayIDs: existingDisplayIDs,
-                currentDisplayIDs: currentDisplayIDs
-              ) else {
+        switch RecorderDisplayReusePolicy.windowSetPlan(
+            existingDisplayIDs: existingDisplayIDs,
+            currentDisplayIDs: currentDisplayIDs
+        ) {
+        case .keepExisting:
+            return RecorderPanelPresentationReport(
+                expectedScreenCount: 0,
+                materializedPanelCount: windows.count,
+                visibleOnScreenPanelCount: 0
+            )
+        case .rebuild:
+            // Match MiniWindowManager's reuse boundary. Each notch panel owns a full
+            // SwiftUI hierarchy, so rebuild only for a real display-set change.
             initializeWindows(screens: screens)
-            return
-        }
-
-        for (entry, screen) in zip(windows, screens) {
-            entry.panel.show(on: screen)
+            return presentationReport(for: screens)
+        case .reuse:
+            for (entry, screen) in zip(windows, screens) {
+                entry.panel.show(on: screen)
+            }
+            return presentationReport(for: screens)
         }
     }
 
@@ -82,10 +89,7 @@ class NotchWindowManager {
     private func initializeWindows(screens: [NSScreen] = NSScreen.screens) {
         deinitializeWindows()
 
-        for screen in screens {
-            guard let displayID = RecorderDisplayReusePolicy.displayID(for: screen) else {
-                continue
-            }
+        for (index, screen) in screens.enumerated() {
             let metrics = NotchRecorderPanel.calculateWindowMetrics(for: screen)
             let panel = NotchRecorderPanel(contentRect: metrics.frame)
             let view = makeView(metrics.notchWidth, metrics.notchHeight)
@@ -93,12 +97,37 @@ class NotchWindowManager {
             panel.contentView = hostingController.view
             let windowController = NSWindowController(window: panel)
             windows.append(WindowEntry(
-                displayID: displayID,
+                screenIdentity: RecorderDisplayReusePolicy.screenIdentity(
+                    for: screen,
+                    index: index
+                ),
                 panel: panel,
                 windowController: windowController
             ))
             panel.show(on: screen)
         }
+    }
+
+    private func presentationReport(for screens: [NSScreen]) -> RecorderPanelPresentationReport {
+        let screensByIdentity = Dictionary(
+            screens.enumerated().map { index, screen in
+                (RecorderDisplayReusePolicy.screenIdentity(for: screen, index: index), screen)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let currentEntries = windows.filter { screensByIdentity[$0.screenIdentity] != nil }
+        let visibleOnScreenCount = currentEntries.reduce(into: 0) { count, entry in
+            guard let screen = screensByIdentity[entry.screenIdentity] else { return }
+            if entry.panel.isVisible && entry.panel.frame.intersects(screen.frame) {
+                count += 1
+            }
+        }
+
+        return RecorderPanelPresentationReport(
+            expectedScreenCount: screens.count,
+            materializedPanelCount: currentEntries.count,
+            visibleOnScreenPanelCount: visibleOnScreenCount
+        )
     }
 
     private func deinitializeWindows() {

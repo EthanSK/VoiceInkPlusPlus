@@ -73,6 +73,9 @@ class NotchRecorderPanel: KeyablePanel {
         let metrics = NotchRecorderPanel.calculateWindowMetrics(for: screen)
         setFrame(metrics.frame, display: true)
         orderFrontRegardless()
+        // Flush the first hosted frame while preserving nonactivating behavior; window
+        // visibility itself comes from orderFrontRegardless above.
+        displayIfNeeded()
     }
 }
 
