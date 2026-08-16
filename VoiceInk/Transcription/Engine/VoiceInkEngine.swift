@@ -578,6 +578,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         for: audioURL,
                         text: "",
                         duration: 0,
+                        transcriptionConfiguration: active.transcriptionConfiguration,
                         recordingInputDevice: active.recordingInputDevice,
                         realtimeDraftText: active.recoverablePartialTranscript,
                         preservesOriginalAudioForRecovery: completionDisposition == .clipboardOnly,
@@ -791,6 +792,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
             )
         }
 
+        // Create a recording-owned lazy cache. This performs no SwiftData work unless a
+        // provisional or URL-resolved Mode actually selects OpenAI; on first OpenAI use it
+        // freezes prompt, Vocabulary, and (only when opted in) bounded History candidates.
+        // Both Mode resolutions then reuse that one value.
+        let requestInputSnapshotCache = TranscriptionRequestInputSnapshotCache(
+            staticPrompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt"),
+            modelContext: self.modelContext
+        )
+
         let activeModeTask = ActiveWindowService.shared.beginApplyingConfiguration(modeId: modeId) { [weak self, weak session] in
             guard let self, let session else { return false }
             // Only keep applying config while THIS session is still the live start.
@@ -803,7 +813,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // owns its own model/language/prompt rather than falling back later to session B's
         // globally current Mode.
         session.transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
-            transcriptionModelManager: self.transcriptionModelManager
+            transcriptionModelManager: self.transcriptionModelManager,
+            requestInputSnapshotCache: requestInputSnapshotCache
         )
         session.showsRealtimeTranscriptHUD =
             session.transcriptionConfiguration?.isRealtimeEnabled == true
@@ -913,8 +924,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // Begin app/window context capture for AI enhancement.
             self.startRecordingContextCapture(for: session)
 
+            // Final per-recording freeze. Still ahead of `streamingSession.prepare`, so the
+            // provider socket is opened with this snapshot and never with a later one.
             guard let transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
-                transcriptionModelManager: self.transcriptionModelManager
+                transcriptionModelManager: self.transcriptionModelManager,
+                requestInputSnapshotCache: requestInputSnapshotCache
             ) else {
                 NotificationManager.shared.showNotification(title: String(localized: "No AI Model Selected"), type: .error)
                 await self.recorder.stopRecording()
@@ -1633,6 +1647,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             for: audioURL,
             text: draft.isEmpty ? Transcription.canceledTranscriptionText : draft,
             duration: duration,
+            transcriptionConfiguration: session.transcriptionConfiguration,
             recordingInputDevice: session.recordingInputDevice,
             realtimeDraftText: draft,
             preservesOriginalAudioForRecovery: true,
@@ -1654,22 +1669,40 @@ class VoiceInkEngine: NSObject, ObservableObject {
         for audioURL: URL,
         text: String,
         duration: TimeInterval,
+        transcriptionConfiguration: TranscriptionRuntimeConfiguration? = nil,
         recordingInputDevice: RecordingInputDeviceSnapshot? = nil,
         realtimeDraftText: String? = nil,
         preservesOriginalAudioForRecovery: Bool = false,
         transcriptionStatus: TranscriptionStatus
     ) -> Transcription {
-        let modeMetadata = currentModeMetadata()
+        let modeMetadata: (id: UUID?, name: String?, emoji: String?)
+        if let mode = transcriptionConfiguration?.mode, mode.isEnabled {
+            modeMetadata = (mode.id, mode.name, mode.icon.value)
+        } else if transcriptionConfiguration != nil {
+            // A frozen configuration with no enabled Mode is a real no-scope decision.
+            // Never fall through to a later globally current Mode merely for History.
+            modeMetadata = (nil, nil, nil)
+        } else {
+            let current = currentModeMetadata()
+            let mode = ModeManager.shared.currentEffectiveConfiguration
+            modeMetadata = (
+                mode?.isEnabled == true ? mode?.id : nil,
+                current.name,
+                current.emoji
+            )
+        }
 
         return Transcription(
             text: text,
             duration: duration,
             audioFileURL: audioURL.absoluteString,
             recordingInputDevice: recordingInputDevice,
-            transcriptionModelName: ModeRuntimeResolver.transcriptionConfiguration(
-                transcriptionModelManager: transcriptionModelManager
-            )?.model.displayName,
+            transcriptionModelName: transcriptionConfiguration?.model.displayName
+                ?? ModeRuntimeResolver.transcriptionConfiguration(
+                    transcriptionModelManager: transcriptionModelManager
+                )?.model.displayName,
             modeName: modeMetadata.name,
+            modeID: modeMetadata.id,
             modeEmoji: modeMetadata.emoji,
             realtimeDraftText: realtimeDraftText,
             preservesOriginalAudioForRecovery: preservesOriginalAudioForRecovery,

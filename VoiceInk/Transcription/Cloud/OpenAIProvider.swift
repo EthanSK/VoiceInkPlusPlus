@@ -63,8 +63,12 @@ enum OpenAITranscriptionConfiguration {
     static let accuracyDelay = "xhigh"
     static let realtimeSampleRate = 24_000
 
-    private static let keywordLimit = 100
-    private static let promptCharacterLimit = 4_096
+    // VoiceInk++'s own conservative request caps, not proven absolute provider maxima.
+    // `RecentTranscriptContextPolicy` composes against `promptCharacterLimit` so the
+    // appended context block is already inside the cap and `normalizedPrompt`'s prefix
+    // never has to cut an entry in half.
+    static let keywordLimit = 100
+    static let promptCharacterLimit = 4_096
 
     static var realtimeWebSocketURL: URL {
         var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!

@@ -57,9 +57,15 @@ struct OutputRuntimeConfiguration {
 
 @MainActor
 enum ModeRuntimeResolver {
+    /// - Parameter requestInputSnapshotCache: Optional recording-owned lazy cache. OpenAI
+    ///   snapshots Vocabulary and optional recent context on first OpenAI use, then reuses it
+    ///   across provisional/final Mode resolution. Only a resolver call that currently selects
+    ///   OpenAI can trigger the SwiftData fetch; prewarm, saved-file, replay, and exclusively
+    ///   non-OpenAI calls keep byte-identical legacy request fields.
     static func transcriptionConfiguration(
         mode: ModeConfig? = nil,
-        transcriptionModelManager: TranscriptionModelManager
+        transcriptionModelManager: TranscriptionModelManager,
+        requestInputSnapshotCache: TranscriptionRequestInputSnapshotCache? = nil
     ) -> TranscriptionRuntimeConfiguration? {
         let mode = mode ?? ModeManager.shared.currentEffectiveConfiguration
         let model = resolvedModel(
@@ -75,15 +81,34 @@ enum ModeRuntimeResolver {
             realtimeEnabled: mode?.isRealtimeTranscriptionEnabled
         )
 
+        let staticPrompt = requestInputSnapshotCache?.staticPrompt
+            ?? UserDefaults.standard.string(forKey: "TranscriptionPrompt")
+        let requestContext: TranscriptionRequestContext
+        if model.provider == .openAI, let requestInputSnapshotCache {
+            // Keep this branch structurally OpenAI-only. Streaming providers such as
+            // AssemblyAI and Soniox own different live vocabulary fetch paths; freezing
+            // only their batch fallback would make the two halves of one recording differ.
+            requestContext = TranscriptionRequestContextSnapshot.make(
+                language: language,
+                // A stable enabled Mode UUID is required before recent history can be
+                // scoped. Default/no-Mode recordings still freeze OpenAI keywords but
+                // send no recent transcript text.
+                modeID: (mode?.isEnabled == true) ? mode?.id : nil,
+                snapshot: requestInputSnapshotCache.snapshot()
+            )
+        } else {
+            requestContext = TranscriptionRequestContext(
+                language: language,
+                prompt: staticPrompt
+            )
+        }
+
         return TranscriptionRuntimeConfiguration(
             mode: mode,
             model: model,
             language: language,
             isRealtimeEnabled: TranscriptionRealtimeSupport.isEnabled(for: model, modeValue: mode?.isRealtimeTranscriptionEnabled),
-            requestContext: TranscriptionRequestContext(
-                language: language,
-                prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt")
-            )
+            requestContext: requestContext
         )
     }
 

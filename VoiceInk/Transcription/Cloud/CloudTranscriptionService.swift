@@ -65,8 +65,13 @@ class CloudTranscriptionService: TranscriptionService {
                 apiKey: apiKey,
                 model: model.name,
                 language: language,
-                prompt: transcriptionPrompt(from: context),
-                customVocabulary: getCustomDictionaryTerms()
+                prompt: transcriptionPrompt(from: context, provider: model.provider),
+                // Only OpenAI's realtime/fallback pair owns a per-recording keyword
+                // snapshot. Every other provider keeps its existing live-fetch behavior;
+                // otherwise its streaming half and batch fallback could silently differ.
+                customVocabulary: model.provider == .openAI
+                    ? context.customVocabulary(orLiveFetch: getCustomDictionaryTerms)
+                    : getCustomDictionaryTerms()
             )
         } catch let error as CloudTranscriptionError {
             throw error
@@ -98,8 +103,15 @@ class CloudTranscriptionService: TranscriptionService {
         return (lang == "auto" || lang.isEmpty) ? nil : lang
     }
 
-    private func transcriptionPrompt(from context: TranscriptionRequestContext) -> String? {
-        let prompt = context.prompt ?? ""
+    /// Only the OpenAI transcription models may receive the composed recent-dictation
+    /// prompt. AssemblyAI, Soniox, Deepgram, Speechmatics, Groq, Mistral, ElevenLabs, xAI,
+    /// Gemini, and OpenAI-compatible custom endpoints keep the untouched legacy prompt so
+    /// their request bytes are unchanged by this feature.
+    private func transcriptionPrompt(
+        from context: TranscriptionRequestContext,
+        provider: ModelProvider
+    ) -> String? {
+        let prompt = (provider == .openAI ? context.openAITranscriptionPrompt : context.prompt) ?? ""
         return prompt.isEmpty ? nil : prompt
     }
 

@@ -34,6 +34,10 @@ final class Transcription {
     var aiRequestUserMessage: String?
     @Attribute(originalName: "powerModeName")
     var modeName: String?
+    /// Stable scope for optional recent-transcript context. Display names can be renamed
+    /// or duplicated, so they are never sufficient to decide what prior text may leave
+    /// the Mac. Existing History rows migrate with `nil` and are deliberately ineligible.
+    var modeID: UUID?
     @Attribute(originalName: "powerModeEmoji")
     var modeEmoji: String?
     var transcriptionStatus: String?
@@ -62,6 +66,7 @@ final class Transcription {
          aiRequestSystemMessage: String? = nil,
          aiRequestUserMessage: String? = nil,
          modeName: String? = nil,
+         modeID: UUID? = nil,
          modeEmoji: String? = nil,
          realtimeDraftText: String? = nil,
          preservesOriginalAudioForRecovery: Bool = false,
@@ -82,6 +87,7 @@ final class Transcription {
         self.aiRequestSystemMessage = aiRequestSystemMessage
         self.aiRequestUserMessage = aiRequestUserMessage
         self.modeName = modeName
+        self.modeID = modeID
         self.modeEmoji = modeEmoji
         self.realtimeDraftText = Self.normalizedDraftText(realtimeDraftText)
         self.preservesOriginalAudioForRecovery = preservesOriginalAudioForRecovery

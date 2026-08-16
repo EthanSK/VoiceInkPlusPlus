@@ -7,7 +7,28 @@ enum DictionaryService {
 
     // MARK: - Vocabulary
 
-    /// Adds one or more comma-separated words to vocabulary.
+    /// Split a vocabulary input into individual terms.
+    ///
+    /// Commas remain the documented separator; newlines are accepted as well so a
+    /// reviewed list can be pasted in one action instead of being retyped term by term.
+    /// Terms themselves may contain spaces, `+`, `-`, and `.` (for example multi-word
+    /// product names), so no other character is treated as a separator. Repeats inside a
+    /// single input are collapsed case-insensitively, matching the additive,
+    /// case-insensitive behavior of the existing settings import.
+    static func vocabularyTerms(in input: String) -> [String] {
+        var seen = Set<String>()
+        var terms: [String] = []
+
+        for token in input.split(whereSeparator: { $0 == "," || $0.isNewline }) {
+            let term = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty, seen.insert(term.lowercased()).inserted else { continue }
+            terms.append(term)
+        }
+
+        return terms
+    }
+
+    /// Adds one or more comma- or newline-separated words to vocabulary.
     /// Returns an error message string if something went wrong, nil on success.
     @discardableResult
     static func addVocabularyWords(
@@ -15,10 +36,7 @@ enum DictionaryService {
         existing: [VocabularyWord],
         context: ModelContext
     ) -> String? {
-        let parts = input
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        let parts = vocabularyTerms(in: input)
 
         guard !parts.isEmpty else { return nil }
 

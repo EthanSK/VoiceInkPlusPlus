@@ -2,7 +2,43 @@ import Foundation
 
 struct TranscriptionRequestContext {
     let language: String?
+    /// The existing static `TranscriptionPrompt`. Never rewritten: every provider except
+    /// the OpenAI transcription models receives exactly these legacy bytes.
     let prompt: String?
+    /// Opt-in composed prompt (static prompt first, recent-dictation context appended
+    /// inside the same 4,096-character cap). `nil` means "nothing eligible was appended",
+    /// which keeps the legacy request byte-identical.
+    let promptWithRecentContext: String?
+    /// Vocabulary keywords frozen with this recording. `nil` means no snapshot was taken
+    /// and the provider path performs its own legacy live fetch.
+    let vocabulary: [String]?
+
+    init(
+        language: String?,
+        prompt: String?,
+        promptWithRecentContext: String? = nil,
+        vocabulary: [String]? = nil
+    ) {
+        self.language = language
+        self.prompt = prompt
+        self.promptWithRecentContext = promptWithRecentContext
+        self.vocabulary = vocabulary
+    }
+
+    /// Prompt for the OpenAI transcription models only.
+    ///
+    /// Recent-dictation context is deliberately scoped to OpenAI because that is where it
+    /// was designed and capped. The realtime session and its completed-audio fallback both
+    /// read this same frozen value, so one recording can never send two different prompts.
+    var openAITranscriptionPrompt: String? {
+        promptWithRecentContext ?? prompt
+    }
+
+    /// Frozen keywords when this recording captured a snapshot, otherwise the caller's
+    /// existing live fetch.
+    func customVocabulary(orLiveFetch liveFetch: () -> [String]) -> [String] {
+        vocabulary ?? liveFetch()
+    }
 
     static var currentDefaults: TranscriptionRequestContext {
         TranscriptionRequestContext(

@@ -75,6 +75,8 @@ private struct TranscriptionModelSettingsView: View {
         Form {
             FillerWordsSettingsSection()
 
+            RecentDictationContextSection()
+
             AdvancedModelSettingsSection()
         }
         .formStyle(.grouped)
@@ -133,6 +135,30 @@ private struct EnhancementModelSettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Opt-in recent-dictation context for the OpenAI transcription models.
+///
+/// The help text states the real boundary rather than implying exact conversation
+/// scoping: VoiceInk++ deliberately refuses to resolve a saved Accessibility destination
+/// just to narrow a prompt, so the scope is "same Mode, last few minutes" and nothing
+/// stronger. Everything else — Primary/Next destinations, paste, auto-send — is untouched.
+private struct RecentDictationContextSection: View {
+    @AppStorage(RecentTranscriptContextSettings.enabledKey) private var isRecentContextEnabled = false
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $isRecentContextEnabled) {
+                HStack(spacing: 4) {
+                    Text("Send recent dictation as context (OpenAI)")
+                    InfoTip("Adds up to 3 of your finished transcriptions from the last 15 minutes, in the same enabled Mode, after your existing transcription prompt so names and spellings stay consistent. Recordings without a Mode send no recent history. Only OpenAI transcription models receive it, only finished text is used, and it never changes where text is pasted. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode.")
+                }
+            }
+            .toggleStyle(.switch)
+        } header: {
+            Text("Recent Dictation Context")
+        }
     }
 }
 

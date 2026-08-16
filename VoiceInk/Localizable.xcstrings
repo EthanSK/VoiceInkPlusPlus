@@ -2056,6 +2056,22 @@
         }
       }
     },
+    "Adds up to 3 of your finished transcriptions from the last 15 minutes, in the same enabled Mode, after your existing transcription prompt so names and spellings stay consistent. Recordings without a Mode send no recent history. Only OpenAI transcription models receive it, only finished text is used, and it never changes where text is pasted. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fügt bis zu 3 deiner abgeschlossenen Transkriptionen aus den letzten 15 Minuten im selben aktivierten Modus nach deinem vorhandenen Transkriptions-Prompt hinzu, damit Namen und Schreibweisen konsistent bleiben. Aufnahmen ohne Modus senden keinen aktuellen Verlauf. Nur OpenAI-Transkriptionsmodelle erhalten ihn, es wird ausschließlich abgeschlossener Text verwendet und das Einfügeziel ändert sich nie. Derselbe Modus bedeutet nicht dieselbe App, denselben Chat oder dasselbe Dokument — lass diese Option aus, wenn du in diesem Modus private Inhalte diktierst."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在现有转录提示词之后，附加同一已启用模式下最近 15 分钟内最多 3 条已完成的转录，以保持名称和拼写一致。未使用模式的录音不会发送近期历史。只有 OpenAI 转录模型会收到这些内容，并且只使用已完成的文本；它绝不会改变文本粘贴的位置。相同模式并不代表相同的应用、聊天或文档——如果你会在该模式下口述私密内容，请关闭此选项。"
+          }
+        }
+      }
+    },
     "Advanced": {
       "localizations": {
         "de": {
@@ -10975,6 +10991,22 @@
         }
       }
     },
+    "Recent Dictation Context": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kontext aus kürzlich Diktiertem"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "近期听写上下文"
+          }
+        }
+      }
+    },
     "Recommended": {
       "localizations": {
         "de": {
@@ -12481,6 +12513,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "发送后续消息"
+          }
+        }
+      }
+    },
+    "Send recent dictation as context (OpenAI)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kürzlich Diktiertes als Kontext senden (OpenAI)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将近期听写作为上下文发送（OpenAI）"
           }
         }
       }
@@ -14959,18 +15007,18 @@
         }
       }
     },
-    "Vocabulary is used only with AI enhancement to preserve important names, technical terms, and unique spellings in the final output.": {
+    "Vocabulary supplies keyword hints to supported transcription providers and can also help AI enhancement preserve important names, technical terms, and unique spellings. Not every transcription provider supports vocabulary hints.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Vokabular wird nur mit KI-Verbesserung verwendet, um wichtige Namen, Fachbegriffe und besondere Schreibweisen in der finalen Ausgabe beizubehalten."
+            "value": "Das Vokabular liefert Stichworthinweise an unterstützte Transkriptionsanbieter und kann außerdem der KI-Verbesserung helfen, wichtige Namen, Fachbegriffe und besondere Schreibweisen beizubehalten. Nicht jeder Transkriptionsanbieter unterstützt Vokabularhinweise."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "词汇仅在 AI 润色时使用，用于在最终输出中保留重要的名称、专业术语和独特的拼写。"
+            "value": "词汇会向支持的转录服务提供关键词提示，也可帮助 AI 润色保留重要名称、技术术语和特殊拼写。并非所有转录服务都支持词汇提示。"
           }
         }
       }
@@ -15606,18 +15654,18 @@
         }
       }
     },
-    "Word Replacements run after transcription. Vocabulary is used with AI enhancement to better understand names, technical terms, and unique spellings in your transcript.": {
+    "Word Replacements run after transcription. Vocabulary supplies keyword hints to supported transcription providers and can also help AI enhancement preserve names, technical terms, and unique spellings.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wortersetzungen werden nach der Transkription angewendet. Das Vokabular wird mit KI-Verbesserung verwendet, um Namen, Fachbegriffe und besondere Schreibweisen in deiner Transkription besser zu verstehen."
+            "value": "Wortersetzungen werden nach der Transkription angewendet. Das Vokabular liefert Stichworthinweise an unterstützte Transkriptionsanbieter und kann außerdem der KI-Verbesserung helfen, Namen, Fachbegriffe und besondere Schreibweisen beizubehalten."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "词语替换会在转录完成后运行。词汇则与 AI 润色配合使用，以便更好地理解转录记录中的人名、技术术语和特殊拼写。"
+            "value": "词语替换会在转录完成后运行。词汇会向支持的转录服务提供关键词提示，也可帮助 AI 润色保留名称、技术术语和特殊拼写。"
           }
         }
       }

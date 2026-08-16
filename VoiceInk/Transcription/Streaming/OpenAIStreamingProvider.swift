@@ -201,10 +201,14 @@ final class OpenAIStreamingProvider: ContextualStreamingTranscriptionProvider, @
         resetFinalSignal()
         task.resume()
 
+        // Both halves of one recording must agree. This realtime session and the
+        // completed-audio fallback in `CloudTranscriptionService` read the same frozen
+        // prompt and keyword snapshot, so an empty live final cannot silently retry the
+        // same audio with different provider guidance.
         let sessionUpdate = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
             language: language,
-            prompt: context.prompt,
-            customVocabulary: customDictionaryTerms()
+            prompt: context.openAITranscriptionPrompt,
+            customVocabulary: context.customVocabulary(orLiveFetch: customDictionaryTerms)
         )
         try await sendJSON(sessionUpdate, over: task)
         try await waitForSessionReady(from: task)
