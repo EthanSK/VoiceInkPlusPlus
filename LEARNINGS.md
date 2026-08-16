@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-16T23:14:14Z
+**Trigger:** Ethan asked whether the new recent-context feature was increasing start time by a lot.
+**Symptom:** Ethan asked whether OpenAI recent-dictation context materially increased recording startup time.
+**Root cause:** The bounded History/Vocabulary snapshot is captured once per recording and reused across the two Mode resolutions; the duplicate counts-only context log does not mean a second SwiftData fetch. The HUD is already visible and Core Audio is recording/buffering before the GPT streaming request begins.
+**Fix:** Investigation only: preserved signed v2.0.299 unchanged and correlated pre-feature plus context-enabled startup metadata without reading transcript, prompt, or vocabulary text.
+**Commit:** investigation-only (v2.0.299 source at 62305a6)
+**Guard:** Context-enabled HUD-to-stream-request was 829 ms with zero eligible entries and 579 ms with one eligible entry. CoreAudio-to-request was 279 ms and 152 ms, versus 430 ms in the last logged build-298 run. These samples show no large regression but do not isolate a precise context-only cost; measure a controlled disabled/enabled pair before claiming zero overhead.
+---
+
+
+---
 **Date:** 2026-08-16T23:06:59Z
 **Trigger:** Ethan reported that the recent-context feature had not been working and asked to check the logs.
 **Symptom:** Live recent-context logging reported recentEntries=0 even though two same-Mode GPT Live recordings had completed only minutes earlier.
