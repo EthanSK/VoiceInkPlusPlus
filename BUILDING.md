@@ -97,19 +97,26 @@ Transcription providers may require your own API credentials. Ethan's personal D
 
 ## Run tests
 
-Open `VoiceInk.xcodeproj` in Xcode and use **Product → Test**, or run the test scheme from Terminal:
+During implementation, default to the smallest focused set that covers the changed behavior and its nearest contract guards. In Xcode, run individual tests or suites from the Test navigator. From Terminal, obtain the exact current test identifier from Xcode's Test navigator or a successful `.xcresult`, then repeat `-only-testing` for each selection. Do not hand-construct identifiers: Swift Testing and XCTest encode them differently, and an unmatched filter can select zero tests without making the command fail.
 
 ```sh
 xcodebuild \
   -project VoiceInk.xcodeproj \
   -scheme VoiceInk \
   -destination 'platform=macOS' \
+  '-only-testing:VoiceInkTests/<exact-suite-or-test-identifier>' \
   test
 ```
 
-Destination-routing changes must preserve the regression test named `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` and the contract in [AGENTS.md](AGENTS.md).
+A focused run should normally include:
 
-If the Mac test runner stalls after launch without executing tests, do not count the successful build or XCTest's `Executed 0 tests` preamble as a pass. Preserve the stalled-run log, then use the already-built `VoiceInkTests.xctest` bundle with `xcrun xctest` as a diagnostic fallback, setting `DYLD_LIBRARY_PATH` to the host app's `Contents/MacOS` and `DYLD_FRAMEWORK_PATH` to its `Contents/Frameworks` plus Xcode's macOS developer frameworks. A valid fallback run names every expected test. Retry the normal Xcode runner after recovering TestManager, and do not enable Developer Mode unless the Mac owner explicitly chooses to.
+1. The regression test added or changed for the bug or feature.
+2. The nearest invariant/contract tests for shared code touched by the change.
+3. Any mandatory guard named in [AGENTS.md](AGENTS.md); destination-routing changes must include `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt` and the applicable Primary/Next route guard.
+
+Widen to adjacent tests only when the change crosses their shared code or focused evidence shows fallout. Run the full unit suite only for one final pass at a release boundary, one post-change pass after broad/high-risk architecture work, or when focused failures indicate a wider regression. Do not repeatedly run the full suite after ordinary edits or documentation-only changes. The release-boundary pass must run against the exact commit and build number that will be signed and installed. When a full pass is required, use **Product → Test** or omit every `-only-testing` option from the command above.
+
+For every focused run, require at least one test to execute and require the output to name every expected selected test. Do not count a successful build, a scheme-level `Test Succeeded`, or any zero-test result as a pass. Preserve a stalled or empty-selection log and retry the same focused selection; do not turn a routine stall or malformed filter into an unplanned full-suite run. Never use direct `xcrun xctest` to satisfy a focused selection. At one of the full-suite gates above, the already-built `VoiceInkTests.xctest` bundle may be run with `xcrun xctest` as a diagnostic fallback, setting `DYLD_LIBRARY_PATH` to the host app's `Contents/MacOS` and `DYLD_FRAMEWORK_PATH` to its `Contents/Frameworks` plus Xcode's macOS developer frameworks. A valid fallback run names every expected test. Retry the normal Xcode runner after recovering TestManager, and do not enable Developer Mode unless the Mac owner explicitly chooses to.
 
 ## Troubleshooting
 

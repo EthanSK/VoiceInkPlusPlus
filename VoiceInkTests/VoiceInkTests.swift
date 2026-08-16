@@ -4321,7 +4321,10 @@ struct VoiceInkTests {
         #expect(primaryBody.contains(
             "Self.primaryCurrentInputSettleNanoseconds"
         ))
-        #expect(primaryBody.contains("method: .cgEvent"))
+        #expect(primaryBody.contains("method: .systemEvents"))
+        #expect(primaryBody.contains(
+            "primary current-input System Events auto-send issued=true"
+        ))
         #expect(primaryBody.contains("verification=notRequired"))
         #expect(!primaryBody.contains("focusedInput"))
         #expect(!primaryBody.contains("foregroundAutoSendMethod"))

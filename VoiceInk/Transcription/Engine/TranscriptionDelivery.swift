@@ -788,13 +788,17 @@ final class TranscriptionDelivery {
         let sendResult = await CursorPaster.performAutoSend(
             queuedAutoSend.effectiveKey,
             targetPID: currentPID,
-            method: .cgEvent,
+            // Keep Primary generic and current-input-driven, but use the public
+            // System Events key action that already handles frontmost OpenAI
+            // composers more reliably than an in-process synthetic HID Return.
+            // This adds no second key, retry, app-specific target, or extra wait.
+            method: .systemEvents,
             canPost: { true }
         )
         switch sendResult {
         case .commandPosted:
             onQueuedAutoSendIssued()
-            vippLog.info("paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=100 key=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            vippLog.info("paste: primary current-input System Events auto-send issued=true verification=notRequired settleMs=100 key=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         case .actionGuardRefused:
             showAutoSendFailure(
                 "Transcription pasted, but Return could not be issued",

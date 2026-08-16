@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-15T13:55:17Z
+**Trigger:** Ethan reported that a finished VoiceInk++ recording pasted into Codex but sometimes did not submit with Enter.
+**Symptom:** The transcript appeared in the Codex composer, yet the expected submit action did not happen.
+**Root cause:** The v2.0.297 live trace proved the paste succeeded and one complete HID Return was posted after the existing 100 ms settlement window; Codex ignored that transport. The failure was therefore not a missing key-up and did not justify adding another arbitrary delay or duplicate Return.
+**Fix:** `TranscriptionDelivery.swift` keeps the existing settlement bound but routes Primary current-input auto-send through the bounded System Events transport instead of the HID transport. Signed v2.0.298 is installed; it adds no new delay, retry, duplicate Return, or Codex timing heuristic.
+**Commit:** uncommitted shared worktree
+**Guard:** The exact Mini candidate passed 175 named tests in six suites after the canonical TestManager stall, including `primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands`, `exactForegroundAutoSendUsesSurfaceSpecificHandlingAndBoundsHIDRetry`, and `secondChanceRetargetCarriesAutoSendUntilDeliveryResolvesIt`. Physical acceptance still requires one normal Codex Primary recording whose live trace names the System Events route and whose transcript visibly submits exactly once.
+---
+
+---
 **Date:** 2026-08-12T21:36:38Z
 **Trigger:** Ethan reported mouse-triggered VoiceInk++ appeared dead; unified logs showed recorder HUD presentation failed with three panels materialized and zero on screen.
 **Symptom:** Build 296 played the shortcut/start path but the black recorder HUD never appeared; every attempt logged expected=3 materialized=3 visibleOnScreen=0.
@@ -54,6 +64,37 @@ Each entry looks like:
 **Fix:** Booted out all three exact `com.ethansk.chatgpt-relaunch*` labels, verified them absent twice with no matching shell/process, stopped the v2.0.292 release, and removed the exact ChatGPT mute keybinding as a temporary fail-closed kill switch while Ethan decides whether the synthetic targeted-shortcut mechanism is acceptable.
 **Commit:** investigation-only
 **Guard:** Never use bare `launchctl submit` for a one-shot GUI relaunch. Prefer one bounded awaited delay plus one launch; if a detached job is genuinely necessary, make cleanup explicit and verify its label is absent before the task can finish or restart. Preflight future ChatGPT restarts for stale `com.ethansk.chatgpt-relaunch*` labels.
+---
+
+---
+**Date:** 2026-08-07T22:25:40Z
+**Trigger:** Ethan reported: Transcription failed: The API returned an empty or invalid response.
+**Symptom:** A GPT Live recording stopped with zero committed segments and completed-audio fallback showed 'The API returned an empty or invalid response' even though the provider connected.
+**Root cause:** The exact retained WAV contained no OpenAI-recognisable speech: both its in-app fallback and a privacy-bounded direct completed-audio retry returned empty, while the same credentials and endpoint produced live deltas plus non-empty live and batch results from synthetic speech. History proved the failed and adjacent successful recordings used the same Scarlett 18i8 USB input, so this instance was neither a provider outage nor a microphone-selection regression; why recognisable speech was absent from that physical capture remains unresolved.
+**Fix:** Investigation only: preserved the installed v2.0.290 binary and live settings, retained the original WAV in History, and separated exact-clip capture evidence from provider health before proposing any model, delivery, or input-device change.
+**Commit:** investigation-only
+**Guard:** On an empty live plus empty batch failure, verify the retained WAV identity and input-device metadata, inspect bounded level/duration evidence, run the synthetic OpenAI probe, then reuse its synthetic PCM with the exact retained WAV as the batch argument and report only status/length. Do not switch providers or edit delivery when synthetic live/batch succeeds but the exact WAV retry remains empty.
+---
+
+
+---
+**Date:** 2026-08-07T18:44:19Z
+**Trigger:** Ethan asked to make VoiceInk++ test iteration much leaner and stop rerunning the entire unit suite for every change.
+**Symptom:** The repository's validation instructions described only the unfiltered Xcode test action, so agents repeatedly treated the full unit suite as the default feedback loop even for narrow changes and documentation-only work.
+**Root cause:** The release gate, the TestManager fallback, and ordinary implementation iteration were documented as one path; there was no explicit selective-test policy or `xcodebuild -only-testing` example tied to the actual Swift Testing target/suite/test identifiers.
+**Fix:** `AGENTS.md`, `BUILDING.md`, and the learnings skill now make focused tests the default: run the changed regression plus nearest touched contracts and mandatory guards, widen only on evidence, and reserve the full suite for release boundaries, broad/high-risk architecture changes, or focused evidence of wider fallout. Focused `xcodebuild` identifiers must come from Xcode or a successful result rather than guessed syntax.
+**Commit:** none (working-tree policy update)
+**Guard:** A focused Xcode run must execute at least one test and name every expected selection; a scheme-level success or zero-test result is not a pass. A TestManager stall or malformed filter must not silently expand ordinary iteration into a full-suite run; direct `xcrun xctest` remains a bounded fallback only at a full-suite gate. Documentation-only changes do not trigger the suite.
+---
+
+---
+**Date:** 2026-08-07T16:44:15Z
+**Trigger:** Ethan asked whether the Corsair Scimitar DPI-button Primary trigger could act on physical button release instead of press.
+**Symptom:** VoiceInk++ currently begins Primary classification when the completed Shift-Control-Option shortcut reaches `ShortcutMonitor` as key-down, while the modifier key-up only balances the logical shortcut press; that key-up is not proof of the Corsair button's physical release.
+**Root cause:** iCUE owns the Scimitar's physical-button lifecycle. The live iCUE 5.49.34 Macro Advanced panel exposes `Assignment Trigger` values `On Keypress`, `On Release`, `While Pressed`, and `Toggle`, whereas VoiceInk++ sees only the emitted keyboard macro and cannot reconstruct the original mouse-up boundary reliably.
+**Fix:** Keep VoiceInk++'s accepted Primary single/double/triple coordinator unchanged and configure the exact verified Corsair macro as `On Release` in iCUE when the physical mapping is identified. The live Default Profile inspection did not prove which assignment currently emits VoiceInk++'s Shift-Control-Option chord, so no mapping was changed.
+**Commit:** none (read-only ownership investigation)
+**Guard:** Before changing iCUE, verify the exact software profile, physical DPI control, assignment, and emitted Shift-Control-Option sequence; then physically prove start/stop, double-press pause/resume, genuine triple-click clipboard finalization, and the open-context-menu modifier-balance check. Never treat VoiceInk++'s modifier key-up as the physical Corsair mouse-up event.
 ---
 
 ---
