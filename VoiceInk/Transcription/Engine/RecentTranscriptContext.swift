@@ -146,7 +146,7 @@ enum RecentTranscriptContextPolicy {
             if entries.count == maximumEntries { break }
         }
 
-        return entries.reversed()
+        return Array(entries.reversed())
     }
 
     /// Compose the OpenAI-only prompt.

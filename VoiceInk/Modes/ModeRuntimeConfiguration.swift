@@ -91,7 +91,7 @@ enum ModeRuntimeResolver {
             requestContext = TranscriptionRequestContextSnapshot.make(
                 language: language,
                 // A stable enabled Mode UUID is required before recent history can be
-                // scoped. Default/no-Mode recordings still freeze OpenAI keywords but
+                // scoped. Disabled/no-Mode recordings still freeze OpenAI keywords but
                 // send no recent transcript text.
                 modeID: (mode?.isEnabled == true) ? mode?.id : nil,
                 snapshot: requestInputSnapshotCache.snapshot()
