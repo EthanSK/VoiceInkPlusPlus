@@ -932,6 +932,46 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Transcription provider configuration failures
 
+### Scoping recent-transcript context by resolving the saved destination
+
+- **State:** REJECTED by design on 2026-08-16, before implementation.
+- **Temptation:** Make the recent-dictation prompt context "exact" by asking which app,
+  window, chat, or document each earlier transcript was delivered into, so context never
+  crosses conversations.
+- **Why it fails:** Only the two Next routes own an exact input; Primary deliberately owns
+  neither an exact input nor a destination Mode. Reading a destination merely to narrow a
+  prompt would either invent a fourth source of destination state or push Primary through an
+  Accessibility resolver, breaking the Primary isolation boundary in `AGENTS.md`. Chromium,
+  Electron, Telegram, and Notion also reuse wrappers across logical contexts, so a resolved
+  wrapper would not have proven "same chat" even if it were allowed.
+- **Use instead:** Two boundaries that are already frozen, non-Accessibility, per-recording
+  state: a short recency window and an exact match on this recording's stable enabled Mode UUID. Say plainly
+  in the setting's help text that same Mode is **not** same app, chat, or document, and keep
+  the whole feature opt-in and off by default. `RecentTranscriptContextPolicy` documents this
+  and `RecentTranscriptContextTests` asserts the file references no destination, focus, paste,
+  or `AXUIElement` symbol.
+- **Reconsider only if:** Ethan explicitly asks for stronger scoping *and* a non-destination,
+  non-Accessibility signal proves conversation identity. Never reuse `RecordingPasteTarget`,
+  `FocusLockService`, or any exact-input resolver for prompt scoping.
+
+### Appending recent-transcript context to the shared provider prompt
+
+- **State:** REJECTED by design on 2026-08-16, before implementation.
+- **Temptation:** Compose the recent-dictation block straight into `TranscriptionPrompt`, or
+  into `TranscriptionRequestContext.prompt`, because every provider already reads that field.
+- **Why it fails:** `TranscriptionPrompt` is the single carrier for AssemblyAI, Soniox,
+  Deepgram, Speechmatics, Whisper, and OpenAI-compatible custom endpoints, and the custom
+  endpoint additionally encodes its `VOICEINK_CUSTOM_VOCABULARY` block there. Writing context
+  into it would silently change every provider's request bytes, re-enable contextual prompting
+  on providers deliberately left prompt-free, and interact with the custom vocabulary carrier.
+  `WhisperPrompt.init()` also rewrites an empty English `TranscriptionPrompt` on launch, so it
+  is not a safe place to store derived text.
+- **Use instead:** Keep `prompt` as the untouched legacy value and add a separate
+  `promptWithRecentContext` that only `model.provider == .openAI` reads. `nil` means "send the
+  legacy bytes", which is also what an over-cap or ineligible composition returns.
+- **Reconsider only if:** Another provider's contextual prompt is separately audited, capped,
+  and physically tested, and Ethan asks for it on that provider.
+
 ### Treating an OpenAI transcription prompt as a numeral-format switch
 
 - **State:** REJECTED by a physical `gpt-live-transcribe` test on 2026-08-01.
