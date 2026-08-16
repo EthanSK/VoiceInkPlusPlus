@@ -338,7 +338,7 @@ struct RecentTranscriptContextTests {
         #expect(Set(entries.map { $0.lowercased() }).count == entries.count)
     }
 
-    @Test func missingStableModeScopeReturnsExactLegacyPrompt() {
+    @Test @MainActor func missingStableModeScopeReturnsExactLegacyPrompt() {
         let modeID = UUID()
         let candidate = RecentTranscriptContextCandidate(
             text: "a completed entry that must not cross the no-Mode boundary",
