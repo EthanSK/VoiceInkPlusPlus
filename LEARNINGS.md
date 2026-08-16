@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-16T23:06:59Z
+**Trigger:** Ethan reported that the recent-context feature had not been working and asked to check the logs.
+**Symptom:** Live recent-context logging reported recentEntries=0 even though two same-Mode GPT Live recordings had completed only minutes earlier.
+**Root cause:** Both preceding raw transcripts were realistic long dictations of 460 and 606 characters. RecentTranscriptContextPolicy.maximumEntryCharacters was 320 and sanitizedEntry rejected an over-limit entry whole, so neither could contribute any context.
+**Fix:** Investigation only: preserved signed v2.0.299 unchanged, corrected the acceptance status, and identified bounded long-dictation excerpting as the missing behavior.
+**Commit:** investigation-only
+**Guard:** Correlate counts-only TranscriptionRequestContext logs with privacy-bounded History status, age, Mode UUID, and character length. A 46-character next transcript was accepted and the following request reported recentEntries=1; future acceptance must also cover a realistic over-320-character dictation.
+---
+
+
+---
 **Date:** 2026-08-15T13:55:17Z
 **Trigger:** Ethan reported that a finished VoiceInk++ recording pasted into Codex but sometimes did not submit with Enter.
 **Symptom:** The transcript appeared in the Codex composer, yet the expected submit action did not happen.
