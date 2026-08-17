@@ -4796,6 +4796,54 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func postProcessingModeFollowsTriggerThenPrimaryCurrentThenNextDestination() {
+        let currentMode = ModeConfig(
+            name: "Current",
+            isAIEnhancementEnabled: false
+        )
+        let destinationMode = ModeConfig(
+            name: "Destination",
+            isAIEnhancementEnabled: false
+        )
+        let triggerMode = ModeConfig(
+            name: "Trigger",
+            isAIEnhancementEnabled: false
+        )
+
+        #expect(RecordingSession.resolvePostProcessingMode(
+            triggerWordModeOverride: nil,
+            destination: .primaryCurrentInput,
+            currentMode: currentMode,
+            destinationMode: destinationMode
+        ) == currentMode)
+
+        for destination in [
+            RecordingPasteDestination.recordingStart,
+            .focusedDuringTranscription
+        ] {
+            #expect(RecordingSession.resolvePostProcessingMode(
+                triggerWordModeOverride: nil,
+                destination: destination,
+                currentMode: currentMode,
+                destinationMode: destinationMode
+            ) == destinationMode)
+            #expect(RecordingSession.resolvePostProcessingMode(
+                triggerWordModeOverride: triggerMode,
+                destination: destination,
+                currentMode: currentMode,
+                destinationMode: destinationMode
+            ) == triggerMode)
+        }
+
+        #expect(RecordingSession.resolvePostProcessingMode(
+            triggerWordModeOverride: triggerMode,
+            destination: .primaryCurrentInput,
+            currentMode: currentMode,
+            destinationMode: destinationMode
+        ) == triggerMode)
+    }
+
+    @MainActor
     @Test func exactInputContextFingerprintFailsClosedAcrossDifferentDocuments() {
         let captured = ["unique original task prompt", "stable original response"]
 

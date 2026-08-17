@@ -251,6 +251,9 @@ class StreamingTranscriptionService {
             // The complete WAV is already durable. Never commit or deliver a realtime
             // result after a send failure or drain timeout, even when its text looks
             // plausible; the session will take its existing completed-file fallback.
+            // Unlike startup overflow, this happens only after Stop and has no mid-recording
+            // HUD change to explain. Keep the safe fallback quiet instead of showing a noisy
+            // warning for a transient socket problem; the extra latency is the only symptom.
             logger.warning("Streaming audio incomplete; refusing realtime result droppedChunks=\(drainedMetrics.droppedChunks, privacy: .public) droppedBytes=\(drainedMetrics.droppedBytes, privacy: .public) drainTimedOut=\(drainedMetrics.drainTimedOut, privacy: .public)")
             state = .failed
             await cleanupStreaming()

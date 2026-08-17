@@ -271,13 +271,31 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     /// result is processed and delivered. An explicit trigger-word Mode remains the
     /// intentional higher-priority override for either policy.
     var postProcessingMode: ModeConfig? {
+        Self.resolvePostProcessingMode(
+            triggerWordModeOverride: triggerWordModeOverride,
+            destination: pasteTarget.destination,
+            currentMode: ModeManager.shared.currentEffectiveConfiguration,
+            destinationMode: pasteTarget.mode
+        )
+    }
+
+    /// Pure policy seam for the History/processing Mode contract. Keeping the precedence
+    /// explicit and testable prevents a future refactor from making the UI's recent-context
+    /// explanation false: trigger words win; Primary follows the live Mode; either Next
+    /// route keeps the Mode frozen with its exact destination.
+    static func resolvePostProcessingMode(
+        triggerWordModeOverride: ModeConfig?,
+        destination: RecordingPasteDestination,
+        currentMode: ModeConfig?,
+        destinationMode: ModeConfig?
+    ) -> ModeConfig? {
         if let triggerWordModeOverride {
             return triggerWordModeOverride
         }
-        if pasteTarget.destination.usesBaseCurrentInputDelivery {
-            return ModeManager.shared.currentEffectiveConfiguration
+        if destination.usesBaseCurrentInputDelivery {
+            return currentMode
         }
-        return pasteTarget.mode
+        return destinationMode
     }
 
     // ── Per-session bits migrated OFF the old engine singletons ──

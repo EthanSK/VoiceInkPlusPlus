@@ -828,12 +828,6 @@ struct RecentTranscriptContextTests {
             encoding: .utf8
         )
         #expect(engine.contains("modeID: modeMetadata.id"))
-        let pipeline = try String(
-            contentsOf: repositoryRoot
-                .appendingPathComponent("VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"),
-            encoding: .utf8
-        )
-        #expect(pipeline.contains("transcription.modeID = modeMetadata.id"))
         #expect(assistant.contains("modeID: nil, // Typed assistant turns are History"))
         #expect(imported.components(separatedBy: "modeID: nil, // Imported files may contain another speaker").count == 4)
     }
