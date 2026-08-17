@@ -36,8 +36,18 @@ class Recorder: NSObject, ObservableObject {
 
     /// Audio chunk callback for streaming. Can be updated while recording;
     /// changes are forwarded to the live CoreAudioRecorder.
+    private var audioChunkGeneration: UInt64 = 0
+    private var activeHardwareStopCount = 0
     var onAudioChunk: ((_ data: Data) -> Void)? {
-        didSet { recorder?.onAudioChunk = onAudioChunk }
+        didSet {
+            audioChunkGeneration &+= 1
+            // A rapid recording B can reserve its callback while recording A is still
+            // stopping on the hardware queue. Do not route A's final PCM into B; B's
+            // queued start installs its own captured callback at the exact AUHAL boundary.
+            if activeHardwareStopCount == 0 {
+                recorder?.onAudioChunk = onAudioChunk
+            }
+        }
     }
     
     enum RecorderError: Error {
@@ -174,7 +184,7 @@ class Recorder: NSObject, ObservableObject {
         muteSystemAudio()
 
         let coreAudioRecorder = recorder ?? CoreAudioRecorder()
-        coreAudioRecorder.onAudioChunk = onAudioChunk
+        let callbackForThisStart = onAudioChunk
         recorder = coreAudioRecorder
 
         do {
@@ -191,6 +201,10 @@ class Recorder: NSObject, ObservableObject {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 audioSetupQueue.async {
                     do {
+                        // Install this recording's callback only after every prior queued
+                        // stop has closed its input gate. MainActor assignment earlier can
+                        // otherwise send the old recording's tail into the new session.
+                        coreAudioRecorder.onAudioChunk = callbackForThisStart
                         try coreAudioRecorder.startRecording(toOutputFile: url, deviceID: deviceID)
                         continuation.resume()
                     } catch {
@@ -322,13 +336,27 @@ class Recorder: NSObject, ObservableObject {
 
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
-        onAudioChunk = nil
+        let callbackGenerationAtStop = audioChunkGeneration
+        activeHardwareStopCount += 1
 
         await withCheckedContinuation { continuation in
             audioSetupQueue.async {
                 currentRecorder?.stopRecording()
+                currentRecorder?.onAudioChunk = nil
                 continuation.resume()
             }
+        }
+
+        // Clear only after AUHAL's input gate is closed, so every final PCM buffer written
+        // to the WAV also reaches realtime. A rapid newer recording can set its callback
+        // while this MainActor method awaits the hardware queue; the generation check keeps
+        // this older stop from clearing that new owner.
+        if audioChunkGeneration == callbackGenerationAtStop {
+            onAudioChunk = nil
+        }
+        activeHardwareStopCount = max(0, activeHardwareStopCount - 1)
+        if activeHardwareStopCount == 0 {
+            recorder?.onAudioChunk = onAudioChunk
         }
 
         resetAudioMeter()

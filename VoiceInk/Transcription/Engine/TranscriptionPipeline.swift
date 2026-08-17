@@ -346,6 +346,11 @@ class TranscriptionPipeline {
             transcription.transcriptionModelName = model.displayName
             transcription.transcriptionDuration = transcriptionDuration
             transcription.modeName = modeMetadata.name
+            // Trigger-word selection may replace the recording-start Mode after the
+            // provider returns. Keep the stable History scope aligned with the Mode
+            // whose formatting/replacements/output actually produced this saved text;
+            // otherwise later recent-context requests can cross the wrong Mode boundary.
+            transcription.modeID = modeMetadata.id
             transcription.modeEmoji = modeMetadata.emoji
             finalText = cleanedText
 
@@ -694,11 +699,11 @@ class TranscriptionPipeline {
         saveTranscriptionAndPostCompletion()
     }
 
-    private func metadata(for mode: ModeConfig?) -> (name: String?, emoji: String?) {
+    private func metadata(for mode: ModeConfig?) -> (id: UUID?, name: String?, emoji: String?) {
         guard let mode, mode.isEnabled else {
-            return (nil, nil)
+            return (nil, nil, nil)
         }
 
-        return (mode.name, mode.icon.value)
+        return (mode.id, mode.name, mode.icon.value)
     }
 }

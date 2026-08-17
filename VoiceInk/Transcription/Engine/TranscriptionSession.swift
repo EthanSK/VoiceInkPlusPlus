@@ -94,8 +94,9 @@ enum StreamingFinalTextDisposition: Equatable {
     case deliver(String)
     case useBatchFallback
 
-    static func resolve(_ text: String) -> Self {
-        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    static func resolve(_ text: String, audioWasComplete: Bool = true) -> Self {
+        guard audioWasComplete else { return .useBatchFallback }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? .useBatchFallback
             : .deliver(text)
     }
@@ -248,7 +249,10 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                 let start = Date()
                 logger.notice("Streaming stop/transcribe started model=\(model.displayName, privacy: .public)")
                 let text = try await streamingService.stopAndGetFinalText()
-                switch StreamingFinalTextDisposition.resolve(text) {
+                switch StreamingFinalTextDisposition.resolve(
+                    text,
+                    audioWasComplete: streamingService.audioWasComplete
+                ) {
                 case .deliver(let finalText):
                     logger.notice("Streaming transcript received elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s chars=\(finalText.count, privacy: .public)")
                     return finalText

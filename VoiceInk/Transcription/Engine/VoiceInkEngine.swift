@@ -830,11 +830,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // A missing journal is a recovery guarantee failure, so do not start capture.
             session.recoveryJournalEntry = try recoveryJournalStore.begin(audioURL: permanentURL)
 
-            // Buffer audio chunks until the streaming session (if any) is ready to receive them.
-            let pendingChunks = OSAllocatedUnfairLock(initialState: [Data]())
-            self.recorder.onAudioChunk = { data in
-                pendingChunks.withLock { $0.append(data) }
-            }
+            // Keep one callback across the startup-to-streaming handoff. Replacing a
+            // pending closure and draining its array separately lets a retained old
+            // closure append too late or a newer live chunk overtake buffered PCM.
+            // The bounded router serializes that transition and forces complete-WAV
+            // fallback instead of silently dropping startup audio if setup wedges.
+            let startupAudioRouter = RecordingStartupAudioRouter()
+            self.recorder.onAudioChunk = startupAudioRouter.receive
 
             session.liveRecordingState = .starting
             recomputeDerivedState()
@@ -994,18 +996,43 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 }
 
                 if let realCallback {
-                    self.recorder.onAudioChunk = realCallback
-                    let buffered = pendingChunks.withLock { chunks -> [Data] in
-                        let result = chunks
-                        chunks.removeAll()
-                        return result
+                    switch startupAudioRouter.activate(realCallback) {
+                    case .connected(let replayedChunks, let replayedBytes):
+                        vippLog.info("streaming startup audio connected replayedChunks=\(replayedChunks, privacy: .public) replayedBytes=\(replayedBytes, privacy: .public)")
+                    case .fallbackRequired(let droppedChunks, let droppedBytes):
+                        // The WAV has every frame. Keep the recording usable by disabling
+                        // only its incomplete realtime session; normal stop will use the
+                        // same frozen OpenAI prompt/Vocabulary with completed-file audio.
+                        streamingSession.cancel()
+                        session.transcriptionSession = nil
+                        session.showsRealtimeTranscriptHUD = false
+                        startupAudioRouter.close()
+                        self.recorder.onAudioChunk = nil
+                        recomputeDerivedState()
+                        vippLog.warning("streaming startup audio exceeded its bound; using complete WAV fallback droppedChunks=\(droppedChunks, privacy: .public) droppedBytes=\(droppedBytes, privacy: .public)")
+                        NotificationManager.shared.showNotification(
+                            title: String(localized: "Realtime startup took too long; this recording will transcribe after stop"),
+                            type: .warning
+                        )
+                    case .closed:
+                        streamingSession.cancel()
+                        session.transcriptionSession = nil
+                        session.showsRealtimeTranscriptHUD = false
+                        self.recorder.onAudioChunk = nil
+                        recomputeDerivedState()
                     }
-                    for chunk in buffered { realCallback(chunk) }
+                } else {
+                    streamingSession.cancel()
+                    session.transcriptionSession = nil
+                    session.showsRealtimeTranscriptHUD = false
+                    startupAudioRouter.close()
+                    self.recorder.onAudioChunk = nil
+                    recomputeDerivedState()
                 }
             } else {
                 session.transcriptionSession = nil
+                startupAudioRouter.close()
                 self.recorder.onAudioChunk = nil
-                pendingChunks.withLock { $0.removeAll() }
             }
 
             // Best-effort model preload so the eventual transcribe is fast. Use this

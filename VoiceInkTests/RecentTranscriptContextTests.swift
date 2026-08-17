@@ -7,9 +7,10 @@ import Testing
 ///
 /// The feature is only allowed to change one thing: the prompt string sent to the OpenAI
 /// transcription models. These tests pin the static-prompt contract, the cap, whole-entry
-/// truncation, the eligible-status/scope filter, per-recording isolation, the legacy
-/// disabled path, and realtime/fallback parity. Nothing here may be relaxed to make a
-/// future context experiment fit.
+/// prompt-budget removal, the eligible-status/scope filter, per-recording isolation, the legacy
+/// disabled path, and realtime/fallback parity. Long History items must contribute a
+/// sentence- or word-aligned tail rather than silently disappearing. Nothing here may be
+/// relaxed to make a future context experiment fit.
 struct RecentTranscriptContextTests {
 
     private var repositoryRoot: URL {
@@ -98,7 +99,7 @@ struct RecentTranscriptContextTests {
         )
     }
 
-    // MARK: - 4,096 cap and whole-entry truncation
+    // MARK: - 4,096 cap and bounded excerpts
 
     @Test func composedPromptNeverExceedsTheOpenAIPromptCap() throws {
         let limit = OpenAITranscriptionConfiguration.promptCharacterLimit
@@ -124,7 +125,7 @@ struct RecentTranscriptContextTests {
         #expect(OpenAITranscriptionConfiguration.normalizedPrompt(composed) == composed)
     }
 
-    @Test func entriesThatDoNotFitAreDroppedWholeAndNeverCut() throws {
+    @Test func entriesThatDoNotFitTheWholePromptAreDroppedWhole() throws {
         let long = entry("L", length: 300)
         let short = "a short recent dictation entry"
         // Entries are chronological. This limit admits only the newest short entry, so
@@ -148,18 +149,6 @@ struct RecentTranscriptContextTests {
         #expect(!composed.contains(entry("L", length: 20)))
         #expect(composed.count <= limit)
 
-        // A single oversized transcript is rejected during sanitisation, not truncated.
-        #expect(
-            RecentTranscriptContextPolicy.sanitizedEntry(
-                entry("x", length: RecentTranscriptContextPolicy.maximumEntryCharacters + 1)
-            ) == nil
-        )
-        #expect(
-            RecentTranscriptContextPolicy.sanitizedEntry(
-                entry("x", length: RecentTranscriptContextPolicy.maximumEntryCharacters)
-            )?.count == RecentTranscriptContextPolicy.maximumEntryCharacters
-        )
-
         // If nothing fits at all the caller must fall back to the legacy prompt.
         #expect(
             RecentTranscriptContextPolicy.composedPrompt(
@@ -168,6 +157,59 @@ struct RecentTranscriptContextTests {
                 characterLimit: 10
             ) == nil
         )
+    }
+
+    @Test func realisticLongDictationContributesItsNewestCompleteSentences() throws {
+        let oldest = String(repeating: "Earlier project setup detail. ", count: 12)
+        let recentSentence = "The newest complete sentence names Project Marzipan correctly."
+        let finalSentence = "Keep this final spelling context for the next recording."
+        let dictation = oldest + recentSentence + " " + finalSentence
+        #expect(dictation.count > 460)
+
+        let excerpt = try #require(RecentTranscriptContextPolicy.sanitizedEntry(dictation))
+
+        #expect(excerpt.count <= RecentTranscriptContextPolicy.maximumEntryCharacters)
+        #expect(excerpt.hasSuffix(finalSentence))
+        #expect(excerpt.contains(recentSentence))
+        #expect(!excerpt.hasPrefix("rlier"))
+        #expect(dictation.hasSuffix(excerpt))
+    }
+
+    @Test func oneLongSentenceFallsBackToAWholeWordBoundary() throws {
+        let words = (0..<180).map { "token\($0)" }
+        let dictation = words.joined(separator: " ")
+        #expect(dictation.count > 900)
+
+        let excerpt = try #require(RecentTranscriptContextPolicy.sanitizedEntry(dictation))
+
+        #expect(excerpt.count <= RecentTranscriptContextPolicy.maximumEntryCharacters)
+        #expect(dictation.hasSuffix(excerpt))
+        #expect(excerpt.first != " ")
+        #expect(excerpt.last != " ")
+        #expect(words.contains(String(excerpt.split(separator: " ").first ?? "")))
+        #expect(words.contains(String(excerpt.split(separator: " ").last ?? "")))
+        #expect(
+            RecentTranscriptContextPolicy.sanitizedEntry(
+                String(repeating: "x", count: 900)
+            ) == nil
+        )
+    }
+
+    @Test func directCompositionKeepsTheNewestThreeEntries() throws {
+        let entries = (0..<6).map { "completed recent dictation number \($0)" }
+        let composed = try #require(
+            RecentTranscriptContextPolicy.composedPrompt(
+                staticPrompt: nil,
+                entries: entries
+            )
+        )
+
+        #expect(!composed.contains(entries[0]))
+        #expect(!composed.contains(entries[1]))
+        #expect(!composed.contains(entries[2]))
+        #expect(composed.contains(entries[3]))
+        #expect(composed.contains(entries[4]))
+        #expect(composed.contains(entries[5]))
     }
 
     @Test func entriesAreJSONEncodedSoTranscriptTextCannotForgePromptStructure() throws {
@@ -650,33 +692,86 @@ struct RecentTranscriptContextTests {
         #expect(!source.contains("\\(candidate.text, privacy:"))
     }
 
-    @Test @MainActor func historyRowsPersistStableModeIdentityAndLegacyNilScope() throws {
-        let context = try makeStoreContext(named: "RecentContextModeIdentityTest")
-        let modeID = UUID()
-        context.insert(
-            Transcription(
-                text: "a completed row with a stable mode identity",
-                duration: 1,
-                modeName: "Renamable display name",
-                modeID: modeID,
-                transcriptionStatus: .completed
-            )
+    @Test func settingsCopyExplainsExcerptsSavedTextAndVocabularySeparation() throws {
+        let source = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("VoiceInk/Views/AI Models/ModelSettingsPanel.swift"),
+            encoding: .utf8
         )
-        context.insert(
-            Transcription(
-                text: "a legacy-style row without a stable mode identity",
-                duration: 1,
-                modeName: "Renamable display name",
-                modeID: nil,
-                transcriptionStatus: .completed
-            )
-        )
-        try context.save()
 
-        let rows = try context.fetch(FetchDescriptor<Transcription>())
-        #expect(rows.count == 2)
-        #expect(rows.contains { $0.modeID == modeID })
-        #expect(rows.contains { $0.modeID == nil })
+        #expect(source.contains("sentence-aligned excerpts"))
+        #expect(source.contains("saved text after any paragraph formatting and Word Replacements"))
+        #expect(source.contains("recent context never adds or changes Vocabulary"))
+        #expect(source.contains("Same Mode does not mean same app, chat, or document"))
+        #expect(source.contains("RecentTranscriptContextPolicy.maximumEntries"))
+        #expect(source.contains("RecentTranscriptContextPolicy.recencyWindowMinutes"))
+        #expect(source.contains("Deleting a transcription in History removes it from future context"))
+        #expect(source.contains(".disabled(!hasUsableOpenAIModel)"))
+    }
+
+    @Test func infoTipIsAnAccessibleControl() throws {
+        let source = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("VoiceInk/Views/Components/InfoTip.swift"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("Button {"))
+        #expect(source.contains("var message: Text"))
+        #expect(source.contains("Text(verbatim: message)"))
+        #expect(source.contains(".accessibilityLabel"))
+        #expect(source.contains(".accessibilityHint"))
+        #expect(source.contains(".help"))
+    }
+
+    @Test func onlyMicrophoneDictationRowsCanBecomeRecentContext() throws {
+        let now = Date()
+        let modeID = UUID()
+        let typedAssistant = RecentTranscriptContextCandidate(
+            text: "typed user input that was never spoken into the microphone",
+            timestamp: now,
+            modeID: nil,
+            status: .completed
+        )
+        let importedAudio = RecentTranscriptContextCandidate(
+            text: "an imported recording that may contain another speaker",
+            timestamp: now,
+            modeID: nil,
+            status: .completed
+        )
+
+        #expect(
+            RecentTranscriptContextPolicy.eligibleEntries(
+                from: [typedAssistant, importedAudio],
+                currentModeID: modeID,
+                now: now
+            ).isEmpty
+        )
+
+        let engine = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("VoiceInk/Transcription/Engine/VoiceInkEngine.swift"),
+            encoding: .utf8
+        )
+        let assistant = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("VoiceInk/Services/AssistantChatService.swift"),
+            encoding: .utf8
+        )
+        let imported = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("VoiceInk/Services/AudioFileTranscriptionManager.swift"),
+            encoding: .utf8
+        )
+        #expect(engine.contains("modeID: modeMetadata.id"))
+        let pipeline = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"),
+            encoding: .utf8
+        )
+        #expect(pipeline.contains("transcription.modeID = modeMetadata.id"))
+        #expect(assistant.contains("modeID: nil, // Typed assistant turns are History"))
+        #expect(imported.components(separatedBy: "modeID: nil, // Imported files may contain another speaker").count == 4)
     }
 
     // MARK: - Reviewed dictionary import

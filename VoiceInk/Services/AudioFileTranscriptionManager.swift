@@ -216,6 +216,7 @@ class AudioTranscriptionManager: ObservableObject {
                         aiRequestSystemMessage: enhancementService.lastSystemMessageSent,
                         aiRequestUserMessage: enhancementService.lastUserMessageSent,
                         modeName: modeMetadata.name,
+                        modeID: nil, // Imported files may contain another speaker; never treat them as this user's recent microphone context.
                         modeEmoji: modeMetadata.emoji
                     )
                 } catch {
@@ -229,6 +230,7 @@ class AudioTranscriptionManager: ObservableObject {
                         promptName: nil,
                         transcriptionDuration: transcriptionDuration,
                         modeName: modeMetadata.name,
+                        modeID: nil, // Imported files may contain another speaker; never treat them as this user's recent microphone context.
                         modeEmoji: modeMetadata.emoji
                     )
                 }
@@ -241,6 +243,7 @@ class AudioTranscriptionManager: ObservableObject {
                     promptName: nil,
                     transcriptionDuration: transcriptionDuration,
                     modeName: modeMetadata.name,
+                    modeID: nil, // Imported files may contain another speaker; never treat them as this user's recent microphone context.
                     modeEmoji: modeMetadata.emoji
                 )
             }

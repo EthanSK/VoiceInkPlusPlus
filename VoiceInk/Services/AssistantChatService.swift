@@ -91,6 +91,7 @@ final class AssistantChatService {
             aiRequestSystemMessage: response.systemPrompt,
             aiRequestUserMessage: response.requestLog,
             modeName: modeName,
+            modeID: nil, // Typed assistant turns are History, not microphone dictation; never feed them into recent speech context.
             modeEmoji: modeEmoji,
             transcriptionStatus: .completed
         )

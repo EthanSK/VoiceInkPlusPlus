@@ -145,19 +145,50 @@ private struct EnhancementModelSettingsView: View {
 /// just to narrow a prompt, so the scope is "same Mode, last few minutes" and nothing
 /// stronger. Everything else — Primary/Next destinations, paste, auto-send — is untouched.
 private struct RecentDictationContextSection: View {
+    @EnvironmentObject private var transcriptionModelManager: TranscriptionModelManager
     @AppStorage(RecentTranscriptContextSettings.enabledKey) private var isRecentContextEnabled = false
+
+    private var hasUsableOpenAIModel: Bool {
+        transcriptionModelManager.usableModels.contains { $0.provider == .openAI }
+    }
+
+    private var informationMessage: String {
+        String(
+            format: String(localized: "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context."),
+            RecentTranscriptContextPolicy.maximumEntries,
+            RecentTranscriptContextPolicy.recencyWindowMinutes
+        )
+    }
+
+    private var visibleSummary: String {
+        String(
+            format: String(localized: "OpenAI receives sentence-aligned excerpts from up to %d completed History items in the same Mode from the last %d minutes. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary."),
+            RecentTranscriptContextPolicy.maximumEntries,
+            RecentTranscriptContextPolicy.recencyWindowMinutes
+        )
+    }
 
     var body: some View {
         Section {
-            Toggle(isOn: $isRecentContextEnabled) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 4) {
-                    Text("Send recent dictation as context (OpenAI)")
-                    InfoTip("Adds up to 3 of your finished transcriptions from the last 15 minutes, in the same enabled Mode, after your existing transcription prompt so names and spellings stay consistent. Recordings without a Mode send no recent history. Only OpenAI transcription models receive it, only finished text is used, and it never changes where text is pasted. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode.")
+                    Toggle("Send recent dictation as context (OpenAI)", isOn: $isRecentContextEnabled)
+                        .toggleStyle(.switch)
+                        .disabled(!hasUsableOpenAIModel)
+                    InfoTip(informationMessage)
                 }
+
+                Text(visibleSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.switch)
         } header: {
             Text("Recent Dictation Context")
+        } footer: {
+            if !hasUsableOpenAIModel {
+                Text("Requires a configured OpenAI transcription model.")
+            }
         }
     }
 }

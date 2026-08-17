@@ -2056,18 +2056,18 @@
         }
       }
     },
-    "Adds up to 3 of your finished transcriptions from the last 15 minutes, in the same enabled Mode, after your existing transcription prompt so names and spellings stay consistent. Recordings without a Mode send no recent history. Only OpenAI transcription models receive it, only finished text is used, and it never changes where text is pasted. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode.": {
+    "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fügt bis zu 3 deiner abgeschlossenen Transkriptionen aus den letzten 15 Minuten im selben aktivierten Modus nach deinem vorhandenen Transkriptions-Prompt hinzu, damit Namen und Schreibweisen konsistent bleiben. Aufnahmen ohne Modus senden keinen aktuellen Verlauf. Nur OpenAI-Transkriptionsmodelle erhalten ihn, es wird ausschließlich abgeschlossener Text verwendet und das Einfügeziel ändert sich nie. Derselbe Modus bedeutet nicht dieselbe App, denselben Chat oder dasselbe Dokument — lass diese Option aus, wenn du in diesem Modus private Inhalte diktierst."
+            "value": "Fügt begrenzte Auszüge aus bis zu %d abgeschlossenen Verlaufstranskriptionen der letzten %d Minuten im selben Modus nach deinem vorhandenen Transkriptions-Prompt hinzu. Nur OpenAI-Transkriptionsmodelle erhalten sie; verbesserter Text, Audio, App- oder Zieldetails und Echtzeit-Teilergebnisse werden nie einbezogen. Derselbe Modus bedeutet nicht dieselbe App, denselben Chat oder dasselbe Dokument — lass dies ausgeschaltet, wenn du in diesem Modus private Inhalte diktierst. Das Löschen einer Transkription im Verlauf entfernt sie aus künftigem Kontext."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在现有转录提示词之后，附加同一已启用模式下最近 15 分钟内最多 3 条已完成的转录，以保持名称和拼写一致。未使用模式的录音不会发送近期历史。只有 OpenAI 转录模型会收到这些内容，并且只使用已完成的文本；它绝不会改变文本粘贴的位置。相同模式并不代表相同的应用、聊天或文档——如果你会在该模式下口述私密内容，请关闭此选项。"
+            "value": "在现有转录提示之后，添加同一模式下最近 %2$d 分钟内最多 %1$d 条已完成历史转录的有界摘录。只有 OpenAI 转录模型会收到这些内容；增强文本、音频、应用或目标详情以及实时部分结果绝不会包含其中。相同模式并不代表相同应用、聊天或文档——如果你会在该模式下听写私密内容，请关闭此选项。从历史中删除转录会将其从未来上下文中移除。"
           }
         }
       }
@@ -8816,6 +8816,22 @@
         }
       }
     },
+    "More information": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weitere Informationen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更多信息"
+          }
+        }
+      }
+    },
     "More transcription models available": {
       "localizations": {
         "de": {
@@ -10105,6 +10121,22 @@
         }
       }
     },
+    "OpenAI receives sentence-aligned excerpts from up to %d completed History items in the same Mode from the last %d minutes. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenAI erhält satzgenaue Auszüge aus bis zu %d abgeschlossenen Verlaufseinträgen im selben Modus aus den letzten %d Minuten. Verwendet wird der gespeicherte Text nach etwaiger Absatzformatierung und Wortersetzungen; der aktuelle Kontext fügt dem Vokabular nie etwas hinzu und ändert es nicht."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenAI 会接收同一模式下最近 %2$d 分钟内最多 %1$d 条已完成历史项目的句子对齐摘录。它使用经过段落格式化和词语替换后的已保存文本；近期上下文绝不会添加或更改词汇。"
+          }
+        }
+      }
+    },
     "Optimizing model for your device": {
       "localizations": {
         "de": {
@@ -10974,6 +11006,38 @@
         }
       }
     },
+    "Realtime audio was incomplete; using the saved recording instead": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Echtzeit-Audio war unvollständig; stattdessen wird die gespeicherte Aufnahme verwendet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实时音频不完整；改用已保存的录音"
+          }
+        }
+      }
+    },
+    "Realtime startup took too long; this recording will transcribe after stop": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Echtzeitstart dauerte zu lange; diese Aufnahme wird nach dem Stoppen transkribiert"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实时启动耗时过长；此录音将在停止后转录"
+          }
+        }
+      }
+    },
     "Recheck": {
       "extractionState": "manual",
       "localizations": {
@@ -11597,6 +11661,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "请求超时"
+          }
+        }
+      }
+    },
+    "Requires a configured OpenAI transcription model.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erfordert ein konfiguriertes OpenAI-Transkriptionsmodell."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要已配置的 OpenAI 转录模型。"
           }
         }
       }

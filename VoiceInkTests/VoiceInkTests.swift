@@ -4281,6 +4281,12 @@ struct VoiceInkTests {
         #expect(StreamingFinalTextDisposition.resolve("") == .useBatchFallback)
         #expect(StreamingFinalTextDisposition.resolve(" \n\t") == .useBatchFallback)
         #expect(StreamingFinalTextDisposition.resolve("finished words") == .deliver("finished words"))
+        #expect(
+            StreamingFinalTextDisposition.resolve(
+                "finished but incomplete words",
+                audioWasComplete: false
+            ) == .useBatchFallback
+        )
     }
 
     @Test func primaryDeliveryUsesOnlyBaseVoiceInkSystemFocusedCommands() throws {

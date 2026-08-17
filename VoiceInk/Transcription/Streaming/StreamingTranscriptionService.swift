@@ -3,26 +3,78 @@ import SwiftData
 import os
 
 /// Sendable source that bridges audio chunks from any thread into an AsyncStream.
-private final class AudioChunkSource: @unchecked Sendable {
+final class AudioChunkSource: @unchecked Sendable {
+    /// A blocked live send may otherwise retain the rest of an arbitrarily long recording.
+    /// Two megabytes is more than a minute of 16 kHz mono PCM16 and comfortably covers the
+    /// provider's bounded connection handshake; overflow marks realtime incomplete so the
+    /// complete WAV becomes authoritative.
+    static let defaultMaximumBufferedBytes = 2_000_000
+
     let stream: AsyncStream<Data>
     private let continuation: AsyncStream<Data>.Continuation
+    private let maximumBufferedBytes: Int
+    private let lock = NSLock()
+    private var bufferedBytes = 0
+    private var isFinished = false
 
-    init() {
+    init(maximumBufferedBytes: Int = AudioChunkSource.defaultMaximumBufferedBytes) {
         let (stream, continuation) = AsyncStream.makeStream(of: Data.self, bufferingPolicy: .unbounded)
         self.stream = stream
         self.continuation = continuation
+        self.maximumBufferedBytes = max(0, maximumBufferedBytes)
     }
 
     deinit {
         continuation.finish()
     }
 
-    func send(_ data: Data) {
+    func send(_ data: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished,
+              data.count <= maximumBufferedBytes - bufferedBytes else {
+            return false
+        }
+        bufferedBytes += data.count
         continuation.yield(data)
+        return true
+    }
+
+    func didDequeue(_ byteCount: Int) {
+        lock.lock()
+        bufferedBytes = max(0, bufferedBytes - byteCount)
+        lock.unlock()
     }
 
     func finish() {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
         continuation.finish()
+        lock.unlock()
+    }
+}
+
+struct StreamingAudioMetricsSnapshot: Equatable {
+    let receivedChunks: Int
+    let receivedBytes: Int
+    let sentChunks: Int
+    let sentBytes: Int
+    let droppedChunks: Int
+    let droppedBytes: Int
+    let drainTimedOut: Bool
+
+    /// Only a fully drained one-to-one PCM stream may produce a deliverable realtime
+    /// result. A plausible non-empty transcript is still incomplete if any chunk failed.
+    var isComplete: Bool {
+        !drainTimedOut &&
+            droppedChunks == 0 &&
+            droppedBytes == 0 &&
+            receivedChunks == sentChunks &&
+            receivedBytes == sentBytes
     }
 }
 
@@ -32,15 +84,9 @@ private final class StreamingMetrics: @unchecked Sendable {
     private var receivedBytes = 0
     private var sentChunks = 0
     private var sentBytes = 0
-
-    func reset() {
-        lock.lock()
-        receivedChunks = 0
-        receivedBytes = 0
-        sentChunks = 0
-        sentBytes = 0
-        lock.unlock()
-    }
+    private var droppedChunks = 0
+    private var droppedBytes = 0
+    private var drainTimedOut = false
 
     func recordReceived(_ byteCount: Int) {
         lock.lock()
@@ -56,10 +102,31 @@ private final class StreamingMetrics: @unchecked Sendable {
         lock.unlock()
     }
 
-    func snapshot() -> (receivedChunks: Int, receivedBytes: Int, sentChunks: Int, sentBytes: Int) {
+    func recordDropped(_ byteCount: Int) {
+        lock.lock()
+        droppedChunks += 1
+        droppedBytes += byteCount
+        lock.unlock()
+    }
+
+    func markDrainTimedOut() {
+        lock.lock()
+        drainTimedOut = true
+        lock.unlock()
+    }
+
+    func snapshot() -> StreamingAudioMetricsSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return (receivedChunks, receivedBytes, sentChunks, sentBytes)
+        return StreamingAudioMetricsSnapshot(
+            receivedChunks: receivedChunks,
+            receivedBytes: receivedBytes,
+            sentChunks: sentChunks,
+            sentBytes: sentBytes,
+            droppedChunks: droppedChunks,
+            droppedBytes: droppedBytes,
+            drainTimedOut: drainTimedOut
+        )
     }
 }
 
@@ -81,6 +148,7 @@ class StreamingTranscriptionService {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionService")
     private var provider: StreamingTranscriptionProvider?
     private var sendTask: Task<Void, Never>?
+    private var sendLoopCompletion: AsyncStream<Void>?
     private var eventConsumerTask: Task<Void, Never>?
     private let chunkSource = AudioChunkSource()
     private var state: StreamingState = .idle
@@ -112,13 +180,18 @@ class StreamingTranscriptionService {
 
     /// Whether the streaming connection is fully established and actively sending.
     var isActive: Bool { state == .streaming || state == .committing }
+    var audioWasComplete: Bool { metrics.snapshot().isComplete }
 
     /// Start a streaming transcription session for the given model.
     func startStreaming(model: any TranscriptionModel, context: TranscriptionRequestContext) async throws {
         let start = Date()
         state = .connecting
         committedSegments = []
-        metrics.reset()
+        // The service is recording-owned and its counters start at zero. Audio may be
+        // queued through the callback before this background connection task runs, so
+        // resetting here would erase received-side accounting while leaving those same
+        // chunks in AudioChunkSource to be sent later. The completeness gate would then
+        // reject an otherwise intact realtime stream on every ordinary startup replay.
         firstPartialLogged = false
         firstCommitLogged = false
 
@@ -155,7 +228,9 @@ class StreamingTranscriptionService {
     /// Buffers an audio chunk for sending. Safe to call from the audio callback thread.
     nonisolated func sendAudioChunk(_ data: Data) {
         metrics.recordReceived(data.count)
-        chunkSource.send(data)
+        if !chunkSource.send(data) {
+            metrics.recordDropped(data.count)
+        }
     }
 
     /// Stops streaming, commits remaining audio, and returns the final transcribed text.
@@ -170,7 +245,17 @@ class StreamingTranscriptionService {
         logger.notice("Streaming stop requested receivedChunks=\(beforeDrain.receivedChunks, privacy: .public) sentChunks=\(beforeDrain.sentChunks, privacy: .public) receivedBytes=\(beforeDrain.receivedBytes, privacy: .public) sentBytes=\(beforeDrain.sentBytes, privacy: .public)")
 
         // Finish the chunk source so the send loop drains remaining chunks and exits naturally.
-        await drainRemainingChunks()
+        let didDrain = await drainRemainingChunks()
+        let drainedMetrics = metrics.snapshot()
+        guard didDrain, drainedMetrics.isComplete else {
+            // The complete WAV is already durable. Never commit or deliver a realtime
+            // result after a send failure or drain timeout, even when its text looks
+            // plausible; the session will take its existing completed-file fallback.
+            logger.warning("Streaming audio incomplete; refusing realtime result droppedChunks=\(drainedMetrics.droppedChunks, privacy: .public) droppedBytes=\(drainedMetrics.droppedBytes, privacy: .public) drainTimedOut=\(drainedMetrics.drainTimedOut, privacy: .public)")
+            state = .failed
+            await cleanupStreaming()
+            throw StreamingTranscriptionError.incompleteAudio
+        }
 
         // Set up the commit signal BEFORE sending commit to avoid a race with the response.
         let (signalStream, signalContinuation) = AsyncStream.makeStream(of: Void.self)
@@ -208,6 +293,7 @@ class StreamingTranscriptionService {
         eventConsumerTask = nil
         sendTask?.cancel()
         sendTask = nil
+        sendLoopCompletion = nil
         chunkSource.finish()
 
         // Clean up commit signal if waiting
@@ -251,16 +337,27 @@ class StreamingTranscriptionService {
 
     /// Consumes audio chunks from the AsyncStream and sends them to the provider.
     private func startSendLoop() {
+        guard let provider else { return }
         let source = chunkSource
-        let provider = provider
         let metrics = metrics
+        let (completionStream, completionContinuation) = AsyncStream.makeStream(
+            of: Void.self,
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        sendLoopCompletion = completionStream
 
         sendTask = Task.detached { [weak self] in
+            defer {
+                completionContinuation.yield()
+                completionContinuation.finish()
+            }
             for await chunk in source.stream {
+                source.didDequeue(chunk.count)
                 do {
-                    try await provider?.sendAudioChunk(chunk)
+                    try await provider.sendAudioChunk(chunk)
                     metrics.recordSent(chunk.count)
                 } catch {
+                    metrics.recordDropped(chunk.count)
                     let desc = error.localizedDescription
                     await MainActor.run {
                         self?.logger.error("Failed to send audio chunk: \(desc, privacy: .public)")
@@ -270,14 +367,56 @@ class StreamingTranscriptionService {
         }
     }
 
-    /// Finishes the chunk source and waits for the send loop to process all remaining buffered chunks.
-    private func drainRemainingChunks() async {
+    /// Finishes the chunk source and gives the send loop five seconds to flush. Waiting
+    /// directly on `sendTask.value` was unbounded when a half-open socket ignored task
+    /// cancellation, which could leave the recorder on Transcribing for minutes.
+    private func drainRemainingChunks() async -> Bool {
         let start = Date()
         chunkSource.finish()
-        await sendTask?.value
+        let didDrain: Bool
+        if let sendLoopCompletion {
+            didDrain = await Self.waitForSendLoopCompletion(
+                sendLoopCompletion,
+                timeoutNanoseconds: 5_000_000_000
+            )
+        } else {
+            didDrain = sendTask == nil
+        }
+        if !didDrain {
+            metrics.markDrainTimedOut()
+            sendTask?.cancel()
+        }
         sendTask = nil
+        sendLoopCompletion = nil
         let snapshot = metrics.snapshot()
-        logger.notice("Streaming drain finished elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s receivedChunks=\(snapshot.receivedChunks, privacy: .public) sentChunks=\(snapshot.sentChunks, privacy: .public) receivedBytes=\(snapshot.receivedBytes, privacy: .public) sentBytes=\(snapshot.sentBytes, privacy: .public)")
+        logger.notice("Streaming drain finished completed=\(didDrain, privacy: .public) elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s receivedChunks=\(snapshot.receivedChunks, privacy: .public) sentChunks=\(snapshot.sentChunks, privacy: .public) droppedChunks=\(snapshot.droppedChunks, privacy: .public) receivedBytes=\(snapshot.receivedBytes, privacy: .public) sentBytes=\(snapshot.sentBytes, privacy: .public) droppedBytes=\(snapshot.droppedBytes, privacy: .public)")
+        return didDrain
+    }
+
+    static func waitForSendLoopCompletion(
+        _ completion: AsyncStream<Void>,
+        timeoutNanoseconds: UInt64
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await _ in completion {
+                    return true
+                }
+                return false
+            }
+            group.addTask {
+                do {
+                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    return false
+                } catch {
+                    return false
+                }
+            }
+
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
     }
 
     /// Consumes transcription events throughout the session, accumulating committed segments.
@@ -379,6 +518,7 @@ class StreamingTranscriptionService {
         eventConsumerTask = nil
         sendTask?.cancel()
         sendTask = nil
+        sendLoopCompletion = nil
         chunkSource.finish()
         commitSignal?.finish()
         commitSignal = nil

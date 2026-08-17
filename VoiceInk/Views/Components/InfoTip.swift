@@ -3,7 +3,7 @@ import SwiftUI
 /// A reusable info tip component that displays helpful information in a popover
 struct InfoTip: View {
     // Content configuration
-    var message: LocalizedStringKey
+    var message: Text
     var learnMoreLink: URL?
 
     // Appearance customization
@@ -16,17 +16,22 @@ struct InfoTip: View {
     @State private var isShowingTip: Bool = false
 
     var body: some View {
-        Image(systemName: iconName)
-            .imageScale(iconSize)
-            .foregroundColor(iconColor)
-            .fontWeight(.semibold)
-            .padding(5)
-            .contentShape(Rectangle())
+        Button {
+            isShowingTip.toggle()
+        } label: {
+            Image(systemName: iconName)
+                .imageScale(iconSize)
+                .foregroundColor(iconColor)
+                .fontWeight(.semibold)
+                .padding(5)
+                .contentShape(Rectangle())
+        }
+            .buttonStyle(.plain)
             .popover(isPresented: $isShowingTip) {
                 VStack(alignment: .leading, spacing: 0) {
                     if let url = learnMoreLink {
                         (
-                            Text(message)
+                            message
                                 .foregroundColor(.secondary)
                             + Text(" ")
                             + Text("Learn more")
@@ -34,7 +39,7 @@ struct InfoTip: View {
                         )
                             .font(.callout)
                     } else {
-                        Text(message)
+                        message
                             .font(.callout)
                             .foregroundColor(.secondary)
                     }
@@ -48,9 +53,9 @@ struct InfoTip: View {
                     }
                 }
             }
-            .onTapGesture {
-                isShowingTip.toggle()
-            }
+            .accessibilityLabel(Text("More information"))
+            .accessibilityHint(message)
+            .help(message)
     }
 }
 
@@ -59,25 +64,27 @@ struct InfoTip: View {
 extension InfoTip {
     /// Creates an InfoTip with just a message
     init(_ message: LocalizedStringKey) {
-        self.message = message
+        self.message = Text(message)
         self.learnMoreLink = nil
     }
 
-    /// Creates an InfoTip with a dynamic string message
+    /// Creates an InfoTip with an already-resolved dynamic string. Render it verbatim:
+    /// treating the formatted result as another localization key performs a useless
+    /// second lookup and lets translator punctuation be interpreted as Markdown.
     init(_ message: String) {
-        self.message = LocalizedStringKey(message)
+        self.message = Text(verbatim: message)
         self.learnMoreLink = nil
     }
 
     /// Creates an InfoTip with a learn more link
     init(_ message: LocalizedStringKey, learnMoreURL: String) {
-        self.message = message
+        self.message = Text(message)
         self.learnMoreLink = URL(string: learnMoreURL)
     }
 
     /// Creates an InfoTip with a dynamic string message and learn more link
     init(_ message: String, learnMoreURL: String) {
-        self.message = LocalizedStringKey(message)
+        self.message = Text(verbatim: message)
         self.learnMoreLink = URL(string: learnMoreURL)
     }
 }
