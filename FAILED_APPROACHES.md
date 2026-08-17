@@ -930,6 +930,23 @@ No row may be promoted merely because a later build reused part of it.
   or cleanup lives outside that queue. Require the shared-resource policy regression and an overlap
   trace with no cleanup/preload crossing between A and B.
 
+### Replacing the recorder callback and draining startup audio from a separate array
+
+- **State:** REJECTED by concurrency analysis and focused interleaving tests on 2026-08-17.
+- **Temptation:** Let the recorder's first callback append PCM to an array, later replace that
+  callback with the live provider's sender, and copy or drain the array as a separate step.
+- **Why it fails:** Callback replacement and array drainage are not one atomic ordering boundary.
+  The audio thread can retain the old closure and append after the array was copied, losing that
+  chunk from realtime, or a new live callback can send a later chunk before the copied startup
+  chunks finish replaying. A lock around only the array does not serialize callback ownership.
+- **Use instead:** Keep one recording-owned `RecordingStartupAudioRouter` callback installed for
+  the whole recording. Its single lock owns both the bounded startup buffer and the live sink;
+  activation replays every older chunk while holding that boundary, then exposes the sink to newer
+  chunks. Any overflow rejects realtime and falls back to the complete saved WAV.
+- **Reconsider only if:** The recorder itself exposes one proven atomic operation that replaces the
+  callback and drains all earlier PCM in order, with concurrent tests for retained old closures and
+  replay/live overtaking. Do not recreate the two-step array design under another helper name.
+
 ## Transcription provider configuration failures
 
 ### Scoping recent-transcript context by resolving the saved destination

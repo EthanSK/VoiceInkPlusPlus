@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-17T01:43:39Z
+**Trigger:** Ethan asked whether the buffer was properly designed and requested an Opus 5 UX and correctness pass.
+**Symptom:** Realtime recording startup could either lose or reorder PCM around the provider handoff, and an incomplete live stream could still look plausibly transcribed.
+**Root cause:** Replacing the recorder callback and draining a separate startup array was not one atomic ordering boundary; the live AsyncStream was also unbounded, and received/sent accounting could be reset after startup chunks were already queued.
+**Fix:** RecordingStartupAudioRouter keeps one recording-owned callback and atomically replays then switches under one lock; startup is capped at 960 KB, the live queue at 2 MB, and any overflow, send failure, accounting mismatch, or five-second drain timeout rejects realtime and retranscribes the complete saved WAV. Commit 9454006 also keeps the safe stop-time fallback quiet because only added latency is visible.
+**Commit:** 9454006
+**Guard:** Seven StreamingAudioReliabilityTests plus the relevant History/Mode and mandatory Primary/Next/HUD guards passed in the exact build-300 full-suite fallback: 208 tests in eight suites. Signed v2.0.300 is installed with executable SHA-256 d52e33e9a11e233ede70ac7fbdfa3985738d2962b2bd7992f03176b98df8da80 and CDHash 979e9910d9b69bd721943491c4e2efe17a981c9d; one physical realtime trace remains pending.
+---
+
+
+---
 **Date:** 2026-08-16T23:14:14Z
 **Trigger:** Ethan asked whether the new recent-context feature was increasing start time by a lot.
 **Symptom:** Ethan asked whether OpenAI recent-dictation context materially increased recording startup time.
