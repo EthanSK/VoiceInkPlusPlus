@@ -35,6 +35,12 @@ struct AudioSetupView: View {
 
                 Toggle("Pause Media While Recording", isOn: $playbackController.isPauseMediaEnabled)
 
+                Toggle(
+                    "Pause Spotify/Music on MacBook Speakers",
+                    isOn: $playbackController.isPauseMediaOnBuiltInSpeakersEnabled
+                )
+                .help("When MacBook speakers are the system output, pause Spotify or Music only after its exact paused state is verified. VoiceInk resumes only the app it proved it paused.")
+
                 LabeledContent("Resume Delay") {
                     resumeDelayMenu
                         .disabled(!canEditResumeDelay)
@@ -292,7 +298,9 @@ struct AudioSetupView: View {
     }
 
     private var canEditResumeDelay: Bool {
-        mediaController.isSystemMuteEnabled || playbackController.isPauseMediaEnabled
+        mediaController.isSystemMuteEnabled ||
+            playbackController.isPauseMediaEnabled ||
+            playbackController.isPauseMediaOnBuiltInSpeakersEnabled
     }
 
     private func movePrioritizedDeviceUp(_ device: PrioritizedDevice) {

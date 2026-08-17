@@ -557,13 +557,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await recorder.stopRecording(
                 playbackDisposition: stopPlaybackDisposition
             )
-            // ── MEDIA RESUME-BETWEEN-SESSIONS NUANCE ──
-            // recorder.stopRecording() schedules resumeMedia()/unmuteSystemAudio(). If the
-            // user immediately starts session B, recorder.startRecording() will pauseMedia()/
-            // muteSystemAudio() again. So media may briefly resume in the gap between stop and
-            // the next start — that's acceptable and self-consistent: the single Recorder is
-            // only ever owned by the single active recording session, so its pause/resume
-            // bracketing always pairs with exactly one recording at a time.
+            // ── RAPID-SESSION MEDIA OWNERSHIP ──
+            // System-output unmute and playback restoration are intentionally separate.
+            // PlaybackController retains the exact paused source under recording-scoped
+            // leases: an immediate built-in-speaker session B transfers that ownership
+            // without an intermediate play/pause pair, while an external-output B does
+            // not cancel A's earned resume. The delayed source is never cleared before
+            // its explicit play completes, so a rapid start cannot strand paused media.
 
             if let audioURL = active.audioURL {
                 if !active.shouldCancel {

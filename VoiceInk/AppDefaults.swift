@@ -17,6 +17,9 @@ enum AppDefaults {
             "isSystemMuteEnabled": true,
             "audioResumptionDelay": 0.0,
             "isPauseMediaEnabled": false,
+            // Protect the internal microphone from nearby MacBook speaker bleed
+            // without forcing media suppression on headphones or audio interfaces.
+            "isPauseMediaOnBuiltInSpeakersEnabled": true,
             CustomSoundManager.SoundType.start.builtInSoundKey: CustomSoundManager.SoundType.start.defaultBuiltInSound.rawValue,
             CustomSoundManager.SoundType.stop.builtInSoundKey: CustomSoundManager.SoundType.stop.defaultBuiltInSound.rawValue,
 

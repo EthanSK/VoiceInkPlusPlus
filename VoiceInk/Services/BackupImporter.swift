@@ -177,6 +177,9 @@ enum BackupImporter {
         if let pauseMedia = general.isPauseMediaEnabled {
             playbackController.isPauseMediaEnabled = pauseMedia
         }
+        if let pauseOnBuiltInSpeakers = general.isPauseMediaOnBuiltInSpeakersEnabled {
+            playbackController.isPauseMediaOnBuiltInSpeakersEnabled = pauseOnBuiltInSpeakers
+        }
         if let audioDelay = general.audioResumptionDelay {
             mediaController.audioResumptionDelay = audioDelay
         }
@@ -217,7 +220,10 @@ enum BackupImporter {
     }
 
     @MainActor
-    private static func importDictionary(from backup: BackupFile, modelContext: ModelContext) throws {
+    /// The supported Settings import boundary. Keep this internal so the request-path
+    /// regression test can exercise JSON decode -> additive SwiftData persistence ->
+    /// the exact frozen GPT request inputs instead of injecting vocabulary after import.
+    static func importDictionary(from backup: BackupFile, modelContext: ModelContext) throws {
         var insertedWords = 0
         var insertedReplacements = 0
         var skippedInvalidReplacements = 0

@@ -29,6 +29,7 @@ class Recorder: NSObject, ObservableObject {
     private var audioMuteTask: Task<Void, Never>?
     private var mediaPauseTask: Task<Void, Never>?
     private var audioRestorationTask: Task<Void, Never>?
+    private var recordingMediaPauseLease: RecordingMediaPauseLease?
     private var chatGPTVoiceMuteLease: ChatGPTVoiceCaptureMuteLease?
     private let smoothedValuesLock = NSLock()
     private var smoothedAverage: Float = 0
@@ -187,6 +188,18 @@ class Recorder: NSObject, ObservableObject {
         let callbackForThisStart = onAudioChunk
         recorder = coreAudioRecorder
 
+        // Reserve playback ownership at the synchronous start-intent boundary,
+        // before waiting for ChatGPT mute or AUHAL. A rapid recording B must be
+        // able to cancel/transfer A's earned resume before media starts playing
+        // into B's microphone. The bounded pause task runs concurrently and the
+        // catch path below settles it through the same stop/finish lease path.
+        let mediaPauseLease = playbackController.beginRecordingPause()
+        recordingMediaPauseLease = mediaPauseLease
+        if mediaPauseLease.requestsPause {
+            pauseMedia(for: mediaPauseLease)
+        }
+        let startupMediaPauseTask = mediaPauseTask
+
         do {
             // ChatGPT Voice's built-in mute command is posted directly to its verified PID before
             // AUHAL opens. The best-effort coordinator never activates ChatGPT or touches the
@@ -195,6 +208,13 @@ class Recorder: NSObject, ObservableObject {
             // while listener suppression is still deciding; no mute work runs after the sound.
             let muteLease = await ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()
             chatGPTVoiceMuteLease = muteLease
+
+            // The media task began concurrently with the listener preflight, but
+            // it must settle before AUHAL opens. In the common external-output
+            // case it is an immediate no-op. On built-in speakers this prevents
+            // Spotify/Music bleed at the start of the WAV; for rapid recordings
+            // it also joins any predecessor Play and re-pauses before capture.
+            await startupMediaPauseTask?.value
             SoundManager.shared.playStartSound()
 
             // Offload hardware start to avoid shortcut lag.
@@ -214,8 +234,7 @@ class Recorder: NSObject, ObservableObject {
             }
 
             startAudioMeterTimer()
-            pauseMedia()
-            // Complementary to pauseMedia(): broadcast "recording started" so the external YouTube
+            // Complementary to the recording media-pause lease: broadcast "recording started" so the external YouTube
             // helper app can pause a playing YouTube tab in Chrome (which MediaRemote can't reach).
             // Posted in the success branch only, so a failed start (which falls into catch →
             // stopRecording) won't emit a started without a matching real recording.
@@ -246,8 +265,9 @@ class Recorder: NSObject, ObservableObject {
         }
         audioMuteTask?.cancel()
         audioMuteTask = nil
-        mediaPauseTask?.cancel()
+        let pendingMediaPause = mediaPauseTask
         mediaPauseTask = nil
+        pendingMediaPause?.cancel()
         stopAudioMeter()
 
         do {
@@ -263,14 +283,25 @@ class Recorder: NSObject, ObservableObject {
                 }
             }
         } catch {
+            // The microphone pause failed, so capture is still live. Settle the
+            // canceled best-effort command before reserving a replacement; this
+            // keeps exact media ownership ordered without ever putting it ahead
+            // of the attempted hardware boundary.
+            await pendingMediaPause?.value
             // Capture is still live when the hardware pause fails, so restore the
             // meter and leave media suppression paired with the active recording.
             startAudioMeterTimer()
             muteSystemAudio()
-            pauseMedia()
+            if let recordingMediaPauseLease {
+                pauseMedia(for: recordingMediaPauseLease)
+            }
             throw error
         }
 
+        // Hardware capture is already paused. Now join any media command that
+        // crossed its irreversible boundary so it cannot mutate playback later.
+        // Best-effort media must never delay closing the microphone.
+        await pendingMediaPause?.value
         resetAudioMeter()
         if let muteLease = chatGPTVoiceMuteLease {
             chatGPTVoiceMuteLease = nil
@@ -326,13 +357,16 @@ class Recorder: NSObject, ObservableObject {
     ) async {
         audioMuteTask?.cancel()
         audioMuteTask = nil
-        mediaPauseTask?.cancel()
+        let pendingMediaPause = mediaPauseTask
         mediaPauseTask = nil
+        pendingMediaPause?.cancel()
         stopAudioMeter()
         // Capture this generation before awaiting the serial hardware queue. A newer recording may
         // start while this stop is suspended; its lease must not be cleared or restored by us.
         let muteLease = chatGPTVoiceMuteLease
         chatGPTVoiceMuteLease = nil
+        let mediaPauseLease = recordingMediaPauseLease
+        recordingMediaPauseLease = nil
 
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
@@ -359,32 +393,34 @@ class Recorder: NSObject, ObservableObject {
             recorder?.onAudioChunk = onAudioChunk
         }
 
+        // AUHAL is closed before this await. The controller checks cancellation
+        // before an untouched media command, but completes bounded verification
+        // after an irreversible command has begun. Joining here prevents a late
+        // unowned pause without extending capture or letting a rapid successor
+        // enqueue its start ahead of this recording's stop.
+        await pendingMediaPause?.value
+
         resetAudioMeter()
         if let muteLease {
             await ChatGPTVoiceCaptureMuteCoordinator.shared.releaseCapture(muteLease)
         }
 
+        // Playback owns its own recording-scoped lease and delayed resume. Never
+        // hide that work inside audioRestorationTask: a rapid recording must cancel
+        // only a pending system-output unmute, while a built-in-speaker successor
+        // transfers the paused source and an external-output successor lets it play.
+        playbackController.finishRecordingPause(
+            mediaPauseLease,
+            playbackDisposition: playbackDisposition
+        )
+
         audioRestorationTask?.cancel()
-        if playbackDisposition == .preserveCurrentPlayback {
-            // Clear this recording's playback ownership synchronously. A rapid new
-            // recording cancels the delayed restoration task below; ownership must
-            // already be gone so that cancellation cannot leave a stale source for
-            // some later ordinary stop to resume.
-            playbackController.abandonPausedMediaOwnership()
-        }
-        audioRestorationTask = Task { [playbackDisposition] in
+        audioRestorationTask = Task {
             guard !Task.isCancelled else { return }
             await mediaController.unmuteSystemAudio()
-            guard !Task.isCancelled else { return }
-            switch playbackDisposition {
-            case .restoreOwnedPlayback:
-                await playbackController.resumeMedia()
-            case .preserveCurrentPlayback:
-                break
-            }
         }
 
-        // Complementary to resumeMedia(): broadcast "recording stopped" so the external YouTube
+        // Complementary to finishing the recording media-pause lease: broadcast "recording stopped" so the external YouTube
         // helper app can resume the tab it paused. Posted synchronously here (not inside the
         // delayed audioRestorationTask) so the resume isn't subject to the audio-resumption delay.
         // The helper only resumes a tab it actually paused, so a spurious stop (e.g. reset on
@@ -408,11 +444,14 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
-    private func pauseMedia() {
+    private func pauseMedia(for lease: RecordingMediaPauseLease) {
         mediaPauseTask?.cancel()
         mediaPauseTask = Task { [weak self] in
             guard let self else { return }
-            await self.playbackController.pauseMedia()
+            // Do not return merely because this task was canceled: the controller
+            // must first join any predecessor resume and activate this lease. It
+            // checks cancellation immediately before issuing a new pause command.
+            await self.playbackController.pauseMedia(for: lease)
         }
     }
 

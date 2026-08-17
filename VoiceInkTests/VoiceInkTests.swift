@@ -8,6 +8,7 @@
 import Testing
 import AppKit
 import Carbon.HIToolbox
+import CoreAudio
 import CoreGraphics
 import Foundation
 import ApplicationServices
@@ -351,7 +352,7 @@ struct VoiceInkTests {
         let update = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
             language: "en",
             prompt: "Technical dictation about macOS applications.",
-            customVocabulary: ["VoiceInk++", "Codex", "codex", "bad<term>", "line\nbreak"]
+            customVocabulary: ["VoiceInk", "VoiceInk++", "Codex", "codex", "bad<term>", "line\nbreak"]
         )
         let session = try #require(update["session"] as? [String: Any])
         #expect(session["type"] as? String == "transcription")
@@ -367,16 +368,16 @@ struct VoiceInkTests {
         #expect(transcription["delay"] as? String == "xhigh")
         #expect(transcription["prompt"] as? String == "Technical dictation about macOS applications.")
         #expect(transcription["languages"] as? [String] == ["en"])
-        #expect(transcription["keywords"] as? [String] == ["VoiceInk++", "Codex"])
+        #expect(transcription["keywords"] as? [String] == ["VoiceInk", "VoiceInk++", "Codex"])
 
         let fields = OpenAITranscriptionConfiguration.completedAudioFields(
             language: "en",
             prompt: "Technical dictation about macOS applications.",
-            customVocabulary: ["VoiceInk++", "Codex"]
+            customVocabulary: ["VoiceInk", "VoiceInk++", "Codex"]
         )
         #expect(fields.contains { $0.name == "model" && $0.value == "gpt-transcribe" })
         #expect(fields.contains { $0.name == "languages[]" && $0.value == "en" })
-        #expect(fields.filter { $0.name == "keywords[]" }.map(\.value) == ["VoiceInk++", "Codex"])
+        #expect(fields.filter { $0.name == "keywords[]" }.map(\.value) == ["VoiceInk", "VoiceInk++", "Codex"])
         #expect(!fields.contains { $0.name == "language" })
     }
 
@@ -1174,12 +1175,27 @@ struct VoiceInkTests {
             contentsOf: repositoryRoot.appendingPathComponent("VoiceInk/Recorder.swift"),
             encoding: .utf8
         )
-        #expect(recorderSource.contains(
-            "playbackController.abandonPausedMediaOwnership()"
+        let stopStart = try #require(recorderSource.range(
+            of: "    func stopRecording(\n"
         ))
-        #expect(recorderSource.contains(
-            "RecordingActivityNotifier.postRecordingStoppedPreservingPlayback()"
+        let helperStart = try #require(recorderSource.range(
+            of: "    private func muteSystemAudio()",
+            range: stopStart.upperBound..<recorderSource.endIndex
         ))
+        let stopBody = recorderSource[stopStart.lowerBound..<helperStart.lowerBound]
+        let join = try #require(stopBody.range(
+            of: "await pendingMediaPause?.value"
+        ))
+        let finish = try #require(stopBody.range(
+            of: "playbackController.finishRecordingPause(",
+            range: join.upperBound..<stopBody.endIndex
+        ))
+        let preservingNotifier = try #require(stopBody.range(
+            of: "RecordingActivityNotifier.postRecordingStoppedPreservingPlayback()",
+            range: finish.upperBound..<stopBody.endIndex
+        ))
+        #expect(join.lowerBound < finish.lowerBound)
+        #expect(finish.lowerBound < preservingNotifier.lowerBound)
     }
 
     @Test func primaryPauseDoublePressWindowCapsSlowSystemPreference() {
@@ -1416,16 +1432,419 @@ struct VoiceInkTests {
         #expect(resumeBody.contains("muteSystemAudio()"))
         #expect(!pauseBody.contains("playbackController."))
         #expect(!resumeBody.contains("playbackController."))
-        #expect(!pauseSuccessBody.contains("pauseMedia()"))
-        #expect(!resumeBody.contains("pauseMedia()"))
+        #expect(!pauseSuccessBody.contains("pauseMedia(for:"))
+        #expect(!resumeBody.contains("pauseMedia(for:"))
+        #expect(pauseBody.contains("pendingMediaPause?.cancel()"))
+        #expect(pauseBody.contains("await pendingMediaPause?.value"))
         #expect(!pauseBody.contains("RecordingActivityNotifier."))
         #expect(!resumeBody.contains("RecordingActivityNotifier."))
 
         // Normal recording start/final stop remain the sole paired boundaries.
-        #expect(startBody.contains("pauseMedia()"))
+        #expect(startBody.contains("beginRecordingPause()"))
+        #expect(startBody.contains("if mediaPauseLease.requestsPause"))
+        #expect(startBody.contains("pauseMedia(for: mediaPauseLease)"))
         #expect(startBody.contains("RecordingActivityNotifier.postRecordingStarted()"))
-        #expect(stopBody.contains("playbackController.resumeMedia()"))
+        let mediaReservation = try #require(startBody.range(
+            of: "let mediaPauseLease = playbackController.beginRecordingPause()"
+        ))
+        let chatGPTPreflight = try #require(startBody.range(
+            of: "ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()"
+        ))
+        let startupMediaJoin = try #require(startBody.range(
+            of: "await startupMediaPauseTask?.value"
+        ))
+        let hardwareStart = try #require(startBody.range(
+            of: "coreAudioRecorder.startRecording("
+        ))
+        #expect(mediaReservation.lowerBound < chatGPTPreflight.lowerBound)
+        #expect(mediaReservation.lowerBound < hardwareStart.lowerBound)
+        #expect(startupMediaJoin.lowerBound < hardwareStart.lowerBound)
+        #expect(stopBody.contains("playbackController.finishRecordingPause("))
         #expect(stopBody.contains("RecordingActivityNotifier.postRecordingStopped()"))
+    }
+
+    @Test func builtInSpeakerPausePolicyUsesStableCoreAudioIdentity() {
+        let builtIn = DefaultOutputDeviceSnapshot(
+            deviceID: 116,
+            uid: "BuiltInSpeakerDevice",
+            transportType: kAudioDeviceTransportTypeBuiltIn
+        )
+        let spoofedUSB = DefaultOutputDeviceSnapshot(
+            deviceID: 200,
+            uid: "BuiltInSpeakerDevice",
+            transportType: kAudioDeviceTransportTypeUSB
+        )
+        let otherBuiltIn = DefaultOutputDeviceSnapshot(
+            deviceID: 201,
+            uid: "BuiltInMicrophoneDevice",
+            transportType: kAudioDeviceTransportTypeBuiltIn
+        )
+
+        #expect(RecordingMediaPausePolicy.scope(
+            alwaysPauseEnabled: false,
+            pauseOnBuiltInSpeakersEnabled: true,
+            outputSnapshot: builtIn
+        ) == .scriptableAppsOnly)
+        #expect(RecordingMediaPausePolicy.scope(
+            alwaysPauseEnabled: false,
+            pauseOnBuiltInSpeakersEnabled: true,
+            outputSnapshot: spoofedUSB
+        ) == .none)
+        #expect(RecordingMediaPausePolicy.scope(
+            alwaysPauseEnabled: false,
+            pauseOnBuiltInSpeakersEnabled: true,
+            outputSnapshot: otherBuiltIn
+        ) == .none)
+        #expect(RecordingMediaPausePolicy.scope(
+            alwaysPauseEnabled: true,
+            pauseOnBuiltInSpeakersEnabled: false,
+            outputSnapshot: spoofedUSB
+        ) == .allPublishedMedia)
+    }
+
+    @Test func scriptableMediaIdentityAcceptsRealSpotifyURIsWithoutScriptInjection() {
+        #expect(ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+            for: .spotify
+        ))
+        #expect(ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            "spotify:episode:512ojhOuo1ktJprKbVcKyQ",
+            for: .spotify
+        ))
+        #expect(!ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            "spotify:track:\" & play & \"",
+            for: .spotify
+        ))
+        #expect(!ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            "spotify:track:line\nbreak",
+            for: .spotify
+        ))
+        #expect(ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            "A1B2C3D4E5F60718",
+            for: .appleMusic
+        ))
+        #expect(!ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+            for: .appleMusic
+        ))
+    }
+
+    @Test func unrelatedNowPlayingPublisherCannotHideSpotifyOrMusicProbe() {
+        #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            nowPlayingBundle: "com.google.Chrome"
+        ) == [.spotify, .appleMusic])
+        #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            nowPlayingBundle: "com.apple.Music"
+        ) == [.appleMusic, .spotify])
+        #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            nowPlayingBundle: "com.spotify.client"
+        ) == [.spotify, .appleMusic])
+    }
+
+    @Test func builtInSpeakerMediaUsesBoundedVerifiedScriptCommands() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/AppleScriptMediaControl.swift"
+            ),
+            encoding: .utf8
+        )
+        let playbackSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/PlaybackController.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(scriptSource.contains("BoundedAppleScriptRunner.run("))
+        #expect(scriptSource.contains("timeout: commandTimeout"))
+        #expect(scriptSource.contains("timeout: observationTimeout"))
+        #expect(scriptSource.contains("currentTrackIdentifierExpression"))
+        #expect(scriptSource.contains("processIdentifier: pid_t"))
+        #expect(scriptSource.contains("if trackIdentifier is not"))
+        #expect(scriptSource.contains("return stateText & tab & trackIdentifier"))
+        #expect(scriptSource.contains("ScriptableMediaCommandResolution"))
+        #expect(!scriptSource.contains("NSAppleScript("))
+        #expect(playbackSource.contains("case .scriptableAppsOnly"))
+        #expect(playbackSource.contains("guard allowsGenericMediaRemote,"))
+        #expect(playbackSource.contains("_ = ownedPausedMedia.activateRecording(lease)"))
+        #expect(playbackSource.contains("reconcileIndeterminateScriptableSourceBeforeCapture()"))
+        #expect(!playbackSource.contains("NX_KEYTYPE_PLAY"))
+    }
+
+    @Test func lostScriptableMediaReceiptsNeverBecomeFalsePausedOwnership() {
+        let source = ScriptableMediaSource(
+            app: .spotify,
+            processIdentifier: 101,
+            trackIdentifier: "4uLU6hMCjMI75M1A2tKUQC"
+        )
+        let relaunchedSource = ScriptableMediaSource(
+            app: .spotify,
+            processIdentifier: 202,
+            trackIdentifier: source.trackIdentifier
+        )
+
+        #expect(ScriptableMediaCommandResolution.pauseResult(
+            initialSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .paused(source)
+        ) == .paused(source))
+        #expect(ScriptableMediaCommandResolution.pauseResult(
+            initialSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .playing(source)
+        ) == .notPlaying)
+        #expect(ScriptableMediaCommandResolution.pauseResult(
+            initialSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .unavailable
+        ) == .indeterminate(source))
+
+        #expect(ScriptableMediaCommandResolution.playResult(
+            expectedSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .playing(source)
+        ) == .played)
+        #expect(ScriptableMediaCommandResolution.playResult(
+            expectedSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .paused(source)
+        ) == .stillPaused)
+        #expect(ScriptableMediaCommandResolution.playResult(
+            expectedSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .playing(relaunchedSource)
+        ) == .noLongerPaused)
+        #expect(ScriptableMediaCommandResolution.playResult(
+            expectedSource: source,
+            commandObservation: .unavailable,
+            recoveryObservation: .unavailable
+        ) == .indeterminate)
+    }
+
+    @Test func canceledReservedPauseLeaseCannotCreateAResume() {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let lease = RecordingMediaPauseLease(
+            id: UUID(),
+            scope: .scriptableAppsOnly
+        )
+        let activation = ownership.activateRecording(lease)
+        #expect(activation.needsPauseAttempt)
+        #expect(ownership.finishRecording(
+            lease,
+            preserveCurrentPlayback: true
+        ) == .none)
+        #expect(ownership.pausedSource == nil)
+        #expect(ownership.activePauseLeaseCount == 0)
+    }
+
+    @Test func successorPausesAgainWhenPredecessorResumeAlreadyCompleted() throws {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+        let finish = ownership.finishRecording(
+            first.lease,
+            preserveCurrentPlayback: false
+        )
+        guard case .resume(let request) = finish else {
+            Issue.record("Expected the predecessor to earn a resume")
+            return
+        }
+        ownership.completeResume(request)
+
+        let successor = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(successor.needsPauseAttempt)
+        #expect(ownership.pausedSource == nil)
+    }
+
+    @Test func lostPlayReceiptForcesActiveSuccessorToMakeFreshPauseDecision() {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(ownership.recordPausedSource("spotify-track", for: first.lease))
+        let finish = ownership.finishRecording(
+            first.lease,
+            preserveCurrentPlayback: false
+        )
+        guard case .resume = finish else {
+            Issue.record("Expected the first recording to earn a resume")
+            return
+        }
+
+        let successor = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(!successor.needsPauseAttempt)
+        #expect(ownership.clearPausedSource(ifEqual: "spotify-track"))
+        let reactivation = ownership.activateRecording(successor.lease)
+        #expect(reactivation.needsPauseAttempt)
+        #expect(ownership.canAttemptPause(for: successor.lease))
+    }
+
+    @Test func rapidBuiltInRecordingTransfersOwnedPauseWithoutIntermediateResume() throws {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let first = ownership.beginRecording(
+            scope: .scriptableAppsOnly,
+            leaseID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        )
+        #expect(first.needsPauseAttempt)
+        #expect(first.cancelsPendingResume)
+        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+
+        let firstFinish = ownership.finishRecording(
+            first.lease,
+            preserveCurrentPlayback: false
+        )
+        guard case .resume(let firstResume) = firstFinish else {
+            Issue.record("Expected the first recording to earn a resume")
+            return
+        }
+        #expect(ownership.shouldPerformResume(firstResume))
+
+        let second = ownership.beginRecording(
+            scope: .scriptableAppsOnly,
+            leaseID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        )
+        #expect(second.cancelsPendingResume)
+        #expect(!second.needsPauseAttempt)
+        #expect(!ownership.shouldPerformResume(firstResume))
+        #expect(!ownership.recordPausedSource("spotify", for: second.lease))
+
+        let secondFinish = ownership.finishRecording(
+            second.lease,
+            preserveCurrentPlayback: false
+        )
+        guard case .resume(let finalResume) = secondFinish else {
+            Issue.record("Expected the successor to inherit one final resume")
+            return
+        }
+        #expect(ownership.shouldPerformResume(finalResume))
+        ownership.completeResume(finalResume)
+        #expect(ownership.pausedSource == nil)
+    }
+
+    @Test func externalOutputSuccessorDoesNotCancelPriorOwnedResume() throws {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+        let finish = ownership.finishRecording(
+            first.lease,
+            preserveCurrentPlayback: false
+        )
+        guard case .resume(let request) = finish else {
+            Issue.record("Expected an owned resume")
+            return
+        }
+
+        let externalSuccessor = ownership.beginRecording(scope: .none)
+        #expect(!externalSuccessor.cancelsPendingResume)
+        #expect(!externalSuccessor.needsPauseAttempt)
+        #expect(ownership.shouldPerformResume(request))
+        ownership.completeResume(request)
+        #expect(ownership.pausedSource == nil)
+    }
+
+    @Test func overlappingPauseLeasesRestoreOnlyAfterTheLastRecordingStops() throws {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+        let second = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(!second.needsPauseAttempt)
+        #expect(ownership.activePauseLeaseCount == 2)
+
+        #expect(ownership.finishRecording(
+            first.lease,
+            preserveCurrentPlayback: false
+        ) == .keepPaused)
+        #expect(ownership.activePauseLeaseCount == 1)
+        #expect(ownership.pausedSource == "spotify")
+
+        let finish = ownership.finishRecording(
+            second.lease,
+            preserveCurrentPlayback: false
+        )
+        guard case .resume(let request) = finish else {
+            Issue.record("Expected one resume after the final lease")
+            return
+        }
+        #expect(ownership.shouldPerformResume(request))
+    }
+
+    @Test func tripleClickAbandonsOnlyItsLeaseWithoutAResumeRequest() {
+        var ownership = RecordingMediaPauseOwnership<String>()
+        let recording = ownership.beginRecording(scope: .scriptableAppsOnly)
+        #expect(ownership.recordPausedSource("spotify", for: recording.lease))
+
+        #expect(ownership.finishRecording(
+            recording.lease,
+            preserveCurrentPlayback: true
+        ) == .abandon)
+        #expect(ownership.pausedSource == nil)
+        #expect(ownership.activePauseLeaseCount == 0)
+    }
+
+    @Test func recorderSeparatesPlaybackRestorationFromSystemUnmuteTask() throws {
+        let source = try repositorySource("VoiceInk/Recorder.swift")
+        let finishCall = try #require(source.range(
+            of: "playbackController.finishRecordingPause("
+        ))
+        let restorationTask = try #require(source.range(
+            of: "audioRestorationTask = Task {",
+            range: finishCall.upperBound..<source.endIndex
+        ))
+        let notifier = try #require(source.range(
+            of: "RecordingActivityNotifier.postRecordingStopped()",
+            range: restorationTask.upperBound..<source.endIndex
+        ))
+        let taskBody = source[restorationTask.lowerBound..<notifier.lowerBound]
+
+        #expect(finishCall.lowerBound < restorationTask.lowerBound)
+        #expect(taskBody.contains("mediaController.unmuteSystemAudio()"))
+        #expect(!taskBody.contains("playbackController."))
+        #expect(!taskBody.contains("resumeMedia"))
+    }
+
+    @Test func recorderClosesOrPausesHardwareBeforeJoiningBestEffortMedia() throws {
+        let source = try repositorySource("VoiceInk/Recorder.swift")
+
+        let pauseStart = try #require(source.range(
+            of: "    func pauseRecording() async throws {"
+        ))
+        let resumeStart = try #require(source.range(
+            of: "    func resumeRecording() async throws {",
+            range: pauseStart.upperBound..<source.endIndex
+        ))
+        let pauseBody = source[pauseStart.lowerBound..<resumeStart.lowerBound]
+        let hardwarePause = try #require(pauseBody.range(
+            of: "try currentRecorder.pauseRecording()"
+        ))
+        let joinedPause = try #require(pauseBody.range(
+            of: "await pendingMediaPause?.value",
+            range: hardwarePause.upperBound..<pauseBody.endIndex
+        ))
+        #expect(hardwarePause.lowerBound < joinedPause.lowerBound)
+        #expect(!pauseBody[..<hardwarePause.lowerBound].contains(
+            "await pendingMediaPause?.value"
+        ))
+
+        let stopStart = try #require(source.range(
+            of: "    func stopRecording(\n"
+        ))
+        let helperStart = try #require(source.range(
+            of: "    private func muteSystemAudio()",
+            range: stopStart.upperBound..<source.endIndex
+        ))
+        let stopBody = source[stopStart.lowerBound..<helperStart.lowerBound]
+        let hardwareStop = try #require(stopBody.range(
+            of: "currentRecorder?.stopRecording()"
+        ))
+        let joinedStop = try #require(stopBody.range(
+            of: "await pendingMediaPause?.value",
+            range: hardwareStop.upperBound..<stopBody.endIndex
+        ))
+        #expect(hardwareStop.lowerBound < joinedStop.lowerBound)
+        #expect(!stopBody[..<hardwareStop.lowerBound].contains(
+            "await pendingMediaPause?.value"
+        ))
     }
 
     @Test func nextTrackCancelsDeferredPrimaryStopBeforeItsOwnRoute() throws {

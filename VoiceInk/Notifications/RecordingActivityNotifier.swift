@@ -34,11 +34,12 @@ import Foundation
 /// stops working (DistributedNotificationCenter never errors on an unobserved name).
 ///
 /// RELATIONSHIP TO PlaybackController
-/// This is COMPLEMENTARY, not a replacement. PlaybackController still handles Spotify/Apple Music/
-/// MediaRemote. This notifier only adds the YouTube-via-extension path. We post from the SAME
-/// final recorder lifecycle points as PlaybackController.pauseMedia()/resumeMedia() so the two stay
-/// in lockstep and we never double-handle the same source (YouTube → extension; everything else →
-/// PlaybackController). Capture pause/resume inside one recording deliberately posts neither
+/// This is COMPLEMENTARY, not a replacement. PlaybackController handles verified Spotify/Music
+/// state and the separately opted-in generic MediaRemote route. This notifier only adds the
+/// YouTube-via-extension path. We post from the SAME final recorder lifecycle points as
+/// PlaybackController's recording-scoped begin/finish lease so the two stay in lockstep and never
+/// double-handle the same source (YouTube → extension; other supported media → PlaybackController).
+/// Capture pause/resume inside one recording deliberately posts neither
 /// notification: Ethan controls playback himself during that interval, and the helper must not
 /// mistake a microphone pause for a completed recording.
 ///

@@ -624,6 +624,51 @@ struct RecentTranscriptContextTests {
         #expect(OpenAITranscriptionConfiguration.keywordLimit == 100)
     }
 
+    @Test func recentHistoryNeverPromotesTermsIntoVocabulary() throws {
+        let historyOnlyMarker = "HistoryOnlyProjectMarzipan"
+        let composed = try #require(
+            RecentTranscriptContextPolicy.composedPrompt(
+                staticPrompt: "static prompt",
+                entries: ["A completed dictation mentions \(historyOnlyMarker)."]
+            )
+        )
+        let context = TranscriptionRequestContext(
+            language: "en",
+            prompt: "static prompt",
+            promptWithRecentContext: composed,
+            vocabulary: ["VoiceInk"]
+        )
+
+        let update = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
+            language: context.language,
+            prompt: context.openAITranscriptionPrompt,
+            customVocabulary: context.customVocabulary(orLiveFetch: { [] })
+        )
+        let session = try #require(update["session"] as? [String: Any])
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let transcription = try #require(input["transcription"] as? [String: Any])
+        let realtimeKeywords = try #require(transcription["keywords"] as? [String])
+
+        let fields = OpenAITranscriptionConfiguration.completedAudioFields(
+            language: context.language,
+            prompt: context.openAITranscriptionPrompt,
+            customVocabulary: context.customVocabulary(orLiveFetch: { [] })
+        )
+        let fallbackPrompt = try #require(
+            fields.first { $0.name == "prompt" }?.value
+        )
+        let fallbackKeywords = fields
+            .filter { $0.name == "keywords[]" }
+            .map(\.value)
+
+        #expect(composed.contains(historyOnlyMarker))
+        #expect(fallbackPrompt.contains(historyOnlyMarker))
+        #expect(realtimeKeywords == ["VoiceInk"])
+        #expect(fallbackKeywords == realtimeKeywords)
+        #expect(!realtimeKeywords.contains(historyOnlyMarker))
+    }
+
     // MARK: - Structural boundaries
 
     @Test func onlyOpenAIReceivesRecentContextAndBothPathsUseTheFrozenSnapshot() throws {
@@ -848,6 +893,98 @@ struct RecentTranscriptContextTests {
         )
     }
 
+    @Test @MainActor func supportedDictionaryImportPersistsVoiceInkAndFeedsIdenticalGPTRequests() throws {
+        // Exercise the same JSON shape and importer used by Settings. Do not inject the
+        // keyword directly into TranscriptionRequestContext: that would miss regressions
+        // in decoding, additive/case-insensitive import, SwiftData, or snapshot loading.
+        let importJSON = """
+        {
+          "version": "2.0",
+          "vocabularyWords": [
+            { "word": " VoiceInk " },
+            { "word": "voiceink" }
+          ]
+        }
+        """
+        let backup = try JSONDecoder().decode(
+            BackupFile.self,
+            from: Data(importJSON.utf8)
+        )
+        let context = try makeDictionaryImportStoreContext(
+            named: "SupportedDictionaryToGPTRequestTest"
+        )
+        context.insert(VocabularyWord(word: "sus"))
+        try context.save()
+
+        try BackupImporter.importDictionary(
+            from: backup,
+            modelContext: context
+        )
+
+        let persisted = try context.fetch(
+            FetchDescriptor<VocabularyWord>(
+                sortBy: [SortDescriptor(\VocabularyWord.word)]
+            )
+        ).map(\.word)
+        #expect(persisted.count == 2)
+        #expect(persisted.contains("VoiceInk"))
+        #expect(persisted.contains("sus"))
+        #expect(!persisted.contains("voiceink"))
+        #expect(!persisted.contains("Voice Ink"))
+        #expect(!persisted.contains("Voice Inc"))
+
+        let modeID = UUID()
+        let historyOnlyMarker = "HistoryOnlyProjectMarzipan"
+        insertCompletedTranscription(
+            "A completed dictation mentions \(historyOnlyMarker).",
+            into: context,
+            at: Date().addingTimeInterval(-30),
+            modeID: modeID
+        )
+        try context.save()
+
+        let inputSnapshot = TranscriptionRequestContextSnapshot.capture(
+            staticPrompt: "static prompt",
+            modelContext: context,
+            includeRecentContext: true,
+            now: Date()
+        )
+        let requestContext = TranscriptionRequestContextSnapshot.make(
+            language: "en",
+            modeID: modeID,
+            snapshot: inputSnapshot
+        )
+        let frozenKeywords = try #require(requestContext.vocabulary)
+
+        let update = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
+            language: requestContext.language,
+            prompt: requestContext.openAITranscriptionPrompt,
+            customVocabulary: requestContext.customVocabulary(orLiveFetch: { [] })
+        )
+        let session = try #require(update["session"] as? [String: Any])
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let transcription = try #require(input["transcription"] as? [String: Any])
+        let realtimeKeywords = try #require(
+            transcription["keywords"] as? [String]
+        )
+
+        let fallbackFields = OpenAITranscriptionConfiguration.completedAudioFields(
+            language: requestContext.language,
+            prompt: requestContext.openAITranscriptionPrompt,
+            customVocabulary: requestContext.customVocabulary(orLiveFetch: { [] })
+        )
+        let fallbackKeywords = fallbackFields
+            .filter { $0.name == "keywords[]" }
+            .map(\.value)
+
+        #expect(frozenKeywords == persisted)
+        #expect(realtimeKeywords == frozenKeywords)
+        #expect(fallbackKeywords == frozenKeywords)
+        #expect(requestContext.openAITranscriptionPrompt?.contains(historyOnlyMarker) == true)
+        #expect(!frozenKeywords.contains(historyOnlyMarker))
+    }
+
     // MARK: - Helpers
 
     @MainActor
@@ -855,6 +992,23 @@ struct RecentTranscriptContextTests {
         let schema = Schema([Transcription.self, VocabularyWord.self])
         let configuration = ModelConfiguration(name, schema: schema, isStoredInMemoryOnly: true)
         return ModelContext(try ModelContainer(for: schema, configurations: configuration))
+    }
+
+    @MainActor
+    private func makeDictionaryImportStoreContext(named name: String) throws -> ModelContext {
+        let schema = Schema([
+            Transcription.self,
+            VocabularyWord.self,
+            WordReplacement.self
+        ])
+        let configuration = ModelConfiguration(
+            name,
+            schema: schema,
+            isStoredInMemoryOnly: true
+        )
+        return ModelContext(
+            try ModelContainer(for: schema, configurations: configuration)
+        )
     }
 
     @MainActor

@@ -2,119 +2,375 @@ import AppKit
 import Foundation
 import os
 
-// MARK: - ScriptableMediaApp
-//
-// The set of media apps that expose a reliable AppleScript dictionary for
-// querying playback state and issuing EXPLICIT pause/play. These are special-
-// cased because — unlike browser tabs or arbitrary now-playing apps — they give
-// us a synchronous, exact `player state` and deterministic control that does not
-// depend on the async MediaRemote listener catching up. This is our per-app
-// fallback/primary layer for these two apps.
-enum ScriptableMediaApp: String, CaseIterable {
-    case spotify = "Spotify"
-    case appleMusic = "Music"   // Apple Music's scripting target is "Music".
+// MARK: - Scriptable media identity
 
-    /// Map a now-playing bundle identifier (as reported by MediaRemote) to one
-    /// of our scriptable apps, or nil if it isn't one we script.
+enum ScriptableMediaApp: String, CaseIterable, Sendable {
+    case spotify = "Spotify"
+    case appleMusic = "Music"
+
     static func from(bundleId: String) -> ScriptableMediaApp? {
         switch bundleId {
-        case "com.spotify.client":        return .spotify
-        case "com.apple.Music":           return .appleMusic
-        default:                          return nil
+        case "com.spotify.client": return .spotify
+        case "com.apple.Music": return .appleMusic
+        default: return nil
         }
     }
 
-    /// The bundle identifier, used to check whether the app is still running.
     var bundleId: String {
         switch self {
-        case .spotify:    return "com.spotify.client"
+        case .spotify: return "com.spotify.client"
         case .appleMusic: return "com.apple.Music"
+        }
+    }
+
+    fileprivate var currentTrackIdentifierExpression: String {
+        switch self {
+        case .spotify: return "id of current track as text"
+        case .appleMusic: return "persistent ID of current track as text"
         }
     }
 }
 
-// MARK: - AppleScriptMediaControl
-//
-// Thin, synchronous AppleScript wrapper around Spotify / Apple Music playback.
-//
-// WHY APPLESCRIPT (not MediaRemote) FOR THESE APPS:
-//   Spotify and Apple Music publish a scripting dictionary with `player state`
-//   (returns `playing` / `paused` / `stopped`) and explicit `play` / `pause`
-//   verbs. This is the MOST reliable signal+control for them: it's synchronous
-//   (no listener lag), it's per-app (no ambiguity about which app we touched),
-//   and the verbs are EXPLICIT (pause means pause, play means play — never a
-//   toggle). MediaRemote remains the cross-app lever for everything else
-//   (browser tabs, podcast apps), but for these two AppleScript is strictly
-//   better and immune to the macOS-15.4+ MediaRemote entitlement gating.
-//
-// IMPORTANT — do NOT auto-launch apps:
-//   We only ever talk to an app that is ALREADY running. `isRunning` is checked
-//   before any `player state` / control call. Sending raw AppleScript to a non-
-//   running app would LAUNCH it (e.g. open Spotify), which is exactly the kind of
-//   surprising side effect we must avoid when the user just wants to dictate.
-//
-// PERMISSIONS:
-//   Driving another app via AppleScript requires the Automation (Apple Events)
-//   TCC permission for that target app. The first call triggers the standard
-//   macOS "VoiceInk wants to control Spotify" prompt; once granted it's silent.
-//   If permission is denied, the script errors and we treat it as "couldn't
-//   control" — we degrade gracefully (caller falls back to MediaRemote or does
-//   nothing); we never crash and never block recording on a media action.
+/// Exact in-memory identity for playback VoiceInk++ may later restore.
+///
+/// Bundle identity alone is insufficient: Spotify/Music can quit and relaunch, or
+/// the user can choose another paused track while dictation is active. PID plus the
+/// provider's stable track ID is revalidated before every Play. A strictly
+/// whitelisted ID may enter the fixed stdin-only AppleScript comparison, but never
+/// logs, persisted settings, argv, or environment values.
+struct ScriptableMediaSource: Equatable, Hashable, Sendable {
+    let app: ScriptableMediaApp
+    let processIdentifier: pid_t
+    let trackIdentifier: String
+}
+
+/// Allows the real stable identifiers returned by Spotify and Music while keeping
+/// the later AppleScript string literal non-injectable. Spotify returns URI-shaped
+/// values such as `spotify:track:<base62>` (and can return episode/local variants),
+/// whereas Music returns a hexadecimal persistent ID. Quotes, backslashes,
+/// whitespace, control characters, and arbitrary URL syntax all fail closed.
+enum ScriptableMediaIdentityPolicy {
+    static func isSafeTrackIdentifier(
+        _ value: String,
+        for app: ScriptableMediaApp
+    ) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 256 else { return false }
+
+        switch app {
+        case .spotify:
+            guard value.hasPrefix("spotify:") else { return false }
+            let allowed = CharacterSet.alphanumerics.union(
+                CharacterSet(charactersIn: ":%._-")
+            )
+            return value.unicodeScalars.allSatisfy(allowed.contains)
+        case .appleMusic:
+            guard value.utf8.count <= 64 else { return false }
+            return value.unicodeScalars.allSatisfy {
+                CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains($0)
+            }
+        }
+    }
+}
+
+enum ScriptableMediaPlaybackObservation: Equatable, Sendable {
+    case playing(ScriptableMediaSource)
+    case paused(ScriptableMediaSource)
+    case stopped
+    case notRunning
+    case unavailable
+}
+
+enum ScriptableMediaPauseResult: Equatable, Sendable {
+    case paused(ScriptableMediaSource)
+    case notPlaying
+    /// Pause crossed its irreversible boundary, but bounded state reads could not
+    /// prove the result. The caller may retain this only as a recovery candidate;
+    /// it must revalidate before treating the source as paused or opening AUHAL.
+    case indeterminate(ScriptableMediaSource)
+}
+
+enum ScriptableMediaPlayResult: Equatable, Sendable {
+    case played
+    case stillPaused
+    case noLongerPaused
+    /// Play may have succeeded even though its receipt was lost. A later recording
+    /// must re-read exact state instead of inheriting this as a confirmed pause.
+    case indeterminate
+}
+
+/// Pure receipt reducer used by the live AppleScript transport and focused race
+/// tests. It makes the lost-receipt rule explicit: only an exact PID/track state
+/// can become confirmed paused/played; unavailable recovery remains indeterminate.
+enum ScriptableMediaCommandResolution {
+    static func pauseResult(
+        initialSource: ScriptableMediaSource,
+        commandObservation: ScriptableMediaPlaybackObservation,
+        recoveryObservation: ScriptableMediaPlaybackObservation? = nil
+    ) -> ScriptableMediaPauseResult {
+        let effective = commandObservation == .unavailable
+            ? (recoveryObservation ?? .unavailable)
+            : commandObservation
+        switch effective {
+        case .paused(let source) where source == initialSource:
+            return .paused(initialSource)
+        case .unavailable:
+            return .indeterminate(initialSource)
+        case .playing, .paused, .stopped, .notRunning:
+            return .notPlaying
+        }
+    }
+
+    static func playResult(
+        expectedSource: ScriptableMediaSource,
+        commandObservation: ScriptableMediaPlaybackObservation,
+        recoveryObservation: ScriptableMediaPlaybackObservation? = nil
+    ) -> ScriptableMediaPlayResult {
+        let effective = commandObservation == .unavailable
+            ? (recoveryObservation ?? .unavailable)
+            : commandObservation
+        switch effective {
+        case .playing(let source) where source == expectedSource:
+            return .played
+        case .paused(let source) where source == expectedSource:
+            return .stillPaused
+        case .unavailable:
+            return .indeterminate
+        case .playing, .paused, .stopped, .notRunning:
+            return .noLongerPaused
+        }
+    }
+}
+
+// MARK: - Bounded Spotify / Music control
+
+/// Uses fixed AppleScript only for Spotify and Music because those apps expose
+/// explicit state, Pause, Play, and stable current-track identity. This is not a
+/// hardware Play/Pause toggle: every command is state-specific, bounded, and checked
+/// against the exact process plus track before VoiceInk++ claims ownership.
+///
+/// The helper is MainActor-isolated only for `NSWorkspace` process snapshots.
+/// `BoundedAppleScriptRunner` performs the blocking Apple Event work on its own queue,
+/// so recording UI and shortcut handling remain responsive.
+@MainActor
 enum AppleScriptMediaControl {
+    private static let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "AppleScriptMediaControl"
+    )
+    private static let commandTimeout: TimeInterval = 1.25
+    private static let observationTimeout: TimeInterval = 0.45
 
-    private static let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AppleScriptMediaControl")
-
-    /// True if the app is currently running. We never script a non-running app
-    /// (that would launch it).
     static func isRunning(_ app: ScriptableMediaApp) -> Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == app.bundleId }
+        runningProcessIdentifier(for: app) != nil
     }
 
-    /// Returns true iff the app is running AND its `player state` is `playing`.
-    /// Any scripting error (app not scriptable yet, Automation permission
-    /// denied, app mid-launch) is treated as "not playing" so we stay safe.
-    static func isPlaying(_ app: ScriptableMediaApp) -> Bool {
-        guard isRunning(app) else { return false }
-        // `player state` is an enum; comparing to the `playing` constant yields a
-        // boolean we read back as "true"/"false".
-        let script = "tell application \"\(app.rawValue)\" to return (player state is playing)"
-        guard let result = runAppleScript(script) else { return false }
-        return result.lowercased() == "true"
+    /// Reads one exact source, sends one explicit Pause, and reads the post-command
+    /// state in that same bounded helper. A separate short read is used only when
+    /// the command receipt is lost; the irreversible command is never retried.
+    static func pauseIfPlaying(
+        _ app: ScriptableMediaApp
+    ) async -> ScriptableMediaPauseResult {
+        guard case .playing(let initialSource) = await observation(for: app) else {
+            return .notPlaying
+        }
+
+        let observed = await issueFixedCommand(
+            .pause,
+            to: initialSource
+        )
+        let recovery = observed == .unavailable
+            ? await observation(for: app)
+            : nil
+        return ScriptableMediaCommandResolution.pauseResult(
+            initialSource: initialSource,
+            commandObservation: observed,
+            recoveryObservation: recovery
+        )
     }
 
-    /// Issue an EXPLICIT pause. No-op (logged) if the app isn't running.
-    static func pause(_ app: ScriptableMediaApp) {
-        guard isRunning(app) else { return }
-        _ = runAppleScript("tell application \"\(app.rawValue)\" to pause")
+    /// Plays only the exact PID/track previously paused by VoiceInk++. A missing
+    /// receipt is not converted into "still paused": callers retain it as an
+    /// indeterminate recovery state and revalidate before the next capture.
+    static func playIfPaused(
+        _ source: ScriptableMediaSource
+    ) async -> ScriptableMediaPlayResult {
+        switch await observation(for: source.app) {
+        case .paused(let current) where current == source:
+            break
+        case .unavailable:
+            return .indeterminate
+        case .playing, .paused, .stopped, .notRunning:
+            return .noLongerPaused
+        }
+
+        let observed = await issueFixedCommand(.play, to: source)
+        let recovery = observed == .unavailable
+            ? await observation(for: source.app)
+            : nil
+        return ScriptableMediaCommandResolution.playResult(
+            expectedSource: source,
+            commandObservation: observed,
+            recoveryObservation: recovery
+        )
     }
 
-    /// Issue an EXPLICIT play. No-op (logged) if the app isn't running.
-    static func play(_ app: ScriptableMediaApp) {
-        guard isRunning(app) else { return }
-        _ = runAppleScript("tell application \"\(app.rawValue)\" to play")
+    /// Read-only state used to reconcile a lost Play receipt before another AUHAL
+    /// capture opens. It never launches, activates, pauses, or plays an app.
+    static func observation(
+        for app: ScriptableMediaApp
+    ) async -> ScriptableMediaPlaybackObservation {
+        guard let processIdentifier = runningProcessIdentifier(for: app) else {
+            return .notRunning
+        }
+
+        let receipt = await runReceipt(
+            app: app,
+            timeout: observationTimeout,
+            source: """
+            if application "\(app.rawValue)" is not running then return "not-running"
+            tell application "\(app.rawValue)"
+                set stateText to (player state as text)
+                if stateText is "stopped" then return "stopped"
+                try
+                    set trackIdentifier to (\(app.currentTrackIdentifierExpression))
+                on error
+                    return "unavailable"
+                end try
+                return stateText & tab & trackIdentifier
+            end tell
+            """
+        )
+
+        return parsedObservation(
+            receipt,
+            app: app,
+            expectedProcessIdentifier: processIdentifier
+        )
     }
 
-    // MARK: - Private
+    private enum FixedCommand: String {
+        case pause
+        case play
 
-    /// Run a small AppleScript synchronously and return its trimmed string
-    /// result, or nil on error. Synchronous is fine here: these scripts are tiny
-    /// and the calls already happen off the main thread (pause/resume run inside
-    /// async Tasks). On any error we log + return nil so callers degrade rather
-    /// than throw.
-    private static func runAppleScript(_ source: String) -> String? {
-        var errorDict: NSDictionary?
-        guard let script = NSAppleScript(source: source) else {
-            logger.error("Failed to construct NSAppleScript")
+        var requiredState: String {
+            switch self {
+            case .pause: return "playing"
+            case .play: return "paused"
+            }
+        }
+    }
+
+    private static func issueFixedCommand(
+        _ command: FixedCommand,
+        to source: ScriptableMediaSource
+    ) async -> ScriptableMediaPlaybackObservation {
+        guard runningProcessIdentifier(for: source.app) == source.processIdentifier else {
+            return .notRunning
+        }
+        let receipt = await runReceipt(
+            app: source.app,
+            timeout: commandTimeout,
+            source: """
+            if application "\(source.app.rawValue)" is not running then return "not-running"
+            tell application "\(source.app.rawValue)"
+                set stateText to (player state as text)
+                if stateText is "stopped" then return "stopped"
+                try
+                    set trackIdentifier to (\(source.app.currentTrackIdentifierExpression))
+                on error
+                    return "unavailable"
+                end try
+                if trackIdentifier is not "\(source.trackIdentifier)" then return "source-changed"
+                if stateText is not "\(command.requiredState)" then return stateText & tab & trackIdentifier
+                \(command.rawValue)
+                set stateText to (player state as text)
+                if stateText is "stopped" then return "stopped"
+                try
+                    set trackIdentifier to (\(source.app.currentTrackIdentifierExpression))
+                on error
+                    return "unavailable"
+                end try
+                return stateText & tab & trackIdentifier
+            end tell
+            """
+        )
+        return parsedObservation(
+            receipt,
+            app: source.app,
+            expectedProcessIdentifier: source.processIdentifier
+        )
+    }
+
+    private static func parsedObservation(
+        _ receipt: String?,
+        app: ScriptableMediaApp,
+        expectedProcessIdentifier: pid_t
+    ) -> ScriptableMediaPlaybackObservation {
+        guard runningProcessIdentifier(for: app) == expectedProcessIdentifier else {
+            return .unavailable
+        }
+        guard let receipt else { return .unavailable }
+        if receipt == "not-running" { return .notRunning }
+        if receipt == "stopped" { return .stopped }
+        if receipt == "unavailable" || receipt == "source-changed" {
+            return .unavailable
+        }
+
+        let fields = receipt.split(
+            separator: "\t",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard fields.count == 2 else { return .unavailable }
+        let trackIdentifier = String(fields[1])
+        guard ScriptableMediaIdentityPolicy.isSafeTrackIdentifier(
+            trackIdentifier,
+            for: app
+        ) else { return .unavailable }
+
+        let source = ScriptableMediaSource(
+            app: app,
+            processIdentifier: expectedProcessIdentifier,
+            trackIdentifier: trackIdentifier
+        )
+        switch fields[0] {
+        case "playing": return .playing(source)
+        case "paused": return .paused(source)
+        default: return .unavailable
+        }
+    }
+
+    private static func runningProcessIdentifier(
+        for app: ScriptableMediaApp
+    ) -> pid_t? {
+        let matches = NSRunningApplication.runningApplications(
+            withBundleIdentifier: app.bundleId
+        ).filter { !$0.isTerminated }
+        guard matches.count == 1 else { return nil }
+        return matches[0].processIdentifier
+    }
+
+    private static func runReceipt(
+        app: ScriptableMediaApp,
+        timeout: TimeInterval,
+        source: String
+    ) async -> String? {
+        do {
+            let result = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: timeout
+            )
+            return result.stdout.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+        } catch {
+            // Never log stdout, track identity, or script source. The fixed app
+            // name and bounded error type are sufficient operational telemetry.
+            logger.error(
+                "Bounded \(app.rawValue, privacy: .public) media operation failed: \(error.localizedDescription, privacy: .public)"
+            )
             return nil
         }
-        let output = script.executeAndReturnError(&errorDict)
-        if let errorDict = errorDict {
-            // Common cause: Automation (Apple Events) permission not granted, or
-            // the app not yet scriptable. We swallow it — media control is best-
-            // effort and must never interrupt the dictation flow.
-            logger.error("AppleScript error: \(errorDict, privacy: .public)")
-            return nil
-        }
-        return output.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
 }

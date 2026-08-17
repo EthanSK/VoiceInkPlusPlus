@@ -176,6 +176,7 @@ class ImportExportService {
 
             isSystemMuteEnabled: mediaController.isSystemMuteEnabled,
             isPauseMediaEnabled: playbackController.isPauseMediaEnabled,
+            isPauseMediaOnBuiltInSpeakersEnabled: playbackController.isPauseMediaOnBuiltInSpeakersEnabled,
             audioResumptionDelay: mediaController.audioResumptionDelay,
             isTextFormattingEnabled: UserDefaults.standard.bool(forKey: keyIsTextFormattingEnabled),
             isExperimentalFeaturesEnabled: UserDefaults.standard.bool(forKey: "isExperimentalFeaturesEnabled"),

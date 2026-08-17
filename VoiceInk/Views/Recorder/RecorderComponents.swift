@@ -274,8 +274,8 @@ struct RecorderCloseButton: View {
 //   • stops/poisons any in-flight delivery so it is never pasted while retaining a
 //     completed result or realtime HUD draft in History,
 //   • stops audio capture via recorder.stopRecording(), which is the SAME stop path
-//     normal Stop uses and therefore resumes paused Spotify/Music (playbackController
-//     .resumeMedia()) + unmutes system audio,
+//     normal Stop uses and therefore finishes the recording-scoped Spotify/Music
+//     pause lease + unmutes system audio,
 //   • persists the partial transcript + recorded file, returns state to .idle,
 //   • then dismisses the recorder panel.
 // It is idempotent/safe if pressed when nothing is active (the engine's .idle/.busy
