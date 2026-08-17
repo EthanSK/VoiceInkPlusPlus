@@ -346,10 +346,13 @@ class TranscriptionPipeline {
             transcription.transcriptionModelName = model.displayName
             transcription.transcriptionDuration = transcriptionDuration
             transcription.modeName = modeMetadata.name
-            // Trigger-word selection may replace the recording-start Mode after the
-            // provider returns. Keep the stable History scope aligned with the Mode
-            // whose formatting/replacements/output actually produced this saved text;
-            // otherwise later recent-context requests can cross the wrong Mode boundary.
+            // History scope follows the Mode that actually finished this text: a trigger
+            // word (which also becomes the active Mode), Primary's delivery-time Mode, or
+            // a Next destination's frozen Mode. That same Mode produced the paragraph
+            // formatting/Word Replacements and is what History displays. Matching remains
+            // deliberately approximate: a later request freezes its Mode at recording
+            // start because trigger/destination state is not known until after speech is
+            // transcribed, and exact destination scoping is forbidden by Primary isolation.
             transcription.modeID = modeMetadata.id
             transcription.modeEmoji = modeMetadata.emoji
             finalText = cleanedText

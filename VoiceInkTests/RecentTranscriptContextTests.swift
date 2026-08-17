@@ -702,11 +702,75 @@ struct RecentTranscriptContextTests {
         #expect(source.contains("sentence-aligned excerpts"))
         #expect(source.contains("saved text after any paragraph formatting and Word Replacements"))
         #expect(source.contains("recent context never adds or changes Vocabulary"))
+        #expect(source.contains("A transcription's Mode is the one that finished it"))
+        #expect(source.contains("matches the Mode this recording starts in"))
         #expect(source.contains("Same Mode does not mean same app, chat, or document"))
         #expect(source.contains("RecentTranscriptContextPolicy.maximumEntries"))
         #expect(source.contains("RecentTranscriptContextPolicy.recencyWindowMinutes"))
         #expect(source.contains("Deleting a transcription in History removes it from future context"))
         #expect(source.contains(".disabled(!hasUsableOpenAIModel)"))
+    }
+
+    @Test func localizedRecentContextCopyKeepsBothNumericLimits() throws {
+        let catalogURL = repositoryRoot
+            .appendingPathComponent("VoiceInk/Localizable.xcstrings")
+        let data = try Data(contentsOf: catalogURL)
+        let catalog = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let strings = try #require(catalog["strings"] as? [String: Any])
+        let keys = strings.keys.filter {
+            $0.hasPrefix("Adds bounded excerpts from up to %d") ||
+                $0.hasPrefix("OpenAI receives sentence-aligned excerpts from up to %d")
+        }
+        #expect(keys.count == 2)
+
+        let formatPattern = try NSRegularExpression(pattern: #"%(?:[0-9]+\$)?d"#)
+        for key in keys {
+            let entry = try #require(strings[key] as? [String: Any])
+            let localizations = try #require(
+                entry["localizations"] as? [String: Any]
+            )
+            for language in ["de", "zh-Hans"] {
+                let localization = try #require(
+                    localizations[language] as? [String: Any]
+                )
+                let unit = try #require(
+                    localization["stringUnit"] as? [String: Any]
+                )
+                let value = try #require(unit["value"] as? String)
+                let range = NSRange(value.startIndex..<value.endIndex, in: value)
+                #expect(formatPattern.numberOfMatches(in: value, range: range) == 2)
+            }
+        }
+    }
+
+    @Test func finishedModeScopeMatchesTheNextRecordingThatStartsInIt() {
+        let now = Date()
+        let recordingStartMode = UUID()
+        let finishedMode = UUID()
+        let text = "Use the destination Mode spelling in the next recording."
+        let candidate = RecentTranscriptContextCandidate(
+            text: text,
+            timestamp: now,
+            modeID: finishedMode,
+            status: .completed
+        )
+
+        #expect(
+            RecentTranscriptContextPolicy.eligibleEntries(
+                from: [candidate],
+                currentModeID: finishedMode,
+                now: now
+            ) == [text]
+        )
+        #expect(
+            RecentTranscriptContextPolicy.eligibleEntries(
+                from: [candidate],
+                currentModeID: recordingStartMode,
+                now: now
+            ).isEmpty
+        )
     }
 
     @Test func infoTipIsAnAccessibleControl() throws {

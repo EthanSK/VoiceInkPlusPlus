@@ -154,7 +154,7 @@ private struct RecentDictationContextSection: View {
 
     private var informationMessage: String {
         String(
-            format: String(localized: "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context."),
+            format: String(localized: "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. A transcription's Mode is the one that finished it, so a trigger word or a Next-button destination can change which later recordings match it. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context."),
             RecentTranscriptContextPolicy.maximumEntries,
             RecentTranscriptContextPolicy.recencyWindowMinutes
         )
@@ -162,7 +162,7 @@ private struct RecentDictationContextSection: View {
 
     private var visibleSummary: String {
         String(
-            format: String(localized: "OpenAI receives sentence-aligned excerpts from up to %d completed History items in the same Mode from the last %d minutes. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary."),
+            format: String(localized: "OpenAI receives sentence-aligned excerpts from up to %d completed History items from the last %d minutes whose Mode matches the Mode this recording starts in. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary."),
             RecentTranscriptContextPolicy.maximumEntries,
             RecentTranscriptContextPolicy.recencyWindowMinutes
         )

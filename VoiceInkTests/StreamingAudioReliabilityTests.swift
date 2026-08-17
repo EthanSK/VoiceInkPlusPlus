@@ -207,9 +207,15 @@ struct StreamingAudioReliabilityTests {
         )
         let overflowBranch = engine[overflowStart.lowerBound..<closedStart.lowerBound]
         let closedBranch = engine[closedStart.lowerBound..<nilCallbackStart.lowerBound]
-        let nilCallbackTail = engine[nilCallbackStart.lowerBound...]
         #expect(overflowBranch.contains("session.showsRealtimeTranscriptHUD = false"))
         #expect(closedBranch.contains("session.showsRealtimeTranscriptHUD = false"))
-        #expect(nilCallbackTail.contains("session.showsRealtimeTranscriptHUD = false"))
+        // Exactly three abandon branches must collapse the realtime HUD: startup
+        // overflow, a closed router, and a streaming session with no callback. A tail
+        // search was too broad and could pass because of an unrelated later occurrence.
+        #expect(
+            engine.components(
+                separatedBy: "session.showsRealtimeTranscriptHUD = false"
+            ).count == 4
+        )
     }
 }

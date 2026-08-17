@@ -2056,18 +2056,18 @@
         }
       }
     },
-    "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context.": {
+    "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. A transcription's Mode is the one that finished it, so a trigger word or a Next-button destination can change which later recordings match it. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fügt begrenzte Auszüge aus bis zu %d abgeschlossenen Verlaufstranskriptionen der letzten %d Minuten im selben Modus nach deinem vorhandenen Transkriptions-Prompt hinzu. Nur OpenAI-Transkriptionsmodelle erhalten sie; verbesserter Text, Audio, App- oder Zieldetails und Echtzeit-Teilergebnisse werden nie einbezogen. Derselbe Modus bedeutet nicht dieselbe App, denselben Chat oder dasselbe Dokument — lass dies ausgeschaltet, wenn du in diesem Modus private Inhalte diktierst. Das Löschen einer Transkription im Verlauf entfernt sie aus künftigem Kontext."
+            "value": "Fügt begrenzte Auszüge aus bis zu %d abgeschlossenen Verlaufstranskriptionen der letzten %d Minuten im selben Modus nach deinem vorhandenen Transkriptions-Prompt hinzu. Der Modus einer Transkription ist derjenige, in dem sie abgeschlossen wurde; daher kann ein Auslösewort oder ein Ziel der Next-Taste ändern, mit welchen späteren Aufnahmen sie übereinstimmt. Nur OpenAI-Transkriptionsmodelle erhalten sie; verbesserter Text, Audio, App- oder Zieldetails und Echtzeit-Teilergebnisse werden nie einbezogen. Derselbe Modus bedeutet nicht dieselbe App, denselben Chat oder dasselbe Dokument — lass dies ausgeschaltet, wenn du in diesem Modus private Inhalte diktierst. Das Löschen einer Transkription im Verlauf entfernt sie aus künftigem Kontext."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在现有转录提示之后，添加同一模式下最近 %2$d 分钟内最多 %1$d 条已完成历史转录的有界摘录。只有 OpenAI 转录模型会收到这些内容；增强文本、音频、应用或目标详情以及实时部分结果绝不会包含其中。相同模式并不代表相同应用、聊天或文档——如果你会在该模式下听写私密内容，请关闭此选项。从历史中删除转录会将其从未来上下文中移除。"
+            "value": "在现有转录提示之后，添加同一模式下最近 %2$d 分钟内最多 %1$d 条已完成历史转录的有界摘录。转录的模式是完成该转录时所用的模式，因此触发词或“下一曲”按钮的目标可能会改变哪些后续录音与之匹配。只有 OpenAI 转录模型会收到这些内容；增强文本、音频、应用或目标详情以及实时部分结果绝不会包含其中。相同模式并不代表相同应用、聊天或文档——如果你会在该模式下听写私密内容，请关闭此选项。从历史中删除转录会将其从未来上下文中移除。"
           }
         }
       }
@@ -10121,18 +10121,18 @@
         }
       }
     },
-    "OpenAI receives sentence-aligned excerpts from up to %d completed History items in the same Mode from the last %d minutes. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary.": {
+    "OpenAI receives sentence-aligned excerpts from up to %d completed History items from the last %d minutes whose Mode matches the Mode this recording starts in. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "OpenAI erhält satzgenaue Auszüge aus bis zu %d abgeschlossenen Verlaufseinträgen im selben Modus aus den letzten %d Minuten. Verwendet wird der gespeicherte Text nach etwaiger Absatzformatierung und Wortersetzungen; der aktuelle Kontext fügt dem Vokabular nie etwas hinzu und ändert es nicht."
+            "value": "OpenAI erhält satzgenaue Auszüge aus bis zu %d abgeschlossenen Verlaufseinträgen der letzten %d Minuten, deren Modus mit dem Modus übereinstimmt, in dem diese Aufnahme beginnt. Verwendet wird der gespeicherte Text nach etwaiger Absatzformatierung und Wortersetzungen; der aktuelle Kontext fügt dem Vokabular nie etwas hinzu und ändert es nicht."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "OpenAI 会接收同一模式下最近 %2$d 分钟内最多 %1$d 条已完成历史项目的句子对齐摘录。它使用经过段落格式化和词语替换后的已保存文本；近期上下文绝不会添加或更改词汇。"
+            "value": "OpenAI 会接收最近 %2$d 分钟内最多 %1$d 条已完成历史项目的句子对齐摘录，这些项目的模式与本次录音开始时的模式相匹配。它使用经过段落格式化和词语替换后的已保存文本；近期上下文绝不会添加或更改词汇。"
           }
         }
       }
