@@ -145,12 +145,16 @@ struct RecordingMediaPauseOwnership<Source: Equatable> {
         }
 
         generation &+= 1
+        guard let pausedSource else { return .none }
         if preserveCurrentPlayback {
-            pausedSource = nil
+            // A clipboard-only stop can abandon only playback that this ownership
+            // episode actually paused or inherited. A lease canceled before its
+            // bounded Pause succeeds has no playback state to preserve and must
+            // remain a no-op instead of canceling unrelated restoration work.
+            self.pausedSource = nil
             return .abandon
         }
 
-        guard let pausedSource else { return .none }
         return .resume(RecordingMediaPauseResumeRequest(
             source: pausedSource,
             generation: generation
