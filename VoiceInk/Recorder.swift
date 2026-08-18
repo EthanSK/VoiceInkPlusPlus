@@ -9,6 +9,22 @@ enum RecordingStopPlaybackDisposition: Equatable {
     case preserveCurrentPlayback
 }
 
+/// Keeps the recording-start safety boundary executable rather than relying only
+/// on source ordering. AUHAL must not open until the recording's bounded media
+/// pause/join has settled; the start sound marks that boundary for the user.
+@MainActor
+enum RecordingCaptureStartupSequencer {
+    static func run(
+        waitForMediaPause: () async -> Void,
+        mediaSettled: () -> Void,
+        startHardware: () async throws -> Void
+    ) async rethrows {
+        await waitForMediaPause()
+        mediaSettled()
+        try await startHardware()
+    }
+}
+
 @MainActor
 class Recorder: NSObject, ObservableObject {
     private var recorder: CoreAudioRecorder?
@@ -212,26 +228,33 @@ class Recorder: NSObject, ObservableObject {
             // The media task began concurrently with the listener preflight, but
             // it must settle before AUHAL opens. In the common external-output
             // case it is an immediate no-op. On built-in speakers this prevents
-            // Spotify/Music bleed at the start of the WAV; for rapid recordings
+            // Spotify bleed at the start of the WAV; for rapid recordings
             // it also joins any predecessor Play and re-pauses before capture.
-            await startupMediaPauseTask?.value
-            SoundManager.shared.playStartSound()
-
-            // Offload hardware start to avoid shortcut lag.
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                audioSetupQueue.async {
-                    do {
-                        // Install this recording's callback only after every prior queued
-                        // stop has closed its input gate. MainActor assignment earlier can
-                        // otherwise send the old recording's tail into the new session.
-                        coreAudioRecorder.onAudioChunk = callbackForThisStart
-                        try coreAudioRecorder.startRecording(toOutputFile: url, deviceID: deviceID)
-                        continuation.resume()
-                    } catch {
-                        continuation.resume(throwing: error)
+            try await RecordingCaptureStartupSequencer.run(
+                waitForMediaPause: {
+                    await startupMediaPauseTask?.value
+                },
+                mediaSettled: {
+                    SoundManager.shared.playStartSound()
+                },
+                startHardware: {
+                    // Offload hardware start to avoid shortcut lag.
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        audioSetupQueue.async {
+                            do {
+                                // Install this recording's callback only after every prior queued
+                                // stop has closed its input gate. MainActor assignment earlier can
+                                // otherwise send the old recording's tail into the new session.
+                                coreAudioRecorder.onAudioChunk = callbackForThisStart
+                                try coreAudioRecorder.startRecording(toOutputFile: url, deviceID: deviceID)
+                                continuation.resume()
+                            } catch {
+                                continuation.resume(throwing: error)
+                            }
+                        }
                     }
                 }
-            }
+            )
 
             startAudioMeterTimer()
             // Complementary to the recording media-pause lease: broadcast "recording started" so the external YouTube

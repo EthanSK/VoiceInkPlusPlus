@@ -35,6 +35,171 @@ private actor TranscriptionQueueTestGate {
     }
 }
 
+private struct ScriptableMediaTransportSnapshot: Sendable {
+    let observations: Int
+    let sendAttempts: Int
+    let crossedCommands: Int
+}
+
+/// Deterministic command boundary for the exact-media race tests. The fake models
+/// only transport ordering; PID/source policy remains in the production controller.
+private actor ScriptableMediaTransportFake: ScriptableMediaTransport {
+    private var scriptedObservations: [ScriptableMediaPlaybackObservation]
+    private var scriptedDispatches: [ScriptableMediaCommandDispatch]
+    private let observationWaitGates: [Int: TranscriptionQueueTestGate]
+    private let observationEnteredSignals: [Int: TranscriptionQueueTestGate]
+    private let sendWaitGates: [Int: TranscriptionQueueTestGate]
+    private let sendEnteredSignals: [Int: TranscriptionQueueTestGate]
+    private var observationCount = 0
+    private var sendAttemptCount = 0
+    private var crossedCommandCount = 0
+
+    init(
+        observations: [ScriptableMediaPlaybackObservation],
+        dispatches: [ScriptableMediaCommandDispatch] = [],
+        observationWaitGates: [Int: TranscriptionQueueTestGate] = [:],
+        observationEnteredSignals: [Int: TranscriptionQueueTestGate] = [:],
+        sendWaitGates: [Int: TranscriptionQueueTestGate] = [:],
+        sendEnteredSignals: [Int: TranscriptionQueueTestGate] = [:]
+    ) {
+        scriptedObservations = observations
+        scriptedDispatches = dispatches
+        self.observationWaitGates = observationWaitGates
+        self.observationEnteredSignals = observationEnteredSignals
+        self.sendWaitGates = sendWaitGates
+        self.sendEnteredSignals = sendEnteredSignals
+    }
+
+    func observe(
+        _ target: ScriptableMediaTarget,
+        deadline: ContinuousClock.Instant
+    ) async -> ScriptableMediaPlaybackObservation {
+        observationCount += 1
+        let index = observationCount
+        await observationEnteredSignals[index]?.open()
+        await observationWaitGates[index]?.wait()
+        guard ContinuousClock.now < deadline else { return .unavailable }
+        guard !scriptedObservations.isEmpty else { return .unavailable }
+        return scriptedObservations.removeFirst()
+    }
+
+    func sendIfCurrent(
+        _ command: ScriptableMediaFixedCommand,
+        source: ScriptableMediaSource,
+        target: ScriptableMediaTarget,
+        deadline: ContinuousClock.Instant,
+        cancellation: MediaCommandCancellation
+    ) async -> ScriptableMediaCommandDispatch {
+        sendAttemptCount += 1
+        let index = sendAttemptCount
+        await sendEnteredSignals[index]?.open()
+        await sendWaitGates[index]?.wait()
+        guard !cancellation.isCancelled() else {
+            return .notSent(.cancelledBeforeDispatch)
+        }
+        guard ContinuousClock.now < deadline else {
+            return .notSent(.deadlineExpired)
+        }
+        guard !scriptedDispatches.isEmpty else {
+            return .notSent(.unreadableBeforeDispatch)
+        }
+        let result = scriptedDispatches.removeFirst()
+        if result == .crossedIrreversibleBoundary {
+            guard cancellation.claimDispatch() else {
+                return .notSent(.cancelledBeforeDispatch)
+            }
+            crossedCommandCount += 1
+        }
+        return result
+    }
+
+    func snapshot() -> ScriptableMediaTransportSnapshot {
+        ScriptableMediaTransportSnapshot(
+            observations: observationCount,
+            sendAttempts: sendAttemptCount,
+            crossedCommands: crossedCommandCount
+        )
+    }
+}
+
+@MainActor
+private final class ScriptableMediaControlFake: ScriptableMediaControlling {
+    let source: ScriptableMediaSource
+    var pauseResults: [ScriptableMediaPauseResult]
+    var observationResult: ScriptableMediaPlaybackObservation
+    var playResult: ScriptableMediaPlayResult
+    var playCrossesBoundaryBeforeGate: Bool
+    var playWaitGate: TranscriptionQueueTestGate?
+    var playEnteredSignal: TranscriptionQueueTestGate?
+    private(set) var pauseCalls = 0
+    private(set) var playCalls = 0
+    private(set) var crossedPlayCommands = 0
+    private(set) var pauseDeadlines: [ContinuousClock.Instant] = []
+    var runningApps: Set<ScriptableMediaApp>
+
+    init(
+        source: ScriptableMediaSource,
+        pauseResults: [ScriptableMediaPauseResult],
+        observationResult: ScriptableMediaPlaybackObservation? = nil,
+        playResult: ScriptableMediaPlayResult = .played,
+        playCrossesBoundaryBeforeGate: Bool = true,
+        playWaitGate: TranscriptionQueueTestGate? = nil,
+        playEnteredSignal: TranscriptionQueueTestGate? = nil,
+        runningApps: Set<ScriptableMediaApp>? = nil
+    ) {
+        self.source = source
+        self.pauseResults = pauseResults
+        self.observationResult = observationResult ?? .paused(source)
+        self.playResult = playResult
+        self.playCrossesBoundaryBeforeGate = playCrossesBoundaryBeforeGate
+        self.playWaitGate = playWaitGate
+        self.playEnteredSignal = playEnteredSignal
+        self.runningApps = runningApps ?? [source.app]
+    }
+
+    func makeStartupDeadline() -> ContinuousClock.Instant {
+        ContinuousClock.now.advanced(by: .milliseconds(800))
+    }
+
+    func isRunning(_ app: ScriptableMediaApp) -> Bool {
+        runningApps.contains(app)
+    }
+
+    func pauseIfPlaying(
+        _ app: ScriptableMediaApp,
+        deadline: ContinuousClock.Instant
+    ) async -> ScriptableMediaPauseResult {
+        pauseCalls += 1
+        pauseDeadlines.append(deadline)
+        guard !pauseResults.isEmpty else { return .notPlaying }
+        return pauseResults.removeFirst()
+    }
+
+    func playIfPaused(
+        _ source: ScriptableMediaSource
+    ) async -> ScriptableMediaPlayResult {
+        playCalls += 1
+        await playEnteredSignal?.open()
+        if playCrossesBoundaryBeforeGate {
+            crossedPlayCommands += 1
+        }
+        await playWaitGate?.wait()
+        if !playCrossesBoundaryBeforeGate, Task.isCancelled {
+            return .stillPaused
+        }
+        if !playCrossesBoundaryBeforeGate {
+            crossedPlayCommands += 1
+        }
+        return playResult
+    }
+
+    func observation(
+        for app: ScriptableMediaApp
+    ) async -> ScriptableMediaPlaybackObservation {
+        observationResult
+    }
+}
+
 @MainActor
 private final class TranscriptionQueueTestState {
     var currentIdentities = Set<TranscriptionJobIdentity>()
@@ -1451,7 +1616,7 @@ struct VoiceInkTests {
             of: "ChatGPTVoiceCaptureMuteCoordinator.shared.prepareForCapture()"
         ))
         let startupMediaJoin = try #require(startBody.range(
-            of: "await startupMediaPauseTask?.value"
+            of: "RecordingCaptureStartupSequencer.run("
         ))
         let hardwareStart = try #require(startBody.range(
             of: "coreAudioRecorder.startRecording("
@@ -1461,6 +1626,34 @@ struct VoiceInkTests {
         #expect(startupMediaJoin.lowerBound < hardwareStart.lowerBound)
         #expect(stopBody.contains("playbackController.finishRecordingPause("))
         #expect(stopBody.contains("RecordingActivityNotifier.postRecordingStopped()"))
+    }
+
+    @Test @MainActor func recorderDoesNotOpenAUHALBeforePlaybackPauseCompletes() async throws {
+        let mediaPauseEntered = TranscriptionQueueTestGate()
+        let allowMediaPauseToFinish = TranscriptionQueueTestGate()
+        var events: [String] = []
+
+        let startup = Task { @MainActor in
+            try await RecordingCaptureStartupSequencer.run(
+                waitForMediaPause: {
+                    await mediaPauseEntered.open()
+                    await allowMediaPauseToFinish.wait()
+                },
+                mediaSettled: {
+                    events.append("media-settled")
+                },
+                startHardware: {
+                    events.append("hardware-start")
+                }
+            )
+        }
+
+        await mediaPauseEntered.wait()
+        #expect(events.isEmpty)
+
+        await allowMediaPauseToFinish.open()
+        try await startup.value
+        #expect(events == ["media-settled", "hardware-start"])
     }
 
     @Test func builtInSpeakerPausePolicyUsesStableCoreAudioIdentity() {
@@ -1484,7 +1677,7 @@ struct VoiceInkTests {
             alwaysPauseEnabled: false,
             pauseOnBuiltInSpeakersEnabled: true,
             outputSnapshot: builtIn
-        ) == .scriptableAppsOnly)
+        ) == .spotifyOnly)
         #expect(RecordingMediaPausePolicy.scope(
             alwaysPauseEnabled: false,
             pauseOnBuiltInSpeakersEnabled: true,
@@ -1529,16 +1722,65 @@ struct VoiceInkTests {
         ))
     }
 
-    @Test func unrelatedNowPlayingPublisherCannotHideSpotifyOrMusicProbe() {
+    private func scriptableMediaSource(pid: pid_t) -> ScriptableMediaSource {
+        ScriptableMediaSource(
+            app: .spotify,
+            processIdentifier: pid,
+            trackIdentifier: "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
+        )
+    }
+
+    private func scriptableMediaTarget(pid: pid_t) -> ScriptableMediaTarget {
+        ScriptableMediaTarget(
+            app: .spotify,
+            processIdentifier: pid,
+            executableURL: URL(
+                fileURLWithPath: "/Applications/Spotify.app/Contents/MacOS/Spotify"
+            )
+        )
+    }
+
+    @MainActor
+    private func builtInSpeakerPlaybackController(
+        mediaControl: ScriptableMediaControlFake
+    ) -> PlaybackController {
+        PlaybackController(
+            scriptableMediaControl: mediaControl,
+            outputSnapshotProvider: {
+                DefaultOutputDeviceSnapshot(
+                    deviceID: 1,
+                    uid: "BuiltInSpeakerDevice",
+                    transportType: kAudioDeviceTransportTypeBuiltIn
+                )
+            },
+            audioResumptionDelayProvider: { 0 },
+            initialPauseMediaEnabled: false,
+            initialBuiltInSpeakerPauseEnabled: true,
+            persistsSettings: false
+        )
+    }
+
+    @Test func builtInScopeProbesOnlySpotifyWhileAllMediaKeepsBothApps() {
         #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            for: .spotifyOnly,
             nowPlayingBundle: "com.google.Chrome"
-        ) == [.spotify, .appleMusic])
+        ) == [.spotify])
         #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            for: .spotifyOnly,
+            nowPlayingBundle: "com.apple.Music"
+        ) == [.spotify])
+        #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            for: .allPublishedMedia,
             nowPlayingBundle: "com.apple.Music"
         ) == [.appleMusic, .spotify])
         #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            for: .allPublishedMedia,
             nowPlayingBundle: "com.spotify.client"
         ) == [.spotify, .appleMusic])
+        #expect(RecordingMediaPausePolicy.scriptableProbeOrder(
+            for: .none,
+            nowPlayingBundle: "com.spotify.client"
+        ).isEmpty)
     }
 
     @Test func builtInSpeakerMediaUsesBoundedVerifiedScriptCommands() throws {
@@ -1558,92 +1800,547 @@ struct VoiceInkTests {
             encoding: .utf8
         )
 
-        #expect(scriptSource.contains("BoundedAppleScriptRunner.run("))
-        #expect(scriptSource.contains("timeout: commandTimeout"))
-        #expect(scriptSource.contains("timeout: observationTimeout"))
-        #expect(scriptSource.contains("currentTrackIdentifierExpression"))
+        #expect(scriptSource.contains("NSAppleEventDescriptor(\n            processIdentifier:"))
+        #expect(scriptSource.contains("options: [.waitForReply, .neverInteract, .dontRecord]"))
+        #expect(scriptSource.contains("postCommandReserve: TimeInterval = 0.30"))
+        #expect(scriptSource.contains("startupBudget = Duration.milliseconds(800)"))
+        #expect(scriptSource.contains("MediaCommandCancellation"))
         #expect(scriptSource.contains("processIdentifier: pid_t"))
-        #expect(scriptSource.contains("if trackIdentifier is not"))
-        #expect(scriptSource.contains("return stateText & tab & trackIdentifier"))
-        #expect(scriptSource.contains("ScriptableMediaCommandResolution"))
         #expect(!scriptSource.contains("NSAppleScript("))
-        #expect(playbackSource.contains("case .scriptableAppsOnly"))
-        #expect(playbackSource.contains("guard allowsGenericMediaRemote,"))
+        #expect(!scriptSource.contains("BoundedAppleScriptRunner"))
+        #expect(playbackSource.contains("case spotifyOnly"))
+        #expect(playbackSource.contains("guard scope.allowsGenericMediaRemote,"))
+        #expect(playbackSource.contains("let startupDeadline = scriptableMediaControl.makeStartupDeadline()"))
         #expect(playbackSource.contains("_ = ownedPausedMedia.activateRecording(lease)"))
         #expect(playbackSource.contains("reconcileIndeterminateScriptableSourceBeforeCapture()"))
         #expect(!playbackSource.contains("NX_KEYTYPE_PLAY"))
     }
 
-    @Test func lostScriptableMediaReceiptsNeverBecomeFalsePausedOwnership() {
+    @Test @MainActor func sourceChangeBeforePauseGetsOneFreshDecision() async {
         let source = ScriptableMediaSource(
             app: .spotify,
             processIdentifier: 101,
-            trackIdentifier: "4uLU6hMCjMI75M1A2tKUQC"
+            trackIdentifier: "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
         )
-        let relaunchedSource = ScriptableMediaSource(
+        let replacement = ScriptableMediaSource(
             app: .spotify,
-            processIdentifier: 202,
-            trackIdentifier: source.trackIdentifier
+            processIdentifier: 101,
+            trackIdentifier: "spotify:track:512ojhOuo1ktJprKbVcKyQ"
+        )
+        let target = scriptableMediaTarget(pid: 101)
+        let transport = ScriptableMediaTransportFake(
+            observations: [.playing(source), .playing(replacement), .paused(replacement)],
+            dispatches: [
+                .notSent(.sourceChangedBeforeDispatch),
+                .crossedIrreversibleBoundary
+            ]
+        )
+        let controller = PIDAddressedScriptableMediaController(
+            transport: transport,
+            targetResolver: { _ in target }
         )
 
-        #expect(ScriptableMediaCommandResolution.pauseResult(
-            initialSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .paused(source)
-        ) == .paused(source))
-        #expect(ScriptableMediaCommandResolution.pauseResult(
-            initialSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .playing(source)
-        ) == .notPlaying)
-        #expect(ScriptableMediaCommandResolution.pauseResult(
-            initialSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .unavailable
-        ) == .indeterminate(source))
+        let result = await controller.pauseIfPlaying(
+            .spotify,
+            deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+            cancellation: MediaCommandCancellation()
+        )
+        let snapshot = await transport.snapshot()
 
-        #expect(ScriptableMediaCommandResolution.playResult(
-            expectedSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .playing(source)
-        ) == .played)
-        #expect(ScriptableMediaCommandResolution.playResult(
-            expectedSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .paused(source)
-        ) == .stillPaused)
-        #expect(ScriptableMediaCommandResolution.playResult(
-            expectedSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .playing(relaunchedSource)
-        ) == .noLongerPaused)
-        #expect(ScriptableMediaCommandResolution.playResult(
-            expectedSource: source,
-            commandObservation: .unavailable,
-            recoveryObservation: .unavailable
-        ) == .indeterminate)
+        #expect(result == .paused(replacement))
+        #expect(snapshot.observations == 3)
+        #expect(snapshot.sendAttempts == 2)
+        #expect(snapshot.crossedCommands == 1)
+    }
+
+    @Test @MainActor func cancellationBeforePauseDispatchSendsNothing() async {
+        let source = scriptableMediaSource(pid: 101)
+        let target = scriptableMediaTarget(pid: 101)
+        let sendEntered = TranscriptionQueueTestGate()
+        let allowSend = TranscriptionQueueTestGate()
+        let transport = ScriptableMediaTransportFake(
+            observations: [.playing(source)],
+            dispatches: [.crossedIrreversibleBoundary],
+            sendWaitGates: [1: allowSend],
+            sendEnteredSignals: [1: sendEntered]
+        )
+        let controller = PIDAddressedScriptableMediaController(
+            transport: transport,
+            targetResolver: { _ in target }
+        )
+        let cancellation = MediaCommandCancellation()
+        let task = Task { @MainActor in
+            await controller.pauseIfPlaying(
+                .spotify,
+                deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+                cancellation: cancellation
+            )
+        }
+
+        await sendEntered.wait()
+        cancellation.cancel()
+        await allowSend.open()
+        let result = await task.value
+        let snapshot = await transport.snapshot()
+
+        #expect(result == .notPlaying)
+        #expect(snapshot.sendAttempts == 1)
+        #expect(snapshot.crossedCommands == 0)
+    }
+
+    @Test @MainActor func cancellationAfterPauseDispatchStillFinishesVerification() async {
+        let source = scriptableMediaSource(pid: 101)
+        let target = scriptableMediaTarget(pid: 101)
+        let postReadEntered = TranscriptionQueueTestGate()
+        let allowPostRead = TranscriptionQueueTestGate()
+        let transport = ScriptableMediaTransportFake(
+            observations: [.playing(source), .paused(source)],
+            dispatches: [.crossedIrreversibleBoundary],
+            observationWaitGates: [2: allowPostRead],
+            observationEnteredSignals: [2: postReadEntered]
+        )
+        let controller = PIDAddressedScriptableMediaController(
+            transport: transport,
+            targetResolver: { _ in target }
+        )
+        let cancellation = MediaCommandCancellation()
+        let task = Task { @MainActor in
+            await controller.pauseIfPlaying(
+                .spotify,
+                deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+                cancellation: cancellation
+            )
+        }
+
+        await postReadEntered.wait()
+        cancellation.cancel()
+        await allowPostRead.open()
+        let result = await task.value
+        let snapshot = await transport.snapshot()
+
+        #expect(result == .paused(source))
+        #expect(snapshot.crossedCommands == 1)
+        #expect(snapshot.observations == 2)
+    }
+
+    @Test func cancellationAndDispatchClaimAreAtomic() {
+        let cancellationWon = MediaCommandCancellation()
+        cancellationWon.cancel()
+        #expect(cancellationWon.isCancelled())
+        #expect(!cancellationWon.claimDispatch())
+
+        let dispatchWon = MediaCommandCancellation()
+        #expect(dispatchWon.claimDispatch())
+        dispatchWon.cancel()
+        #expect(!dispatchWon.isCancelled())
+        #expect(!dispatchWon.claimDispatch())
+    }
+
+    @Test @MainActor func processReplacementBeforePauseDispatchFailsClosed() async {
+        let source = scriptableMediaSource(pid: 101)
+        let originalTarget = scriptableMediaTarget(pid: 101)
+        let replacementTarget = scriptableMediaTarget(pid: 202)
+        let readEntered = TranscriptionQueueTestGate()
+        let allowRead = TranscriptionQueueTestGate()
+        let transport = ScriptableMediaTransportFake(
+            observations: [.playing(source)],
+            observationWaitGates: [1: allowRead],
+            observationEnteredSignals: [1: readEntered]
+        )
+        var resolvedTarget = originalTarget
+        let controller = PIDAddressedScriptableMediaController(
+            transport: transport,
+            targetResolver: { _ in resolvedTarget }
+        )
+        let task = Task { @MainActor in
+            await controller.pauseIfPlaying(
+                .spotify,
+                deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+                cancellation: MediaCommandCancellation()
+            )
+        }
+
+        await readEntered.wait()
+        resolvedTarget = replacementTarget
+        await allowRead.open()
+        let result = await task.value
+        let snapshot = await transport.snapshot()
+
+        #expect(result == .notPlaying)
+        #expect(snapshot.sendAttempts == 0)
+    }
+
+    @Test @MainActor func exhaustedWholeOperationDeadlineNeverDispatches() async {
+        let source = scriptableMediaSource(pid: 101)
+        let target = scriptableMediaTarget(pid: 101)
+        let transport = ScriptableMediaTransportFake(
+            observations: [.playing(source)],
+            dispatches: [.crossedIrreversibleBoundary]
+        )
+        let controller = PIDAddressedScriptableMediaController(
+            transport: transport,
+            targetResolver: { _ in target }
+        )
+
+        let result = await controller.pauseIfPlaying(
+            .spotify,
+            deadline: ContinuousClock.now.advanced(by: .milliseconds(-1)),
+            cancellation: MediaCommandCancellation()
+        )
+        let snapshot = await transport.snapshot()
+
+        #expect(result == .notPlaying)
+        #expect(snapshot.sendAttempts == 0)
+        #expect(snapshot.crossedCommands == 0)
+    }
+
+    @Test @MainActor func lostPauseAndPlayReceiptsRemainIndeterminateWithoutRetry() async {
+        let source = scriptableMediaSource(pid: 101)
+        let target = scriptableMediaTarget(pid: 101)
+        let pauseTransport = ScriptableMediaTransportFake(
+            observations: [.playing(source), .unavailable],
+            dispatches: [.crossedIrreversibleBoundary]
+        )
+        let pauseController = PIDAddressedScriptableMediaController(
+            transport: pauseTransport,
+            targetResolver: { _ in target }
+        )
+        let pauseResult = await pauseController.pauseIfPlaying(
+            .spotify,
+            deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+            cancellation: MediaCommandCancellation()
+        )
+        let pauseSnapshot = await pauseTransport.snapshot()
+
+        let playTransport = ScriptableMediaTransportFake(
+            observations: [.unavailable],
+            dispatches: [.crossedIrreversibleBoundary]
+        )
+        let playController = PIDAddressedScriptableMediaController(
+            transport: playTransport,
+            targetResolver: { _ in target }
+        )
+        let playResult = await playController.playIfPaused(
+            source,
+            deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+            cancellation: MediaCommandCancellation()
+        )
+        let playSnapshot = await playTransport.snapshot()
+
+        #expect(pauseResult == .indeterminate(source))
+        #expect(playResult == .indeterminate)
+        #expect(pauseSnapshot.crossedCommands == 1)
+        #expect(playSnapshot.crossedCommands == 1)
+        #expect(pauseSnapshot.sendAttempts == 1)
+        #expect(playSnapshot.sendAttempts == 1)
+    }
+
+    @Test @MainActor func postDispatchTrackChangeRetainsTheActuallyPausedSource() async {
+        let original = scriptableMediaSource(pid: 101)
+        let replacement = ScriptableMediaSource(
+            app: .spotify,
+            processIdentifier: 101,
+            trackIdentifier: "spotify:track:512ojhOuo1ktJprKbVcKyQ"
+        )
+        let target = scriptableMediaTarget(pid: 101)
+        let transport = ScriptableMediaTransportFake(
+            observations: [.playing(original), .paused(replacement)],
+            dispatches: [.crossedIrreversibleBoundary]
+        )
+        let controller = PIDAddressedScriptableMediaController(
+            transport: transport,
+            targetResolver: { _ in target }
+        )
+
+        let result = await controller.pauseIfPlaying(
+            .spotify,
+            deadline: ContinuousClock.now.advanced(by: .seconds(2)),
+            cancellation: MediaCommandCancellation()
+        )
+        let snapshot = await transport.snapshot()
+
+        #expect(result == .indeterminate(replacement))
+        #expect(snapshot.sendAttempts == 1)
+        #expect(snapshot.crossedCommands == 1)
+        #expect(snapshot.observations == 2)
+    }
+
+    @Test @MainActor func successorBeforePlayDispatchInheritsExistingPause() async {
+        let source = scriptableMediaSource(pid: 101)
+        let playEntered = TranscriptionQueueTestGate()
+        let allowPlay = TranscriptionQueueTestGate()
+        let mediaControl = ScriptableMediaControlFake(
+            source: source,
+            pauseResults: [.paused(source)],
+            playCrossesBoundaryBeforeGate: false,
+            playWaitGate: allowPlay,
+            playEnteredSignal: playEntered
+        )
+        let controller = builtInSpeakerPlaybackController(mediaControl: mediaControl)
+
+        let first = controller.beginRecordingPause()
+        await controller.pauseMedia(for: first)
+        controller.finishRecordingPause(
+            first,
+            playbackDisposition: .restoreOwnedPlayback
+        )
+        await playEntered.wait()
+
+        // The successor cancels Play before its irreversible boundary, joins that
+        // exact operation, and inherits the still-paused source without a toggle.
+        let successor = controller.beginRecordingPause()
+        let successorPause = Task { @MainActor in
+            await controller.pauseMedia(for: successor)
+        }
+        await Task.yield()
+        await allowPlay.open()
+        await successorPause.value
+
+        #expect(mediaControl.pauseCalls == 1)
+        #expect(mediaControl.playCalls == 1)
+        #expect(mediaControl.crossedPlayCommands == 0)
+
+        controller.finishRecordingPause(
+            successor,
+            playbackDisposition: .preserveCurrentPlayback
+        )
+    }
+
+    @Test @MainActor func successorAfterPlayDispatchWaitsThenPausesAgain() async {
+        let source = scriptableMediaSource(pid: 101)
+        let playEntered = TranscriptionQueueTestGate()
+        let allowPlay = TranscriptionQueueTestGate()
+        let mediaControl = ScriptableMediaControlFake(
+            source: source,
+            pauseResults: [.paused(source), .paused(source)],
+            playCrossesBoundaryBeforeGate: true,
+            playWaitGate: allowPlay,
+            playEnteredSignal: playEntered
+        )
+        let controller = builtInSpeakerPlaybackController(mediaControl: mediaControl)
+
+        let first = controller.beginRecordingPause()
+        await controller.pauseMedia(for: first)
+        controller.finishRecordingPause(
+            first,
+            playbackDisposition: .restoreOwnedPlayback
+        )
+        await playEntered.wait()
+
+        // Cancellation cannot undo a Play that already crossed its command
+        // boundary. The successor must await verification and issue one fresh Pause.
+        let successor = controller.beginRecordingPause()
+        let successorPause = Task { @MainActor in
+            await controller.pauseMedia(for: successor)
+        }
+        await Task.yield()
+        await allowPlay.open()
+        await successorPause.value
+
+        #expect(mediaControl.pauseCalls == 2)
+        #expect(mediaControl.playCalls == 1)
+        #expect(mediaControl.crossedPlayCommands == 1)
+
+        controller.finishRecordingPause(
+            successor,
+            playbackDisposition: .preserveCurrentPlayback
+        )
+    }
+
+    @Test @MainActor func twoSuccessorsJoinOnePlayAndIssueOnlyOneFreshPause() async {
+        let source = scriptableMediaSource(pid: 101)
+        let playEntered = TranscriptionQueueTestGate()
+        let allowPlay = TranscriptionQueueTestGate()
+        let mediaControl = ScriptableMediaControlFake(
+            source: source,
+            pauseResults: [.paused(source), .paused(source)],
+            playCrossesBoundaryBeforeGate: true,
+            playWaitGate: allowPlay,
+            playEnteredSignal: playEntered
+        )
+        let controller = builtInSpeakerPlaybackController(mediaControl: mediaControl)
+
+        let first = controller.beginRecordingPause()
+        await controller.pauseMedia(for: first)
+        controller.finishRecordingPause(
+            first,
+            playbackDisposition: .restoreOwnedPlayback
+        )
+        await playEntered.wait()
+
+        // Both successors see and join the same still-published Play operation.
+        // Their complete pause paths are serialized, so only the first successor
+        // can observe an unowned source and emit the one necessary fresh Pause.
+        let second = controller.beginRecordingPause()
+        let third = controller.beginRecordingPause()
+        let secondPause = Task { @MainActor in
+            await controller.pauseMedia(for: second)
+        }
+        await Task.yield()
+        let thirdPause = Task { @MainActor in
+            await controller.pauseMedia(for: third)
+        }
+        await Task.yield()
+        await allowPlay.open()
+        await secondPause.value
+        await thirdPause.value
+
+        #expect(mediaControl.pauseCalls == 2)
+        #expect(mediaControl.playCalls == 1)
+        #expect(mediaControl.crossedPlayCommands == 1)
+
+        controller.finishRecordingPause(
+            second,
+            playbackDisposition: .restoreOwnedPlayback
+        )
+        controller.finishRecordingPause(
+            third,
+            playbackDisposition: .preserveCurrentPlayback
+        )
+    }
+
+    @Test @MainActor func spotifyOnlySuccessorWaitsForBroadMusicResumeThenPausesSpotify() async {
+        let music = ScriptableMediaSource(
+            app: .appleMusic,
+            processIdentifier: 101,
+            trackIdentifier: "A1B2C3D4E5F60718"
+        )
+        let spotify = scriptableMediaSource(pid: 202)
+        let playEntered = TranscriptionQueueTestGate()
+        let allowPlay = TranscriptionQueueTestGate()
+        let mediaControl = ScriptableMediaControlFake(
+            source: music,
+            pauseResults: [.paused(music), .paused(spotify)],
+            playResult: .stillPaused,
+            playCrossesBoundaryBeforeGate: false,
+            playWaitGate: allowPlay,
+            playEnteredSignal: playEntered,
+            runningApps: [.appleMusic]
+        )
+        let controller = PlaybackController(
+            scriptableMediaControl: mediaControl,
+            outputSnapshotProvider: {
+                DefaultOutputDeviceSnapshot(
+                    deviceID: 1,
+                    uid: "BuiltInSpeakerDevice",
+                    transportType: kAudioDeviceTransportTypeBuiltIn
+                )
+            },
+            audioResumptionDelayProvider: { 0 },
+            initialPauseMediaEnabled: true,
+            initialBuiltInSpeakerPauseEnabled: true,
+            persistsSettings: false
+        )
+
+        let broad = controller.beginRecordingPause()
+        #expect(broad.scope == .allPublishedMedia)
+        await controller.pauseMedia(for: broad)
+        controller.finishRecordingPause(
+            broad,
+            playbackDisposition: .restoreOwnedPlayback
+        )
+        await playEntered.wait()
+
+        // The new recording narrows the setting while Music's owned resume is still
+        // pending. Even when that Play returns with Music still paused, it must not
+        // inherit Music as though that protected Spotify or suppress the fresh probe.
+        controller.isPauseMediaEnabled = false
+        mediaControl.runningApps = [.spotify]
+        let successor = controller.beginRecordingPause()
+        #expect(successor.scope == .spotifyOnly)
+        let successorPause = Task { @MainActor in
+            await controller.pauseMedia(for: successor)
+        }
+        await Task.yield()
+        await allowPlay.open()
+        await successorPause.value
+
+        #expect(mediaControl.playCalls == 1)
+        #expect(mediaControl.crossedPlayCommands == 1)
+        #expect(mediaControl.pauseCalls == 2)
+
+        controller.finishRecordingPause(
+            successor,
+            playbackDisposition: .preserveCurrentPlayback
+        )
+    }
+
+    @Test @MainActor func wholeStartupDeadlineIsSharedAcrossBroadProbes() async {
+        let source = scriptableMediaSource(pid: 101)
+        let mediaControl = ScriptableMediaControlFake(
+            source: source,
+            pauseResults: [.notPlaying, .notPlaying],
+            runningApps: [.spotify, .appleMusic]
+        )
+        let controller = PlaybackController(
+            scriptableMediaControl: mediaControl,
+            outputSnapshotProvider: { nil },
+            audioResumptionDelayProvider: { 0 },
+            initialPauseMediaEnabled: true,
+            initialBuiltInSpeakerPauseEnabled: true,
+            persistsSettings: false
+        )
+
+        let lease = controller.beginRecordingPause()
+        #expect(lease.scope == .allPublishedMedia)
+        await controller.pauseMedia(for: lease)
+
+        #expect(mediaControl.pauseCalls == 2)
+        #expect(mediaControl.pauseDeadlines.count == 2)
+        #expect(mediaControl.pauseDeadlines[0] == mediaControl.pauseDeadlines[1])
+
+        controller.finishRecordingPause(
+            lease,
+            playbackDisposition: .preserveCurrentPlayback
+        )
+    }
+
+    @Test func spotifyOnlySuccessorDoesNotInheritBroadMusicPause() {
+        #expect(!RecordingMediaPausePolicy.canTransfer(
+            .scriptable(.appleMusic),
+            to: .spotifyOnly
+        ))
+    }
+
+    @Test func spotifyOnlySuccessorDoesNotInheritBroadMediaRemotePause() {
+        #expect(!RecordingMediaPausePolicy.canTransfer(
+            .mediaRemote,
+            to: .spotifyOnly
+        ))
+    }
+
+    @Test func spotifyOnlySuccessorStillInheritsExactSpotifyPause() {
+        #expect(RecordingMediaPausePolicy.canTransfer(
+            .scriptable(.spotify),
+            to: .spotifyOnly
+        ))
     }
 
     @Test func canceledReservedPauseLeaseCannotCreateAResume() {
         var ownership = RecordingMediaPauseOwnership<String>()
         let lease = RecordingMediaPauseLease(
             id: UUID(),
-            scope: .scriptableAppsOnly
+            scope: .spotifyOnly
         )
         let activation = ownership.activateRecording(lease)
         #expect(activation.needsPauseAttempt)
-        #expect(ownership.finishRecording(
+        let finish = ownership.finishRecording(
             lease,
             preserveCurrentPlayback: true
-        ) == .none)
+        )
+        #expect(finish == .none)
         #expect(ownership.pausedSource == nil)
         #expect(ownership.activePauseLeaseCount == 0)
     }
 
     @Test func successorPausesAgainWhenPredecessorResumeAlreadyCompleted() throws {
         var ownership = RecordingMediaPauseOwnership<String>()
-        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
-        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+        let first = ownership.beginRecording(scope: .spotifyOnly)
+        let recordedFirstSource = ownership.recordPausedSource(
+            "spotify",
+            for: first.lease
+        )
+        #expect(recordedFirstSource)
         let finish = ownership.finishRecording(
             first.lease,
             preserveCurrentPlayback: false
@@ -1654,15 +2351,19 @@ struct VoiceInkTests {
         }
         ownership.completeResume(request)
 
-        let successor = ownership.beginRecording(scope: .scriptableAppsOnly)
+        let successor = ownership.beginRecording(scope: .spotifyOnly)
         #expect(successor.needsPauseAttempt)
         #expect(ownership.pausedSource == nil)
     }
 
     @Test func lostPlayReceiptForcesActiveSuccessorToMakeFreshPauseDecision() {
         var ownership = RecordingMediaPauseOwnership<String>()
-        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
-        #expect(ownership.recordPausedSource("spotify-track", for: first.lease))
+        let first = ownership.beginRecording(scope: .spotifyOnly)
+        let recordedFirstSource = ownership.recordPausedSource(
+            "spotify-track",
+            for: first.lease
+        )
+        #expect(recordedFirstSource)
         let finish = ownership.finishRecording(
             first.lease,
             preserveCurrentPlayback: false
@@ -1672,9 +2373,12 @@ struct VoiceInkTests {
             return
         }
 
-        let successor = ownership.beginRecording(scope: .scriptableAppsOnly)
+        let successor = ownership.beginRecording(scope: .spotifyOnly)
         #expect(!successor.needsPauseAttempt)
-        #expect(ownership.clearPausedSource(ifEqual: "spotify-track"))
+        let clearedFirstSource = ownership.clearPausedSource(
+            ifEqual: "spotify-track"
+        )
+        #expect(clearedFirstSource)
         let reactivation = ownership.activateRecording(successor.lease)
         #expect(reactivation.needsPauseAttempt)
         #expect(ownership.canAttemptPause(for: successor.lease))
@@ -1683,12 +2387,16 @@ struct VoiceInkTests {
     @Test func rapidBuiltInRecordingTransfersOwnedPauseWithoutIntermediateResume() throws {
         var ownership = RecordingMediaPauseOwnership<String>()
         let first = ownership.beginRecording(
-            scope: .scriptableAppsOnly,
+            scope: .spotifyOnly,
             leaseID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         )
         #expect(first.needsPauseAttempt)
         #expect(first.cancelsPendingResume)
-        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+        let recordedFirstSource = ownership.recordPausedSource(
+            "spotify",
+            for: first.lease
+        )
+        #expect(recordedFirstSource)
 
         let firstFinish = ownership.finishRecording(
             first.lease,
@@ -1701,13 +2409,17 @@ struct VoiceInkTests {
         #expect(ownership.shouldPerformResume(firstResume))
 
         let second = ownership.beginRecording(
-            scope: .scriptableAppsOnly,
+            scope: .spotifyOnly,
             leaseID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         )
         #expect(second.cancelsPendingResume)
         #expect(!second.needsPauseAttempt)
         #expect(!ownership.shouldPerformResume(firstResume))
-        #expect(!ownership.recordPausedSource("spotify", for: second.lease))
+        let recordedDuplicateSource = ownership.recordPausedSource(
+            "spotify",
+            for: second.lease
+        )
+        #expect(!recordedDuplicateSource)
 
         let secondFinish = ownership.finishRecording(
             second.lease,
@@ -1724,8 +2436,12 @@ struct VoiceInkTests {
 
     @Test func externalOutputSuccessorDoesNotCancelPriorOwnedResume() throws {
         var ownership = RecordingMediaPauseOwnership<String>()
-        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
-        #expect(ownership.recordPausedSource("spotify", for: first.lease))
+        let first = ownership.beginRecording(scope: .spotifyOnly)
+        let recordedFirstSource = ownership.recordPausedSource(
+            "spotify",
+            for: first.lease
+        )
+        #expect(recordedFirstSource)
         let finish = ownership.finishRecording(
             first.lease,
             preserveCurrentPlayback: false
@@ -1745,16 +2461,21 @@ struct VoiceInkTests {
 
     @Test func overlappingPauseLeasesRestoreOnlyAfterTheLastRecordingStops() throws {
         var ownership = RecordingMediaPauseOwnership<String>()
-        let first = ownership.beginRecording(scope: .scriptableAppsOnly)
-        #expect(ownership.recordPausedSource("spotify", for: first.lease))
-        let second = ownership.beginRecording(scope: .scriptableAppsOnly)
+        let first = ownership.beginRecording(scope: .spotifyOnly)
+        let recordedFirstSource = ownership.recordPausedSource(
+            "spotify",
+            for: first.lease
+        )
+        #expect(recordedFirstSource)
+        let second = ownership.beginRecording(scope: .spotifyOnly)
         #expect(!second.needsPauseAttempt)
         #expect(ownership.activePauseLeaseCount == 2)
 
-        #expect(ownership.finishRecording(
+        let firstFinish = ownership.finishRecording(
             first.lease,
             preserveCurrentPlayback: false
-        ) == .keepPaused)
+        )
+        #expect(firstFinish == .keepPaused)
         #expect(ownership.activePauseLeaseCount == 1)
         #expect(ownership.pausedSource == "spotify")
 
@@ -1771,13 +2492,18 @@ struct VoiceInkTests {
 
     @Test func tripleClickAbandonsOnlyItsLeaseWithoutAResumeRequest() {
         var ownership = RecordingMediaPauseOwnership<String>()
-        let recording = ownership.beginRecording(scope: .scriptableAppsOnly)
-        #expect(ownership.recordPausedSource("spotify", for: recording.lease))
+        let recording = ownership.beginRecording(scope: .spotifyOnly)
+        let recordedSource = ownership.recordPausedSource(
+            "spotify",
+            for: recording.lease
+        )
+        #expect(recordedSource)
 
-        #expect(ownership.finishRecording(
+        let finish = ownership.finishRecording(
             recording.lease,
             preserveCurrentPlayback: true
-        ) == .abandon)
+        )
+        #expect(finish == .abandon)
         #expect(ownership.pausedSource == nil)
         #expect(ownership.activePauseLeaseCount == 0)
     }

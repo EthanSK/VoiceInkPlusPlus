@@ -7,7 +7,11 @@ import os
 
 enum RecordingMediaPauseScope: Equatable, Hashable, Sendable {
     case none
-    case scriptableAppsOnly
+    /// Default-on protection for the internal speakers beside the microphone.
+    /// This deliberately names Spotify only: the user asked VoiceInk++ to suppress
+    /// Spotify bleed, not to change unrelated Music playback merely because both
+    /// applications expose scriptable state.
+    case spotifyOnly
     case allPublishedMedia
 
     var requestsPause: Bool { self != .none }
@@ -173,6 +177,11 @@ struct RecordingMediaPauseOwnership<Source: Equatable> {
 }
 
 enum RecordingMediaPausePolicy {
+    enum TransferSource: Equatable, Sendable {
+        case scriptable(ScriptableMediaApp)
+        case mediaRemote
+    }
+
     static func scope(
         alwaysPauseEnabled: Bool,
         pauseOnBuiltInSpeakersEnabled: Bool,
@@ -183,26 +192,45 @@ enum RecordingMediaPausePolicy {
         }
         if pauseOnBuiltInSpeakersEnabled,
            AudioDeviceConfiguration.isMacBookBuiltInSpeakers(outputSnapshot) {
-            // The default-on safety rule is deliberately exact: Spotify and Music
-            // expose app-specific state and commands. Generic MediaRemote is global
-            // and cannot prove it will later play the same browser/tab/podcast.
-            return .scriptableAppsOnly
+            // The default-on safety rule is deliberately narrow. Generic
+            // MediaRemote is global and cannot prove it will later play the same
+            // browser/tab/podcast, while Music was not part of Ethan's request.
+            return .spotifyOnly
         }
         return .none
     }
 
-    /// Prefer the scriptable app published as now-playing, but never let an
-    /// unrelated MediaRemote owner suppress exact Spotify/Music probing. Chrome,
-    /// a stale browser tab, or a lagging listener can be published while Spotify
-    /// is still audibly playing through the nearby built-in speakers.
+    /// The built-in-speaker policy is Spotify-only. The explicit all-media policy
+    /// still prefers whichever scriptable app is published as now-playing, while
+    /// never letting an unrelated browser owner conceal exact Spotify/Music state.
     static func scriptableProbeOrder(
+        for scope: RecordingMediaPauseScope,
         nowPlayingBundle: String?
     ) -> [ScriptableMediaApp] {
+        if scope == .spotifyOnly { return [.spotify] }
+        guard scope == .allPublishedMedia else { return [] }
         guard let nowPlayingBundle,
               let preferred = ScriptableMediaApp.from(bundleId: nowPlayingBundle) else {
             return ScriptableMediaApp.allCases
         }
         return [preferred] + ScriptableMediaApp.allCases.filter { $0 != preferred }
+    }
+
+    /// A narrower Spotify-only recording may inherit only playback VoiceInk++
+    /// proved it paused in Spotify. Music and generic MediaRemote ownership belong
+    /// exclusively to the explicit all-media scope.
+    static func canTransfer(
+        _ source: TransferSource,
+        to scope: RecordingMediaPauseScope
+    ) -> Bool {
+        switch scope {
+        case .none:
+            return false
+        case .spotifyOnly:
+            return source == .scriptable(.spotify)
+        case .allPublishedMedia:
+            return true
+        }
     }
 }
 
@@ -234,6 +262,10 @@ final class PlaybackController: ObservableObject {
 
     // The cross-app MediaRemote bridge (perl-hosted; works on macOS 26).
     private var mediaController: MediaRemoteAdapter.MediaController
+    private let scriptableMediaControl: any ScriptableMediaControlling
+    private let outputSnapshotProvider: () -> DefaultOutputDeviceSnapshot?
+    private let audioResumptionDelayProvider: () -> TimeInterval
+    private let persistsSettings: Bool
     private var isMediaTracking = false
     private var mediaTrackingGeneration: UInt64 = 0
 
@@ -267,6 +299,20 @@ final class PlaybackController: ObservableObject {
     private enum PausedSource: Equatable {
         case appleScript(ScriptableMediaSource)
         case mediaRemote(MediaRemotePausedSource)
+
+        func canTransfer(to scope: RecordingMediaPauseScope) -> Bool {
+            let transferSource: RecordingMediaPausePolicy.TransferSource
+            switch self {
+            case .appleScript(let source):
+                transferSource = .scriptable(source.app)
+            case .mediaRemote:
+                transferSource = .mediaRemote
+            }
+            return RecordingMediaPausePolicy.canTransfer(
+                transferSource,
+                to: scope
+            )
+        }
     }
 
     private struct PausedSourceAcquisition {
@@ -275,7 +321,16 @@ final class PlaybackController: ObservableObject {
     }
 
     private var ownedPausedMedia = RecordingMediaPauseOwnership<PausedSource>()
-    private var resumeTask: Task<Void, Never>?
+    private struct PendingResumeOperation {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    /// Remains published until the operation has fully returned, even after it is
+    /// cancelled. Every rapid successor therefore joins the same boundary. Clearing
+    /// this reference at the first successor let a third recording open AUHAL while
+    /// the predecessor's already-dispatched Play was still in flight.
+    private var pendingResumeOperation: PendingResumeOperation?
     /// Set only when an explicit Spotify/Music command crossed its irreversible
     /// boundary but its state receipt was lost. A successor must read exact PID,
     /// track, and state before AUHAL opens; it may never inherit this as paused.
@@ -284,12 +339,22 @@ final class PlaybackController: ObservableObject {
     /// lease. If play already crossed its irreversible boundary, this guarantees
     /// the successor observes completion and issues a fresh pause in-order.
     private var predecessorResumeTasks: [UUID: Task<Void, Never>] = [:]
+    private struct PendingPauseOperation {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+    /// Serializes the complete predecessor-join / exact-Pause / verification path.
+    /// Without this tail, two successors released by the same Play barrier could
+    /// both observe `pausedSource == nil` and send duplicate Pause commands.
+    private var pendingPauseOperation: PendingPauseOperation?
 
     /// Global override: pause active media for every output route.
-    @Published var isPauseMediaEnabled: Bool = UserDefaults.standard.bool(
-        forKey: "isPauseMediaEnabled"
-    ) {
+    @Published var isPauseMediaEnabled: Bool {
         didSet {
+            guard persistsSettings else {
+                refreshMediaTracking()
+                return
+            }
             UserDefaults.standard.set(
                 isPauseMediaEnabled,
                 forKey: "isPauseMediaEnabled"
@@ -299,10 +364,12 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Default-on safety rule for the internal speakers beside the microphone.
-    @Published var isPauseMediaOnBuiltInSpeakersEnabled: Bool = UserDefaults.standard.bool(
-        forKey: "isPauseMediaOnBuiltInSpeakersEnabled"
-    ) {
+    @Published var isPauseMediaOnBuiltInSpeakersEnabled: Bool {
         didSet {
+            guard persistsSettings else {
+                refreshMediaTracking()
+                return
+            }
             UserDefaults.standard.set(
                 isPauseMediaOnBuiltInSpeakersEnabled,
                 forKey: "isPauseMediaOnBuiltInSpeakersEnabled"
@@ -311,8 +378,31 @@ final class PlaybackController: ObservableObject {
         }
     }
 
-    private init() {
+    init(
+        scriptableMediaControl: (any ScriptableMediaControlling)? = nil,
+        outputSnapshotProvider: @escaping () -> DefaultOutputDeviceSnapshot? = {
+            AudioDeviceConfiguration.getDefaultOutputDeviceSnapshot()
+        },
+        audioResumptionDelayProvider: @escaping () -> TimeInterval = {
+            MediaController.shared.audioResumptionDelay
+        },
+        initialPauseMediaEnabled: Bool? = nil,
+        initialBuiltInSpeakerPauseEnabled: Bool? = nil,
+        persistsSettings: Bool = true
+    ) {
         mediaController = MediaRemoteAdapter.MediaController()
+        // Resolve the MainActor-isolated singleton inside the MainActor-isolated
+        // initializer. Referencing it from a default-argument expression becomes
+        // an error in Swift 6 because default arguments are evaluated nonisolated.
+        self.scriptableMediaControl = scriptableMediaControl ?? LiveScriptableMediaControl.shared
+        self.outputSnapshotProvider = outputSnapshotProvider
+        self.audioResumptionDelayProvider = audioResumptionDelayProvider
+        self.persistsSettings = persistsSettings
+        isPauseMediaEnabled = initialPauseMediaEnabled ?? UserDefaults.standard.bool(
+            forKey: "isPauseMediaEnabled"
+        )
+        isPauseMediaOnBuiltInSpeakersEnabled = initialBuiltInSpeakerPauseEnabled ??
+            UserDefaults.standard.bool(forKey: "isPauseMediaOnBuiltInSpeakersEnabled")
         refreshMediaTracking()
     }
 
@@ -321,7 +411,7 @@ final class PlaybackController: ObservableObject {
     /// Freezes the media policy at recording start. Later output/setting changes
     /// cannot revoke the obligation to restore a source this lease actually paused.
     func beginRecordingPause() -> RecordingMediaPauseLease {
-        let outputSnapshot = AudioDeviceConfiguration.getDefaultOutputDeviceSnapshot()
+        let outputSnapshot = outputSnapshotProvider()
         let scope = RecordingMediaPausePolicy.scope(
             alwaysPauseEnabled: isPauseMediaEnabled,
             pauseOnBuiltInSpeakersEnabled: isPauseMediaOnBuiltInSpeakersEnabled,
@@ -330,10 +420,17 @@ final class PlaybackController: ObservableObject {
         let lease = RecordingMediaPauseLease(id: UUID(), scope: scope)
 
         var waitsForPredecessorResume = false
-        if lease.requestsPause, let predecessor = resumeTask {
-            predecessor.cancel()
-            resumeTask = nil
-            predecessorResumeTasks[lease.id] = predecessor
+        if lease.requestsPause, let predecessor = pendingResumeOperation {
+            let canTransferExistingSource = ownedPausedMedia.pausedSource?
+                .canTransfer(to: lease.scope) == true
+            if canTransferExistingSource {
+                predecessor.task.cancel()
+            }
+            // Keep the shared operation published until it really exits. Compatible
+            // ownership cancels and transfers when Play has not crossed its boundary.
+            // An incompatible broad-media source instead finishes its own Play; the
+            // Spotify-only successor then makes a fresh exact Spotify decision.
+            predecessorResumeTasks[lease.id] = predecessor.task
             waitsForPredecessorResume = true
         }
 
@@ -344,7 +441,16 @@ final class PlaybackController: ObservableObject {
             // A predecessor Play already in flight is the sole exception: the
             // async pause path must join it before activation so it can re-pause
             // in order if Play crossed its irreversible boundary.
-            _ = ownedPausedMedia.activateRecording(lease)
+            if let pausedSource = ownedPausedMedia.pausedSource,
+               !pausedSource.canTransfer(to: lease.scope) {
+                // True overlapping incompatible recordings would require ownership
+                // of two independent playback sources. The app has one capture
+                // owner, so this is defensive fail-open behavior rather than silently
+                // inheriting and later resuming media outside the new scope.
+                logger.error("Recording media lease could not inherit an incompatible active source")
+            } else {
+                _ = ownedPausedMedia.activateRecording(lease)
+            }
         }
 
         if lease.requestsPause {
@@ -358,6 +464,28 @@ final class PlaybackController: ObservableObject {
     /// Attempts one explicit pause for a lease that still owns the active episode.
     /// A transferred lease sees an existing source and therefore emits no command.
     func pauseMedia(for lease: RecordingMediaPauseLease) async {
+        let predecessor = pendingPauseOperation?.task
+        let operationID = UUID()
+        let operation = Task { @MainActor [weak self] in
+            await predecessor?.value
+            guard let self else { return }
+            await self.performPauseMedia(for: lease)
+        }
+        pendingPauseOperation = PendingPauseOperation(
+            id: operationID,
+            task: operation
+        )
+        await withTaskCancellationHandler {
+            await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
+        if pendingPauseOperation?.id == operationID {
+            pendingPauseOperation = nil
+        }
+    }
+
+    private func performPauseMedia(for lease: RecordingMediaPauseLease) async {
         if let predecessor = predecessorResumeTasks.removeValue(forKey: lease.id) {
             // Cancellation prevents a delayed command from starting. If play had
             // already begun, the task finishes its exact verification before this
@@ -370,13 +498,27 @@ final class PlaybackController: ObservableObject {
         // needed; Recorder awaits this method before AUHAL opens.
         await reconcileIndeterminateScriptableSourceBeforeCapture()
 
+        if let incompatibleSource = ownedPausedMedia.pausedSource,
+           !incompatibleSource.canTransfer(to: lease.scope),
+           ownedPausedMedia.activePauseLeaseCount == 0 {
+            // A narrower successor waited for the broad predecessor's Play, but
+            // the explicit command could still leave that source paused. Do not
+            // reinterpret Music/MediaRemote ownership as Spotify protection or
+            // let it suppress the successor's exact Spotify probe. The failed
+            // restoration is never retried; only its stale ownership is dropped.
+            _ = ownedPausedMedia.clearPausedSource(ifEqual: incompatibleSource)
+            logger.error(
+                "Dropped incompatible playback ownership after predecessor resume settled"
+            )
+        }
+
         let decision = ownedPausedMedia.activateRecording(lease)
         guard decision.needsPauseAttempt,
               !Task.isCancelled,
               ownedPausedMedia.canAttemptPause(for: lease) else { return }
 
         guard let acquisition = await pauseActiveSourceIfPlaying(
-            allowsGenericMediaRemote: lease.scope.allowsGenericMediaRemote
+            scope: lease.scope
         ) else {
             logger.info("No active media detected on record start; nothing paused")
             return
@@ -416,8 +558,8 @@ final class PlaybackController: ObservableObject {
         case .keepPaused:
             logger.info("Recording media lease ended; a newer recording retains the paused source")
         case .abandon:
-            resumeTask?.cancel()
-            resumeTask = nil
+            pendingResumeOperation?.task.cancel()
+            pendingResumeOperation = nil
             indeterminateScriptableSource = nil
             logger.info("Abandoned recording media ownership without play/pause")
             refreshMediaTracking()
@@ -429,21 +571,25 @@ final class PlaybackController: ObservableObject {
     // MARK: - Explicit transport operations
 
     private func pauseActiveSourceIfPlaying(
-        allowsGenericMediaRemote: Bool
+        scope: RecordingMediaPauseScope
     ) async -> PausedSourceAcquisition? {
         let nowPlayingBundle = lastKnownTrackInfo?.payload.bundleIdentifier
         let listenerSaysPlaying = isMediaPlaying &&
             lastKnownTrackInfo?.payload.isPlaying == true
 
-        // Spotify and Music are the primary route, not a fallback: one bounded
-        // per-app state/command/state operation is more authoritative than the
-        // asynchronous global listener. Probe the listener's exact scriptable app
-        // first, then the other scriptable app. An unrelated Chrome/other
-        // MediaRemote owner must not conceal audibly playing Spotify or Music.
+        // The built-in-speaker path probes Spotify only. The older explicit
+        // all-media setting retains Spotify/Music plus MediaRemote behavior. One
+        // deadline covers every exact read and command so an unavailable player
+        // cannot make the recording trigger appear dead.
+        let startupDeadline = scriptableMediaControl.makeStartupDeadline()
         for app in RecordingMediaPausePolicy.scriptableProbeOrder(
+            for: scope,
             nowPlayingBundle: nowPlayingBundle
-        ) where AppleScriptMediaControl.isRunning(app) {
-            switch await AppleScriptMediaControl.pauseIfPlaying(app) {
+        ) where scriptableMediaControl.isRunning(app) {
+            switch await scriptableMediaControl.pauseIfPlaying(
+                app,
+                deadline: startupDeadline
+            ) {
             case .paused(let source):
                 logger.info("Paused \(app.rawValue, privacy: .public) with verified exact state")
                 return PausedSourceAcquisition(
@@ -464,7 +610,7 @@ final class PlaybackController: ObservableObject {
         // The default-on built-in-speaker rule deliberately stops here. Only the
         // older explicit "Pause Media While Recording" setting opts into this
         // global transport, because MediaRemote cannot address a particular tab.
-        guard allowsGenericMediaRemote,
+        guard scope.allowsGenericMediaRemote,
               listenerSaysPlaying,
               let trackInfo = lastKnownTrackInfo,
               let source = mediaRemoteSource(from: trackInfo) else {
@@ -491,7 +637,7 @@ final class PlaybackController: ObservableObject {
     private func reconcileIndeterminateScriptableSourceBeforeCapture() async {
         guard let source = indeterminateScriptableSource else { return }
         let ownedSource = PausedSource.appleScript(source)
-        switch await AppleScriptMediaControl.observation(for: source.app) {
+        switch await scriptableMediaControl.observation(for: source.app) {
         case .paused(let current) where current == source:
             indeterminateScriptableSource = nil
             logger.info("Revalidated exact scriptable source as paused before capture")
@@ -505,22 +651,35 @@ final class PlaybackController: ObservableObject {
     private func scheduleResume(
         _ request: RecordingMediaPauseResumeRequest<PausedSource>
     ) {
-        resumeTask?.cancel()
-        let delay = MediaController.shared.audioResumptionDelay
-        resumeTask = Task { [weak self] in
+        pendingResumeOperation?.task.cancel()
+        let delay = audioResumptionDelayProvider()
+        let operationID = UUID()
+        let task = Task { [weak self] in
             if delay > 0 {
                 try? await Task.sleep(
                     nanoseconds: UInt64(delay * 1_000_000_000)
                 )
             }
-            guard !Task.isCancelled, let self else { return }
-            await self.performResume(request)
+            guard let self else { return }
+            guard !Task.isCancelled else {
+                self.finishPendingResumeOperation(operationID)
+                return
+            }
+            await self.performResume(request, operationID: operationID)
         }
+        pendingResumeOperation = PendingResumeOperation(
+            id: operationID,
+            task: task
+        )
     }
 
     private func performResume(
-        _ request: RecordingMediaPauseResumeRequest<PausedSource>
+        _ request: RecordingMediaPauseResumeRequest<PausedSource>,
+        operationID: UUID
     ) async {
+        defer {
+            finishPendingResumeOperation(operationID)
+        }
         guard ownedPausedMedia.shouldPerformResume(request) else {
             logger.info("Ignored stale recording media resume request")
             return
@@ -529,7 +688,7 @@ final class PlaybackController: ObservableObject {
         let resolvedOwnership: Bool
         switch request.source {
         case .appleScript(let source):
-            switch await AppleScriptMediaControl.playIfPaused(source) {
+            switch await scriptableMediaControl.playIfPaused(source) {
             case .played:
                 indeterminateScriptableSource = nil
                 resolvedOwnership = true
@@ -583,7 +742,12 @@ final class PlaybackController: ObservableObject {
         if resolvedOwnership {
             ownedPausedMedia.completeResume(request)
         }
-        resumeTask = nil
+    }
+
+    private func finishPendingResumeOperation(_ operationID: UUID) {
+        if pendingResumeOperation?.id == operationID {
+            pendingResumeOperation = nil
+        }
         refreshMediaTracking()
     }
 
@@ -642,7 +806,7 @@ final class PlaybackController: ObservableObject {
         // The adapter owns its listener restart policy. Do not wrap termination in
         // another restart loop: old process callbacks can race a replacement and
         // create duplicate/unowned helpers. This is unrelated to the exact
-        // Spotify/Music built-in-speaker feature, which needs no listener at all.
+        // Spotify built-in-speaker feature, which needs no listener at all.
         controller.onListenerTerminated = { }
     }
 
@@ -676,7 +840,7 @@ final class PlaybackController: ObservableObject {
         // is switched off mid-recording, retain the listener/snapshot until that
         // owned episode either resumes or is explicitly abandoned.
         if ownedPausedMedia.activePauseLeaseCount > 0 ||
-            ownsMediaRemoteSource || resumeTask != nil {
+            ownsMediaRemoteSource || pendingResumeOperation != nil {
             return
         }
         mediaTrackingGeneration &+= 1
@@ -696,7 +860,8 @@ final class PlaybackController: ObservableObject {
     }
 
     deinit {
-        resumeTask?.cancel()
+        pendingResumeOperation?.task.cancel()
+        pendingPauseOperation?.task.cancel()
         predecessorResumeTasks.values.forEach { $0.cancel() }
         mediaController.onTrackInfoReceived = nil
         mediaController.onListenerTerminated = nil

@@ -119,6 +119,12 @@ struct BackupFile: Codable {
     let customEmojis: [String]?
     let customCloudModels: [CustomModelBackup]?
 
+    /// Categories explicitly represented by the source file. A missing category
+    /// is different from a deliberately exported empty category: older and
+    /// dictionary-only backups decode missing arrays as empty for compatibility,
+    /// but importing those synthetic empties would erase live Modes or prompts.
+    let includedCategories: Set<BackupCategory>
+
     private enum CodingKeys: String, CodingKey {
         case version, customPrompts, modeConfigs, modeShortcuts, vocabularyWords, wordReplacements, generalSettings, customEmojis, customCloudModels
         case legacyModeConfigs = "powerModeConfigs"
@@ -135,6 +141,7 @@ struct BackupFile: Codable {
         self.generalSettings = generalSettings
         self.customEmojis = customEmojis
         self.customCloudModels = customCloudModels
+        self.includedCategories = Set(BackupCategory.allCases)
     }
 
     init(from decoder: Decoder) throws {
@@ -151,6 +158,18 @@ struct BackupFile: Codable {
         generalSettings = try container.decodeIfPresent(GeneralBackup.self, forKey: .generalSettings)
         customEmojis = try container.decodeIfPresent([String].self, forKey: .customEmojis)
         customCloudModels = try container.decodeIfPresent([CustomModelBackup].self, forKey: .customCloudModels)
+
+        var represented = Set<BackupCategory>()
+        if container.contains(.generalSettings) { represented.insert(.general) }
+        if container.contains(.customPrompts) { represented.insert(.prompts) }
+        if container.contains(.modeConfigs) || container.contains(.legacyModeConfigs) {
+            represented.insert(.modes)
+        }
+        if container.contains(.vocabularyWords) || container.contains(.wordReplacements) {
+            represented.insert(.dictionary)
+        }
+        if container.contains(.customCloudModels) { represented.insert(.customModels) }
+        includedCategories = represented
     }
 
     func encode(to encoder: Encoder) throws {

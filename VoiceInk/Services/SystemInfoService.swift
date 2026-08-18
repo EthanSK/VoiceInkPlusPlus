@@ -50,7 +50,7 @@ class SystemInfoService {
         RECORDING FEEDBACK:
         Sound Feedback: \(CustomSoundManager.shared.hasAnyRecordingSoundEnabled)
         Pause Media While Recording: \(UserDefaults.standard.bool(forKey: "isPauseMediaEnabled"))
-        Pause Spotify/Music on MacBook Speakers: \(UserDefaults.standard.bool(forKey: "isPauseMediaOnBuiltInSpeakersEnabled"))
+        Pause Spotify on MacBook Speakers: \(UserDefaults.standard.bool(forKey: "isPauseMediaOnBuiltInSpeakersEnabled"))
         Mute Audio While Recording: \(UserDefaults.standard.bool(forKey: "isSystemMuteEnabled"))
         Audio Resumption Delay: \(UserDefaults.standard.double(forKey: "audioResumptionDelay"))s
 

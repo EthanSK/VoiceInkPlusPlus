@@ -36,10 +36,10 @@ struct AudioSetupView: View {
                 Toggle("Pause Media While Recording", isOn: $playbackController.isPauseMediaEnabled)
 
                 Toggle(
-                    "Pause Spotify/Music on MacBook Speakers",
+                    "Pause Spotify on MacBook Speakers",
                     isOn: $playbackController.isPauseMediaOnBuiltInSpeakersEnabled
                 )
-                .help("When MacBook speakers are the system output, pause Spotify or Music only after its exact paused state is verified. VoiceInk resumes only the app it proved it paused.")
+                .help("When MacBook speakers are the system output, pause the exact Spotify playback detected at recording start. VoiceInk++ never uses a blind Play/Pause toggle and resumes only that same Spotify process and track.")
 
                 LabeledContent("Resume Delay") {
                     resumeDelayMenu

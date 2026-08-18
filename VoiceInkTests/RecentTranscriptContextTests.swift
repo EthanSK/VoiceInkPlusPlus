@@ -985,6 +985,34 @@ struct RecentTranscriptContextTests {
         #expect(!frozenKeywords.contains(historyOnlyMarker))
     }
 
+    @Test @MainActor func dictionaryOnlyBackupDefaultsToOnlyItsRepresentedCategory() throws {
+        let importJSON = """
+        {
+          "version": "2.0",
+          "vocabularyWords": [
+            { "word": "VoiceInk" },
+            { "word": "VoiceInk++" }
+          ]
+        }
+        """
+        let backup = try JSONDecoder().decode(
+            BackupFile.self,
+            from: Data(importJSON.utf8)
+        )
+
+        #expect(backup.customPrompts.isEmpty)
+        #expect(backup.modeConfigs.isEmpty)
+        #expect(backup.includedCategories == [.dictionary])
+
+        // The real Settings accessory defaults to All. It must reduce that to the
+        // represented Dictionary category rather than applying synthetic empty
+        // prompts and Modes decoded solely for backward compatibility.
+        let options = BackupOptions(
+            availableCategories: backup.includedCategories
+        )
+        #expect(options.selectedCategories == [.dictionary])
+    }
+
     // MARK: - Helpers
 
     @MainActor

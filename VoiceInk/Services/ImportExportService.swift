@@ -4,22 +4,24 @@ import UniformTypeIdentifiers
 import LaunchAtLogin
 import SwiftData
 
-private final class BackupOptions: NSObject {
+final class BackupOptions: NSObject {
     let view: NSView
 
     private let allButton: NSButton
     private let individualButton: NSButton
     private let categoryButtons: [BackupCategory: NSButton]
+    private let availableCategories: Set<BackupCategory>
 
-    override init() {
+    init(availableCategories: Set<BackupCategory>) {
         self.view = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 188))
         self.allButton = NSButton(radioButtonWithTitle: "All", target: nil, action: nil)
         self.individualButton = NSButton(radioButtonWithTitle: "Individual categories", target: nil, action: nil)
+        self.availableCategories = availableCategories
 
         var buttons: [BackupCategory: NSButton] = [:]
         for category in BackupCategory.allCases {
             let button = NSButton(checkboxWithTitle: category.title, target: nil, action: nil)
-            button.state = .on
+            button.state = availableCategories.contains(category) ? .on : .off
             button.isEnabled = false
             buttons[category] = button
         }
@@ -72,7 +74,9 @@ private final class BackupOptions: NSObject {
 
     var selectedCategories: Set<BackupCategory> {
         if allButton.state == .on {
-            return Set(BackupCategory.allCases)
+            // "All" means everything the chosen backup actually contains. Never
+            // manufacture absent empty categories and apply them destructively.
+            return availableCategories
         }
 
         return Set(categoryButtons.compactMap { category, button in
@@ -95,8 +99,8 @@ private final class BackupOptions: NSObject {
     }
 
     private func setCategoryButtonsEnabled(_ isEnabled: Bool) {
-        for button in categoryButtons.values {
-            button.isEnabled = isEnabled
+        for (category, button) in categoryButtons {
+            button.isEnabled = isEnabled && availableCategories.contains(category)
         }
     }
 }
@@ -256,7 +260,9 @@ class ImportExportService {
                 showAlert(title: String(localized: "Version Mismatch"), message: String(format: String(localized: "The imported settings file (version %@) is from a different version than your application (version %@). Proceeding with import, but be aware of potential incompatibilities."), backup.version, currentSettingsVersion))
             }
 
-            guard let selectedCategories = presentImportSelectionDialog() else {
+            guard let selectedCategories = presentImportSelectionDialog(
+                availableCategories: backup.includedCategories
+            ) else {
                 showAlert(title: String(localized: "Import Canceled"), message: String(localized: "No settings were imported."))
                 return
             }
@@ -288,8 +294,10 @@ class ImportExportService {
         }
     }
 
-    private func presentImportSelectionDialog() -> Set<BackupCategory>? {
-        let accessory = BackupOptions()
+    private func presentImportSelectionDialog(
+        availableCategories: Set<BackupCategory>
+    ) -> Set<BackupCategory>? {
+        let accessory = BackupOptions(availableCategories: availableCategories)
         let alert = NSAlert()
         alert.messageText = String(localized: "Import Settings")
         alert.informativeText = String(localized: "Choose what to import from this backup.")
