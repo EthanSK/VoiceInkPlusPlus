@@ -723,6 +723,28 @@ No row may be promoted merely because a later build reused part of it.
 - **Rule:** Use a disposable page/card only. Prove the exact card/property/block and sibling safety;
   otherwise report not tested and fail closed.
 
+## Playback and media failures
+
+### State-blind hardware play/pause for recording media
+
+- **State:** REJECTED by earlier live playback failures and preserved by the signed v2.0.302
+  built-in-speaker implementation.
+- **Temptation:** On recording start and stop, emit the hardware-equivalent Play/Pause media key.
+  It appears universal and avoids app-specific control.
+- **Why it fails:** Play/Pause is a toggle, not an owned pause or resume. If nothing was playing,
+  another app became current media, an earlier pause arrived late, or playback was already paused,
+  the stop-side toggle can start media or change the wrong source. Event acceptance also provides no
+  identity for the process or track VoiceInk++ actually paused.
+- **Use instead:** Snapshot the output device at recording start and reserve one exact playback
+  lease. For the MacBook built-in-speaker option, issue explicit Spotify pause/play only and retain
+  the exact Spotify PID plus track identity. Transfer that lease across rapid recordings, restore it
+  only when the final owner stops, and treat a reserved lease with no successfully paused source as
+  no action. Keep the existing explicit MediaRemote/app route for the separately enabled general
+  media setting; never add a HID-toggle fallback.
+- **Reconsider only if:** macOS exposes a documented, non-toggle pause and play API with stable source
+  identity that can prove the same owned source at both boundaries. A new generic hardware event is
+  not new evidence.
+
 ## Voice-assistant listener-mute failures
 
 ### Third-party loopback driver plus aggregate microphone

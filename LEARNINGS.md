@@ -25,6 +25,28 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-18T03:25:14Z
+**Trigger:** Ethan asked for a history-derived personal VoiceInk++ dictionary and bounded recent-dictation context sent to GPT Live Transcribe
+**Symptom:** VoiceInk naming and recurring personal terms were frequently misrecognized, while an earlier context version rejected realistic dictations over 320 characters and realtime/fallback could independently fetch different Vocabulary
+**Root cause:** Recognition needed stable reviewed keywords plus one recording-owned OpenAI request snapshot; whole-entry rejection made normal long dictations ineligible, and importing a dictionary-only backup through an unsafe All path could erase absent Modes or prompts
+**Fix:** A private 80-term dictionary uses canonical VoiceInk and VoiceInk++ spellings and excludes prior removals; v2.0.302 freezes Vocabulary and up to three same-Mode completed excerpts from the last 15 minutes, bounds each excerpt at 320 characters, recent context at 1200, and the complete OpenAI prompt at 4096, reuses the snapshot for GPT Live and gpt-transcribe fallback, and makes unavailable import categories non-destructive. The live dictionary now contains those 80 plus existing sus
+**Commit:** f89f9739a754833a674cfb3cccf221de4d643a16
+**Guard:** The exact build-302 Mac Mini fallback named and passed all 241 tests. Live dictionary readback is exactly 81 with zero missing terms, only sus extra, no Voice Ink/Voice Inc/OpenClaw/VS Code/VSCode, and all seven English GPT Live Modes remain. A counts-only live request trace with recentEntries at least 1 and keywords 81 remains pending
+---
+
+
+---
+**Date:** 2026-08-18T03:25:14Z
+**Trigger:** Ethan asked VoiceInk++ to pause Spotify only when MacBook Pro built-in speakers are the active output, while preserving rapid recordings and unrelated media
+**Symptom:** A global or state-blind hardware play/pause command could pause the wrong current-media source, start already-paused media, or resume a newer recording's playback ownership
+**Root cause:** The safe decision needs a recording-time Core Audio output snapshot plus one exact Spotify PID/track lease; an empty reserved lease is not playback ownership, and overlapping recordings must transfer rather than duplicate that lease
+**Fix:** RecordingMediaPausePolicy now selects Spotify-only pausing for verified MacBook built-in speakers, PlaybackController restores only the exact Spotify process/track VoiceInk++ paused, rapid recordings transfer ownership, and an empty reserved lease completes as no action. Signed v2.0.302 is installed with the preference explicitly enabled
+**Commit:** f89f9739a754833a674cfb3cccf221de4d643a16
+**Guard:** The exact build-302 Mac Mini fallback named and passed all 241 tests, including built-in-output policy, reserved-empty completion, overlap/rapid ownership, cancellation, and triple-click playback preservation. Installed hash/CDHash/signature/entitlements and the Scarlett external output are verified; one physical built-in-speaker Spotify pause/resume trace remains pending
+---
+
+
+---
 **Date:** 2026-08-17T01:43:39Z
 **Trigger:** Ethan asked whether the buffer was properly designed and requested an Opus 5 UX and correctness pass.
 **Symptom:** Realtime recording startup could either lose or reorder PCM around the provider handoff, and an incomplete live stream could still look plausibly transcribed.
