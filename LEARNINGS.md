@@ -25,6 +25,28 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-18T22:03:25Z
+**Trigger:** The exact v2.0.303 canonical full Xcode action stalled for ten minutes with zero named tests, requiring the documented release-boundary fallback.
+**Symptom:** The permitted direct xctest full-suite fallback named tests but aborted at MediaRemoteAdapter/resource_bundle_accessor.swift because it could not find MediaRemoteAdapter_MediaRemoteAdapter.bundle.
+**Root cause:** The direct xctest process has a different Bundle.main, and this exact test artifact's MediaRemoteAdapter accessor contained no DEBUG environment-override path; the resource bundle copied into the host app was therefore outside the framework resource URL used by the direct runner.
+**Fix:** Keep the built app immutable. Stage a disposable copy of the host Frameworks directory, place the existing MediaRemoteAdapter_MediaRemoteAdapter.bundle under the staged MediaRemoteAdapter.framework/Resources, and put that staging directory first in DYLD_FRAMEWORK_PATH for the direct full-suite fallback.
+**Commit:** validation-only (exact source c109d7b24bc64bbc94eddb44b3362a89b3d7a932)
+**Guard:** The first two direct attempts reproducibly aborted at the same resource lookup; the isolated staging harness then completed with 249 started, 249 passed, 8 started suites, 8 passed suites, and zero failure markers. Never count the partial runs or modify the app-under-test to fix the harness.
+---
+
+
+---
+**Date:** 2026-08-18T22:03:25Z
+**Trigger:** Ethan reported the paired Razer DPI-button release regression and requested the smallest VoiceInk-owned fix without changing mouse mappings.
+**Symptom:** Releasing both Razer DPI buttons together produced two equivalent Primary activations, so one physical paired release could start then cancel or turn a normal stop into pause.
+**Root cause:** Karabiner collapses F21 and F22 into the same Shift-Control-Option chord, and its exclusive HID grab prevents VoiceInk++ from recovering source identity; the old 500 ms cooldown is intentionally bypassed so accepted double/triple gestures still work.
+**Fix:** Commit b106500 adds a VoiceInk-owned 90 ms event-tap-time coalescer before PrimaryRecordingPressCoordinator. It suppresses only the second mechanically near-simultaneous chord, never reanchors on a rejection, and resets across Next and monitor boundaries.
+**Commit:** b10650016afe4a5147958d43dac973d7b1ad8284
+**Guard:** The exact build-303 Mac Mini release fallback named and passed all 249 tests in 8 suites, including all eight new coalescer/reducer/handler tests plus Primary modifier, double/triple, recovery, realtime-HUD, Primary isolation, both Next routes, queue, and commercial-free guards. Physical F21, F22, F19, paired-release, double, triple, Next, and lock-screen acceptance remains pending.
+---
+
+
+---
 **Date:** 2026-08-18T03:25:14Z
 **Trigger:** Ethan asked for a history-derived personal VoiceInk++ dictionary and bounded recent-dictation context sent to GPT Live Transcribe
 **Symptom:** VoiceInk naming and recurring personal terms were frequently misrecognized, while an earlier context version rejected realistic dictations over 320 characters and realtime/fallback could independently fetch different Vocabulary

@@ -118,6 +118,8 @@ Widen to adjacent tests only when the change crosses their shared code or focuse
 
 For every focused run, require at least one test to execute and require the output to name every expected selected test. Do not count a successful build, a scheme-level `Test Succeeded`, or any zero-test result as a pass. Preserve a stalled or empty-selection log and retry the same focused selection; do not turn a routine stall or malformed filter into an unplanned full-suite run. Never use direct `xcrun xctest` to satisfy a focused selection. At one of the full-suite gates above, the already-built `VoiceInkTests.xctest` bundle may be run with `xcrun xctest` as a diagnostic fallback, setting `DYLD_LIBRARY_PATH` to the host app's `Contents/MacOS` and `DYLD_FRAMEWORK_PATH` to its `Contents/Frameworks` plus Xcode's macOS developer frameworks. A valid fallback run names every expected test. Retry the normal Xcode runner after recovering TestManager, and do not enable Developer Mode unless the Mac owner explicitly chooses to.
 
+If the direct full-suite fallback aborts because `MediaRemoteAdapter_MediaRemoteAdapter.bundle` is not visible, keep the built host app unchanged. Make a disposable copy of its `Contents/Frameworks`, place the host's existing resource bundle inside the staged `MediaRemoteAdapter.framework/Resources`, and put that staging directory first in `DYLD_FRAMEWORK_PATH`. Rerun the complete bundle and require every expected test name and zero failures; never count the partial run.
+
 ## Troubleshooting
 
 ### Xcode license or first-launch error
