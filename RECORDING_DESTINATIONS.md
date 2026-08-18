@@ -69,6 +69,15 @@ pastes, changes Mode, or changes the tentative recording-start destination. The 
 visible with its last partial frozen, and a pause symbol replaces the moving waveform on every
 mirrored recorder panel.
 
+The Corsair F19 release and Razer F21/F22 releases currently enter this same Primary path through
+Karabiner. Releasing both Razer DPI buttons together may emit two complete identical chords, so
+VoiceInk++ filters only a second chord less than 90 ms after the last accepted one. The filter runs
+before `.starting` can reinterpret that duplicate as cancellation and before a recording-time
+duplicate can reinterpret it as pause. It never extends its own window, and it does not alter the
+0.45-second double-click or full-system-interval triple-click classifiers. A 500 ms Primary cooldown
+is deliberately not used because it would make the accepted pause and clipboard gestures
+impossible.
+
 A third consecutive Primary press inside that same click sequence turns the gesture into
 **finish to clipboard**. VoiceInk++ waits for the double-click capture transition to settle, stops
 and transcribes the same session, immediately saves the original WAV plus the last realtime HUD

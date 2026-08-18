@@ -23,6 +23,16 @@ The separate **Next button** is also the forward button, secondary button, Next 
 
 Ethan's live G502 X LIGHTSPEED `Desktop: Default` profile was sanity-checked on 2026-07-14: the upper side thumb control runs the `speech to text` Shift-Control-Option macro and is the primary button; a different control is explicitly labeled `Next Track` and is the Next button. G HUB's separately labeled `Mouse Button 4` and `Mouse Button 5` are not aliases for that Next control. Never infer “forward button” means raw Mouse Button 5.
 
+Ethan's Razer F21/F22 and Corsair F19 source releases currently converge through Karabiner as the
+same Shift-Control-Option Primary chord. VoiceInk++ owns the final duplicate boundary, but it cannot
+recover the originating control after Karabiner's exclusive HID grab. Coalesce only a second complete
+Primary-toggle chord whose event-tap timestamp is less than 90 ms after the last accepted chord; a
+suppressed duplicate must not re-anchor that window. Never restore the legacy 500 ms Primary cooldown:
+it would consume the accepted double-click pause/resume and triple-click clipboard gestures. Preserve
+independent F19/F21/F22 activation, reset coalescing across monitor and Next boundaries, and require the
+paired-release, ordinary double-click, genuine triple-click, and lock-screen physical checks before
+accepting a release.
+
 The modifier-only Primary shortcut must not dismiss a context menu or disturb the focused composer merely because VoiceInk++ starts, stops, pauses, or resumes recording. Suppress only the `flagsChanged` event that completes the owned Shift-Control-Option chord and any full-chord repeats. Forward partial modifiers and every release so the foreground app receives a balanced modifier sequence and no modifier can remain logically stuck. Preserve the pure reducer regression test and require one physical open-context-menu check before accepting a release that changes shortcut monitoring.
 
 ## Primary isolation is a hard architectural boundary

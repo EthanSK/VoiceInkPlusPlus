@@ -508,6 +508,16 @@ struct PrimaryRecordingPressCoordinator {
     // VoiceInk++ decision window at a responsive, still-forgiving interval.
     static let maximumPauseDoublePressInterval: TimeInterval = 0.45
 
+    // Karabiner maps Corsair F19 and both Razer DPI controls (F21/F22) to the
+    // same modifier-only Primary chord after their physical releases. When two
+    // controls are released together it can therefore emit two complete chords,
+    // but its exclusive HID grab means VoiceInk++ cannot recover which control
+    // produced either one. Coalesce only a mechanically near-simultaneous burst:
+    // this cap stays far below a deliberate double-click, whose second press must
+    // still reach the pause coordinator, and click three must still reach the
+    // clipboard-only route.
+    static let maximumDuplicatePrimaryChordInterval: TimeInterval = 0.09
+
     static func pauseDoublePressInterval(
         systemDoubleClickInterval: TimeInterval
     ) -> TimeInterval {
@@ -522,6 +532,15 @@ struct PrimaryRecordingPressCoordinator {
         systemDoubleClickInterval: TimeInterval
     ) -> TimeInterval {
         systemDoubleClickInterval
+    }
+
+    static func duplicatePrimaryChordInterval(
+        normalStopDecisionInterval: TimeInterval
+    ) -> TimeInterval {
+        min(
+            maximumDuplicatePrimaryChordInterval,
+            normalStopDecisionInterval / 3
+        )
     }
 
     enum Decision: Equatable {
@@ -631,6 +650,39 @@ struct PrimaryRecordingPressCoordinator {
     }
 }
 
+/// Filters only the second complete Primary chord in one mechanically
+/// near-simultaneous burst. It deliberately anchors on the last accepted chord,
+/// not a rejected duplicate, so a burst cannot keep extending the suppression
+/// window and consume a later intentional click.
+struct PrimaryShortcutDuplicateChordCoalescer {
+    let interval: TimeInterval
+    private(set) var lastAcceptedEventTime: TimeInterval?
+
+    mutating func shouldCoalesce(
+        action: ShortcutAction,
+        mode: RecordingShortcutManager.Mode,
+        eventTime: TimeInterval
+    ) -> Bool {
+        guard action == .primaryRecording, mode == .toggle else {
+            return false
+        }
+
+        if let lastAcceptedEventTime {
+            let elapsed = eventTime - lastAcceptedEventTime
+            if elapsed >= 0, elapsed < interval {
+                return true
+            }
+        }
+
+        lastAcceptedEventTime = eventTime
+        return false
+    }
+
+    mutating func reset() {
+        lastAcceptedEventTime = nil
+    }
+}
+
 @MainActor
 final class RecordingShortcutModeHandler {
     private let canHandleShortcutAction: @MainActor () -> Bool
@@ -680,6 +732,7 @@ final class RecordingShortcutModeHandler {
     private var activeShortcutCanCancelAccidentalStart = false
     private var lastShortcutPressTime: Date?
     private var primaryPressCoordinator: PrimaryRecordingPressCoordinator
+    private var primaryDuplicateChordCoalescer: PrimaryShortcutDuplicateChordCoalescer
     private var primaryStopDecisionTask: Task<Void, Never>?
     private var primaryPauseAction: (id: UUID, task: Task<Bool, Never>)?
 
@@ -728,7 +781,8 @@ final class RecordingShortcutModeHandler {
         ),
         primaryTriplePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.triplePressContinuationInterval(
             systemDoubleClickInterval: NSEvent.doubleClickInterval
-        )
+        ),
+        primaryDuplicateChordInterval: TimeInterval? = nil
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
         self.isRecorderVisible = isRecorderVisible
@@ -741,6 +795,12 @@ final class RecordingShortcutModeHandler {
         self.primaryPressCoordinator = PrimaryRecordingPressCoordinator(
             normalStopDecisionInterval: primaryDoublePressInterval,
             triplePressContinuationInterval: primaryTriplePressInterval
+        )
+        self.primaryDuplicateChordCoalescer = PrimaryShortcutDuplicateChordCoalescer(
+            interval: primaryDuplicateChordInterval ??
+                PrimaryRecordingPressCoordinator.duplicatePrimaryChordInterval(
+                    normalStopDecisionInterval: primaryDoublePressInterval
+                )
         )
     }
 
@@ -790,6 +850,25 @@ final class RecordingShortcutModeHandler {
         guard !isShortcutPressed else {
             return
         }
+
+        // Held-chord repeats are already rejected by ShortcutMonitor and the
+        // isShortcutPressed guard. This separate boundary handles a second full
+        // chord produced when equivalent physical Primary controls are released
+        // together. It must run before PrimaryRecordingPressCoordinator so the
+        // duplicate can neither cancel `.starting` nor turn one intended stop
+        // into pause. The narrow event-tap-time interval leaves ordinary single,
+        // deliberate double, and genuine triple routes structurally unchanged.
+        if primaryDuplicateChordCoalescer.shouldCoalesce(
+            action: action,
+            mode: mode,
+            eventTime: eventTime
+        ) {
+            let previous = primaryDuplicateChordCoalescer.lastAcceptedEventTime ?? eventTime
+            let elapsedMilliseconds = max(0, eventTime - previous) * 1_000
+            vippLog.info("shortcut: coalesced near-simultaneous duplicate Primary chord dtMs=\(elapsedMilliseconds, privacy: .public) windowMs=\(self.primaryDuplicateChordCoalescer.interval * 1_000, privacy: .public)")
+            return
+        }
+
         isShortcutPressed = true
         activeRecordingShortcutAction = action
         activeShortcutCanCancelAccidentalStart = canCurrentShortcutPressCancelAccidentalStart
@@ -1105,6 +1184,9 @@ final class RecordingShortcutModeHandler {
         primaryStopDecisionTask?.cancel()
         primaryStopDecisionTask = nil
         primaryPressCoordinator.cancelPendingStop()
+        // Next and monitor-reset boundaries end any pending Primary burst too;
+        // a later Primary action must never inherit suppression across them.
+        primaryDuplicateChordCoalescer.reset()
     }
 
     func handleKeyUp(

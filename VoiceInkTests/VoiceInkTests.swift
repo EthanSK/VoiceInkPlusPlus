@@ -207,6 +207,40 @@ private final class TranscriptionQueueTestState {
     var events: [String] = []
 }
 
+@MainActor
+private final class PrimaryShortcutHandlerTestState {
+    var recordingState: RecordingState
+    var isRecorderVisible: Bool
+    var toggleDestinations: [RecordingPasteDestination] = []
+    var pauseCallCount = 0
+
+    init(
+        recordingState: RecordingState,
+        isRecorderVisible: Bool
+    ) {
+        self.recordingState = recordingState
+        self.isRecorderVisible = isRecorderVisible
+    }
+
+    func toggle(destination: RecordingPasteDestination) {
+        toggleDestinations.append(destination)
+        switch recordingState {
+        case .idle:
+            // Match the real async start boundary: the first accepted Primary
+            // chord makes the HUD/session visible while capture is `.starting`.
+            recordingState = .starting
+            isRecorderVisible = true
+        case .starting:
+            // RecorderUIManager treats a second toggle in `.starting` as an
+            // accidental-start cancellation. The coalescer must prevent this.
+            recordingState = .idle
+            isRecorderVisible = false
+        default:
+            break
+        }
+    }
+}
+
 struct VoiceInkTests {
 
     @Test @MainActor func abandonedShortcutCaptureRestoresItsPreviousBinding() {
@@ -1543,6 +1577,277 @@ struct VoiceInkTests {
             action: .primaryRecording,
             mode: .pushToTalk
         ))
+    }
+
+    @Test func pairedRazerDPIChordsCoalesceIntoOnePrimaryActivation() {
+        var coalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
+
+        let acceptedFirst = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 10
+        )
+        let coalescedSecond = coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 10.012
+        )
+
+        #expect(acceptedFirst)
+        #expect(coalescedSecond)
+    }
+
+    @Test func independentPrimaryControlsAndDeliberateDoublePressRemainAccepted() {
+        var coalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
+
+        let acceptedFirst = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 20
+        )
+        // F21 alone, F22 alone, Corsair F19, and an ordinary same-button double
+        // all arrive as this identical chord. A human-scale second activation
+        // must continue into the existing pause/triple coordinator.
+        let acceptedDeliberateSecond = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 20.2
+        )
+
+        #expect(acceptedFirst)
+        #expect(acceptedDeliberateSecond)
+    }
+
+    @Test func duplicatePrimaryChordDoesNotReanchorTheSuppressionWindow() {
+        var coalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
+
+        let acceptedFirst = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 30
+        )
+        let coalescedDuplicate = coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 30.08
+        )
+        // Relative to the rejected duplicate this is only 50 ms later. Relative
+        // to the last accepted press it is 130 ms later and must be accepted.
+        let acceptedAfterOriginalWindow = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 30.13
+        )
+
+        #expect(acceptedFirst)
+        #expect(coalescedDuplicate)
+        #expect(acceptedAfterOriginalWindow)
+    }
+
+    @Test func duplicatePrimaryChordWindowCannotConsumePauseDecisionWindow() {
+        let ordinaryWindow = PrimaryRecordingPressCoordinator
+            .duplicatePrimaryChordInterval(normalStopDecisionInterval: 0.45)
+        let fasterSystemWindow = PrimaryRecordingPressCoordinator
+            .duplicatePrimaryChordInterval(normalStopDecisionInterval: 0.18)
+
+        #expect(ordinaryWindow == 0.09)
+        #expect(ordinaryWindow < 0.45 / 3 + 0.000_001)
+        #expect(fasterSystemWindow == 0.06)
+        #expect(fasterSystemWindow < 0.18)
+    }
+
+    @Test func duplicatePrimaryChordFilterIgnoresOtherActionsAndResetsCleanly() {
+        var coalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
+
+        let acceptedFirst = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 40
+        )
+        let ignoredSecondary = !coalescer.shouldCoalesce(
+            action: .secondaryRecording,
+            mode: .toggle,
+            eventTime: 40.01
+        )
+        let ignoredPushToTalk = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .pushToTalk,
+            eventTime: 40.02
+        )
+
+        coalescer.reset()
+        let acceptedAfterReset = !coalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: 40.03
+        )
+
+        #expect(acceptedFirst)
+        #expect(ignoredSecondary)
+        #expect(ignoredPushToTalk)
+        #expect(acceptedAfterReset)
+    }
+
+    @Test func duplicateChordCannotCancelStartingOrTurnOneStopIntoPause() {
+        var idleCoalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
+        var idleCoordinator = PrimaryRecordingPressCoordinator(doublePressInterval: 0.45)
+        var idleDecisions: [PrimaryRecordingPressCoordinator.Decision] = []
+        for eventTime in [50.0, 50.012] where !idleCoalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: eventTime
+        ) {
+            idleDecisions.append(idleCoordinator.registerPress(
+                recordingState: .idle,
+                eventTime: eventTime
+            ))
+        }
+        #expect(idleDecisions == [.startOrCancelImmediately])
+
+        var recordingCoalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
+        var recordingCoordinator = PrimaryRecordingPressCoordinator(doublePressInterval: 0.45)
+        var recordingDecisions: [PrimaryRecordingPressCoordinator.Decision] = []
+        for eventTime in [60.0, 60.012] where !recordingCoalescer.shouldCoalesce(
+            action: .primaryRecording,
+            mode: .toggle,
+            eventTime: eventTime
+        ) {
+            recordingDecisions.append(recordingCoordinator.registerPress(
+                recordingState: .recording,
+                eventTime: eventTime
+            ))
+        }
+        #expect(recordingDecisions == [.deferNormalStop(generation: 1)])
+    }
+
+    @MainActor
+    @Test func duplicatePrimaryChordCannotCancelStartingHandlerSession() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .idle,
+            isRecorderVisible: false
+        )
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            cancelRecording: {},
+            primaryDoublePressInterval: 0.45,
+            primaryTriplePressInterval: 0.8,
+            primaryDuplicateChordInterval: 0.09
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 70,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 70.001,
+            mode: .toggle
+        )
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 70.012,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 70.013,
+            mode: .toggle
+        )
+
+        #expect(state.toggleDestinations == [.primaryCurrentInput])
+        #expect(state.recordingState == .starting)
+        #expect(state.isRecorderVisible)
+
+        // A later independent F19/F21/F22 chord remains a normal Primary
+        // activation; only the mechanically simultaneous duplicate is filtered.
+        state.recordingState = .idle
+        state.isRecorderVisible = false
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 70.2,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 70.201,
+            mode: .toggle
+        )
+        #expect(state.toggleDestinations == [
+            .primaryCurrentInput,
+            .primaryCurrentInput,
+        ])
+        #expect(state.recordingState == .starting)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func duplicatePrimaryChordCannotBecomePauseInHandler() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .recording,
+            isRecorderVisible: true
+        )
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            toggleRecordingPause: {
+                state.pauseCallCount += 1
+                state.recordingState = .paused
+                return true
+            },
+            cancelRecording: {},
+            primaryDoublePressInterval: 0.45,
+            primaryTriplePressInterval: 0.8,
+            primaryDuplicateChordInterval: 0.09
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 80,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 80.001,
+            mode: .toggle
+        )
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 80.012,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 80.013,
+            mode: .toggle
+        )
+        #expect(state.pauseCallCount == 0)
+        #expect(state.toggleDestinations.isEmpty)
+
+        // The duplicate never re-anchors the interval, so a deliberate second
+        // press 200 ms after click one still reaches the accepted pause route.
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 80.2,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 80.201,
+            mode: .toggle
+        )
+        #expect(state.pauseCallCount == 1)
+        #expect(state.recordingState == .paused)
+        handler.reset()
     }
 
     @Test func pausedCoreAudioRejectsEveryInputBuffer() {

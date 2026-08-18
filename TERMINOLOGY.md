@@ -23,6 +23,20 @@ A read-only check of the live **Desktop: Default** software profile on Ethan's G
 
 When diagnosing the hardware mapping, verify G HUB's active profile and resolved assignment diagram as well as VoiceInk++'s stored shortcut. Do not infer the physical control from a historical G-number, a raw card ID, or the English word “forward” alone.
 
+## Equivalent hardware Primary releases
+
+The current shared mouse layer maps the Corsair F19 release and both Razer DPI-button releases
+(F21/F22) to the same Shift-Control-Option Primary chord. Once Karabiner emits that chord,
+VoiceInk++ cannot identify which physical source produced it. Each control alone is therefore one
+ordinary Primary activation.
+
+If both Razer DPI buttons are released together, Karabiner can emit two complete equivalent chords.
+VoiceInk++ coalesces only the second chord when its event-tap timestamp lands less than 90 ms after
+the last accepted Primary chord. A rejected duplicate does not extend the window. A later human
+double-click still reaches the existing pause/resume coordinator, and click three still reaches the
+clipboard-only route. Do not replace this narrow boundary with the old 500 ms Primary cooldown: that
+would erase both accepted multi-click gestures.
+
 ## Timing defines the route
 
 Primary always uses base VoiceInk current-input delivery. The table below describes the
