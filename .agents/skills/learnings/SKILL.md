@@ -74,6 +74,17 @@ For a realtime stop that pastes nothing or appears to skip Return, separate tran
 
 For a G HUB sanity check, confirm the live active profile, onboard/software mode, resolved assignment diagram, and VoiceInk++'s stored shortcut. Raw profile card IDs or historical G-numbers alone are insufficient to identify the physical control.
 
+When several hardware controls converge through Karabiner as one modifier-only Primary chord,
+establish the ownership boundary before trying to identify the source. An exclusive HID-open failure
+such as `0xe00002c5` means VoiceInk++ cannot recover F19/F21/F22 identity after Karabiner has collapsed
+it. Use event-tap-sampled monotonic time at the final VoiceInk++ handler instead: suppress only the
+second complete chord in a mechanically near-simultaneous burst, anchor the window on the last
+accepted chord rather than the rejected duplicate, and reset it across Next and monitor-reset
+boundaries. Keep that window far below the existing Primary double/triple gesture intervals; never
+restore the legacy 500 ms cooldown. Require reducer and handler tests proving the duplicate cannot
+cancel `.starting` or become pause, plus physical single-control, paired-release, double-click,
+triple-click, and lock-screen checks.
+
 For modifier-only Primary regressions, inspect the complete `flagsChanged` sequence. VoiceInk++ owns and suppresses only the event that completes the configured Shift-Control-Option chord plus any full-chord repeats; partial modifiers and every release must remain downstream-balanced. Require the pure reducer test and a physical check with a context menu already open. Never swallow the entire modifier sequence to hide a menu-dismissal symptom, because that can leave the foreground app with stuck logical modifiers.
 
 For recording-start exact-input capture, remember that Ethan's G HUB Primary macro completes its

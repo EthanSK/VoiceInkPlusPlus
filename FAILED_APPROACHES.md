@@ -83,6 +83,36 @@ These are the highest-cost mistakes from the audited session.
     Decode the active Mode records and correlate the provider's first live server error before
     changing delivery code, downgrading the binary, or blaming general connectivity.
 
+## Equivalent Primary source failures
+
+### Restoring the legacy 500 ms Primary shortcut cooldown
+
+- **State:** REJECTED for the Primary toggle route.
+- **Attempt:** Treat the two near-simultaneous Shift-Control-Option chords produced by releasing
+  both Razer DPI buttons as an ordinary shortcut bounce and suppress every later Primary chord for
+  500 ms.
+- **Observed result:** VoiceInk++ deliberately bypasses that legacy cooldown for Primary toggle so
+  a second press can pause/resume and a third press can finish to the clipboard. Restoring it would
+  consume those accepted gestures together with the accidental duplicate.
+- **Do not retry:** Coalesce only the mechanically near-simultaneous second complete chord before
+  `PrimaryRecordingPressCoordinator`, using the event-tap timestamp and a window far below the
+  deliberate multi-click interval. Reconsider a longer cooldown only if the accepted double/triple
+  gestures are explicitly removed or the hardware transport preserves distinct source identity so
+  any suppression can be scoped to one source without hiding another Primary press.
+
+### Recovering raw F19/F21/F22 source identity after Karabiner's HID grab
+
+- **State:** REJECTED under the current shared mouse transport.
+- **Attempt:** Let VoiceInk++ open the Razer/Corsair HID source directly so it could distinguish
+  which physical button produced each final Primary activation.
+- **Observed result:** Karabiner's exclusive HID grab returned `0xe00002c5`; by the time VoiceInk++
+  receives the event-tap input, F19, F21, and F22 have all become the same
+  Shift-Control-Option chord and no originating-control identity remains.
+- **Do not retry:** Keep the final duplicate boundary inside VoiceInk++ and reason from accepted
+  complete-chord timestamps. Reconsider raw source attribution only if the shared transport later
+  emits distinct key codes/metadata or exposes a documented source-event bridge without competing
+  for the device grab.
+
 ## Current accepted boundary at the end of the audit
 
 The installed app at the accepted checkpoint is VoiceInk++ v2.0.236. Commit `fb3ead7` is the
