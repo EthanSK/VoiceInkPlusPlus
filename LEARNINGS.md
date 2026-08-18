@@ -42,7 +42,7 @@ Each entry looks like:
 **Root cause:** Karabiner collapses F21 and F22 into the same Shift-Control-Option chord, and its exclusive HID grab prevents VoiceInk++ from recovering source identity; the old 500 ms cooldown is intentionally bypassed so accepted double/triple gestures still work.
 **Fix:** Commit b106500 adds a VoiceInk-owned 90 ms event-tap-time coalescer before PrimaryRecordingPressCoordinator. It suppresses only the second mechanically near-simultaneous chord, never reanchors on a rejection, and resets across Next and monitor boundaries.
 **Commit:** b10650016afe4a5147958d43dac973d7b1ad8284
-**Guard:** The exact build-303 Mac Mini release fallback named and passed all 249 tests in 8 suites, including all eight new coalescer/reducer/handler tests plus Primary modifier, double/triple, recovery, realtime-HUD, Primary isolation, both Next routes, queue, and commercial-free guards. Physical F21, F22, F19, paired-release, double, triple, Next, and lock-screen acceptance remains pending.
+**Guard:** The exact build-303 Mac Mini release fallback named and passed all 249 tests in 8 suites, including all eight new coalescer/reducer/handler tests plus Primary modifier, double/triple, recovery, realtime-HUD, Primary isolation, both Next routes, queue, and commercial-free guards. Signed v2.0.303 is installed with executable SHA-256 `9f463eefac137e20d8839295fb2a3fad04d1c85a54f6bdf097ec7a9e2d7d3834`, CDHash `eb4c11b6fd14ef3d15309c28674e086cff118c23`, deep/strict validity, Automation=true, and official VoiceInk unchanged; the exact signed v2.0.302 rollback and archive remain preserved. Physical F21, F22, F19, paired-release, double, triple, Next, and lock-screen acceptance remains pending.
 ---
 
 
