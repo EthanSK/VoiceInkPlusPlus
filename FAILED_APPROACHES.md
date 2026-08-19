@@ -435,6 +435,20 @@ No row may be promoted merely because a later build reused part of it.
 - **Do not retry:** AppleScript is not an addressing primitive. It is legitimate only for a surface
   that already owns real system keyboard focus and only when the route's safety gate proves that.
 
+### Synchronous System Events auto-send on MainActor
+
+- **State:** REJECTED for every foreground delivery route.
+- **Attempt:** Cache an `NSAppleScript` Return command and call `executeAndReturnError` directly from
+  the MainActor delivery path.
+- **Observed result:** In signed v2.0.303, the shared macOS System Events process was already wedged
+  behind an unrelated Accessibility script. GPT Live finalized and Command-V succeeded, but each
+  synchronous Return then blocked VoiceInk++ for roughly the full 120-second Apple Event timeout.
+  The HUD remained on Transcribing and the shortcut event tap was disabled. Restarting VoiceInk++
+  did not repair the shared System Events process.
+- **Do not retry:** Run System Events auto-send off MainActor through `BoundedAppleScriptRunner` with
+  the one-second deadline, terminate its helper at expiry, and treat timeout as an indeterminate
+  one-shot Return. Never retry through CGEvent or another transport after that timeout.
+
 ### Setting an entire generic `AXValue`
 
 - **State:** REJECTED for generic/rich editors.

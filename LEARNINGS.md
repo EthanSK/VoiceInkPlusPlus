@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-19T17:35:04Z
+**Trigger:** Repeated v2.0.303 frozen Transcribing incidents after otherwise successful transcription and paste
+**Symptom:** GPT Live completed and paste succeeded, but the HUD stayed on Transcribing and shortcut input was disabled for about 120 seconds
+**Root cause:** Primary auto-send synchronously executed NSAppleScript on MainActor while the shared macOS System Events process was wedged handling another Accessibility script
+**Fix:** CursorPaster now runs generic System Events auto-send through BoundedAppleScriptRunner off-main with a one-second hard timeout, terminates the timed-out helper, and never retries an indeterminate Return
+**Commit:** 776a834
+**Guard:** `systemEventsAutoSendUsesOneBoundedOffMainAttempt`, `boundedAppleScriptRunnerKillsTimedOutHelper`, and the exact build-304 release suite named and passed all 250 tests in 8 suites. Signed v2.0.304 from release commit `6ae42d0` is installed with executable SHA-256 `398d8775aed570a25bb9b9a7c6707912e211f102ccfab1fab3b9ef44739f6d37`, CDHash `c62bcc82053ae23d352f44b9de4b66691c16ff0e`, deep/strict validity, Automation and audio-input entitlements, preserved v2.0.303 rollback, and untouched `/Applications/VoiceInk.app`. Its first physical Primary run finalized GPT Live, pasted, issued bounded System Events Return, ended the pipeline, and removed the session normally.
+---
+
+
+---
 **Date:** 2026-08-18T22:03:25Z
 **Trigger:** The exact v2.0.303 canonical full Xcode action stalled for ten minutes with zero named tests, requiring the documented release-boundary fallback.
 **Symptom:** The permitted direct xctest full-suite fallback named tests but aborted at MediaRemoteAdapter/resource_bundle_accessor.swift because it could not find MediaRemoteAdapter_MediaRemoteAdapter.bundle.

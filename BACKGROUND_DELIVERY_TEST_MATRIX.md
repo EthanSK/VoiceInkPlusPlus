@@ -4,6 +4,23 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
+**Current installed state verified 2026-08-19:** signed v2.0.304 is installed from implementation
+commit `776a834` and release commit `6ae42d0`. Generic system-focused System Events auto-send now
+runs off MainActor through `BoundedAppleScriptRunner`, has a one-second hard timeout, terminates the
+helper at expiry, and never retries an indeterminate Return. This fixes the v2.0.303 incident where
+GPT Live finalized and paste succeeded but a shared wedged System Events process blocked the HUD and
+shortcut event tap for roughly 120 seconds. The exact candidate's canonical Xcode action built and
+then stalled before naming tests; the documented staged-framework `xcrun xctest` fallback named and
+passed all 250 tests in 8 suites. The installed executable SHA-256 is
+`398d8775aed570a25bb9b9a7c6707912e211f102ccfab1fab3b9ef44739f6d37`, its CDHash is
+`c62bcc82053ae23d352f44b9de4b66691c16ff0e`, deep/strict signing and outer Automation/audio-input
+entitlements verify, v2.0.303 is preserved as rollback, and `/Applications/VoiceInk.app` remains
+untouched. The first physical v2.0.304 Primary recording finalized, pasted, issued Return, ended its
+pipeline, and removed the session normally. A deliberate live recreation of wedged System Events was
+not attempted because that shared-process disruption is unsafe; the timeout and helper termination
+are covered by the named regression tests. Primary routing, FIFO queue-tail suppression, and both
+exact Next routes are unchanged.
+
 **Current installed state verified 2026-08-07:** signed v2.0.287 is installed from rapid-paste
 implementation commit `c7091ca` (core fix `167e533`, isolation correction `31e27b0`). The Mini's
 canonical Xcode action rebuilt the exact candidate and reached the known TestManager stall; the
