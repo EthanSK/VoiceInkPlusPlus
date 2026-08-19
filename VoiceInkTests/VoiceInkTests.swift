@@ -6188,6 +6188,37 @@ struct VoiceInkTests {
         #expect(!body.contains("NSAppleScript"))
     }
 
+    @Test func systemEventsAutoSendUsesOneBoundedOffMainAttempt() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paster = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Paste/CursorPaster.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try #require(paster.range(
+            of: "    private static func issueAutoSendUsingSystemEvents("
+        ))
+        let end = try #require(paster.range(
+            of: "    @MainActor\n    private static func issueAutoSendUsingCGEvent(",
+            range: start.upperBound..<paster.endIndex
+        ))
+        let body = paster[start.lowerBound..<end.lowerBound]
+
+        #expect(body.contains(") async -> AutoSendResult"))
+        #expect(body.contains("BoundedAppleScriptRunner.run("))
+        #expect(body.contains("timeout: systemEventsAutoSendTimeout"))
+        #expect(body.contains("retry=false"))
+        #expect(String(body).components(
+            separatedBy: "BoundedAppleScriptRunner.run("
+        ).count == 2)
+        #expect(!body.contains("executeAndReturnError"))
+        #expect(!body.contains("NSAppleScript"))
+        #expect(!body.contains("issueAutoSendUsingCGEvent"))
+    }
+
     @MainActor
     @Test func recorderIconPulseMapsPrimaryAndNextRoutesToSeparateIcons() {
         let session = RecordingSession()

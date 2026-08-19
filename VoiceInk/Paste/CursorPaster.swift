@@ -105,6 +105,7 @@ class CursorPaster {
     private static let pasteShortcutEventDelay: TimeInterval = 0.01
     private static let minimumClipboardRestoreDelay: TimeInterval = 0.25
     private static let appleScriptPasteTimeout: TimeInterval = 2.0
+    private static let systemEventsAutoSendTimeout: TimeInterval = 1.0
     private static let postPasteSettlementNanoseconds: UInt64 = 150_000_000
     private static let maximumClipboardLeaseAttempts = 2
     @MainActor
@@ -351,17 +352,6 @@ class CursorPaster {
 
     // "X – QWERTY ⌘" layouts remap to QWERTY when Command is held, so keystroke "v" resolves
     // the wrong key code. key code 9 (physical V) bypasses layout translation for those layouts.
-    private static func makeScript(_ source: String) -> NSAppleScript? {
-        let script = NSAppleScript(source: source)
-        var error: NSDictionary?
-        script?.compileAndReturnError(&error)
-        return script
-    }
-
-    private static let enterScript = makeScript("tell application \"System Events\" to key code 36")
-    private static let shiftEnterScript = makeScript("tell application \"System Events\" to key code 36 using shift down")
-    private static let commandEnterScript = makeScript("tell application \"System Events\" to key code 36 using command down")
-
     @MainActor
     private static var layoutSwitchesToQWERTYOnCommand: Bool {
         let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
@@ -856,7 +846,7 @@ class CursorPaster {
     ) async -> AutoSendResult {
         switch method {
         case .systemEvents:
-            return issueAutoSendUsingSystemEvents(key, preflight: preflight)
+            return await issueAutoSendUsingSystemEvents(key, preflight: preflight)
         case .cgEvent:
             return await issueAutoSendUsingCGEvent(key, preflight: preflight)
         }
@@ -866,37 +856,44 @@ class CursorPaster {
     private static func issueAutoSendUsingSystemEvents(
         _ key: AutoSendKey,
         preflight: (() -> Bool)?
-    ) -> AutoSendResult {
-        let script: NSAppleScript?
+    ) async -> AutoSendResult {
+        let source: String
         switch key {
         case .none:
             logger.error("Refused to auto-send .none")
             return .commandNotPosted
         case .enter:
-            script = enterScript
+            source = "tell application \"System Events\" to key code 36"
         case .shiftEnter:
-            script = shiftEnterScript
+            source = "tell application \"System Events\" to key code 36 using shift down"
         case .commandEnter:
-            script = commandEnterScript
-        }
-
-        guard let script else {
-            logger.error("System Events auto-send script is unavailable")
-            return .commandNotPosted
+            source = "tell application \"System Events\" to key code 36 using command down"
         }
         guard preflight?() != false else {
             logger.notice("Cancelled System Events auto-send because the exact-input preflight changed immediately before Return")
             return .commandNotPosted
         }
 
-        var error: NSDictionary?
-        script.executeAndReturnError(&error)
-        if let error {
-            logger.error("System Events auto-send failed key=\(key.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)")
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        logger.info("Bounded System Events auto-send started key=\(key.rawValue, privacy: .public) timeoutSeconds=\(systemEventsAutoSendTimeout, privacy: .public)")
+        do {
+            // System Events is process-global and can spend the full 120-second
+            // Apple Event timeout behind an unrelated Accessibility command. Never
+            // run that wait on MainActor: it freezes the recorder HUD and disables
+            // the shortcut event tap. The helper is killed at this short deadline,
+            // and an indeterminate Return is never retried through another transport.
+            _ = try await BoundedAppleScriptRunner.run(
+                source: source,
+                timeout: systemEventsAutoSendTimeout
+            )
+        } catch {
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            logger.error("Bounded System Events auto-send failed key=\(key.rawValue, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3))s error=\(error.localizedDescription, privacy: .public) retry=false")
             return .commandNotPosted
         }
 
-        logger.info("Issued foreground auto-send through System Events key=\(key.rawValue, privacy: .public)")
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+        logger.info("Issued foreground auto-send through bounded System Events key=\(key.rawValue, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3))s")
         return .commandPosted
     }
 
