@@ -766,19 +766,19 @@ struct VoiceInkTests {
         let presentationGuard = try #require(toggleBody.range(
             of: "guard showRecorderPanel("
         ))
-        let presentationGuardEnd = try #require(toggleBody.range(
-            of: ") else { return }",
+        let visibleClaim = try #require(toggleBody.range(
+            of: "isRecorderPanelVisible = true",
             range: presentationGuard.upperBound..<toggleBody.endIndex
         ))
         let presentationGuardBody = toggleBody[
-            presentationGuard.lowerBound..<presentationGuardEnd.upperBound
+            presentationGuard.lowerBound..<visibleClaim.lowerBound
         ]
         #expect(presentationGuardBody.contains("reason: \"recording start\""))
         #expect(presentationGuardBody.contains("rearmFailureNotification: true"))
-        let visibleClaim = try #require(toggleBody.range(
-            of: "isRecorderPanelVisible = true",
-            range: presentationGuardEnd.upperBound..<toggleBody.endIndex
+        #expect(presentationGuardBody.contains(
+            "engine.cancelRecordingStartReservation(reservedStartRequestID)"
         ))
+        #expect(presentationGuardBody.contains("return"))
         #expect(presentationGuard.lowerBound < visibleClaim.lowerBound)
 
         let showStart = try #require(source.range(
