@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-20T18:30:39Z
+**Trigger:** Ethan's 2026-08-20 physical triple-click regression report.
+**Symptom:** After a genuine Primary triple-click, later recordings paused YouTube but every normal stop left it paused.
+**Root cause:** VoiceInk++ emitted recordingStoppedPreservingPlayback, but the current helper source and installed bridge omitted the accepted observer, native-host whitelist, and extension finish command, so dictationDepth remained one and later stops deferred resume.
+**Fix:** Restored the accepted three-layer helper relay and a source contract test; installed Developer-ID helper commit 0c650ca and reloaded the exact personal Chrome extension without changing VoiceInk++ v304.
+**Commit:** 0c650ca15557b1cd9e90a3fe1d81d865081e5a74
+**Guard:** Focused JavaScript contract and Agentic Mouse tests, both Swift typechecks, signed hashes, live route logged playbackCommand=none and depth 0 to 0; prior accepted live target path logged depth 1 to 0.
+---
+
+
+---
 **Date:** 2026-08-19T17:35:04Z
 **Trigger:** Repeated v2.0.303 frozen Transcribing incidents after otherwise successful transcription and paste
 **Symptom:** GPT Live completed and paste succeeded, but the HUD stayed on Transcribing and shortcut input was disabled for about 120 seconds
