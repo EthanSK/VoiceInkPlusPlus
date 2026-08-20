@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-20T20:20:27Z
+**Trigger:** Ethan requested an idle-only start debounce on 2026-08-20.
+**Symptom:** An accidental idle Primary double-click could briefly start recording and trigger recorder/media lifecycle.
+**Root cause:** Idle Primary entered the immediate start path; only recording-time stop/pause/triple presses had a bounded click decision coordinator.
+**Fix:** A separate 0.45-second idle-only coordinator immediately reserves FIFO/Next input ownership but defers UI/audio/media startup; a second accepted press cancels the exact token, including launch-reset/stale-token races.
+**Commit:** 36482612b4ac9b8bcedd215ad8cbdc2fde5c7367
+**Guard:** The exact build-305 Mac Mini bundle passed all 255 named tests in 8 suites, including five new idle-start/race guards plus Primary, Next, realtime-HUD, panel-lifecycle, queue, and bounded auto-send protections. Signed v2.0.305 is installed with executable SHA-256 cd7e1a585a3318f572092ba8d97c3de03d130f08dd7564ef9cec0c94a48f90f7, CDHash bc30ab68e196e3c2ecaf91d3f5de28c5a977f758, deep/strict validity, Automation=true, and official VoiceInk unchanged. Physical single/double Primary acceptance remains pending.
+---
+
+
+---
 **Date:** 2026-08-20T18:30:39Z
 **Trigger:** Ethan's 2026-08-20 physical triple-click regression report.
 **Symptom:** After a genuine Primary triple-click, later recordings paused YouTube but every normal stop left it paused.
