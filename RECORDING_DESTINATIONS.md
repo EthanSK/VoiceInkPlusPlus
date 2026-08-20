@@ -124,7 +124,7 @@ engine switch, not a fourth destination route: never merge or reinterpret the th
 
 ## Terminology
 
-The **primary button** is Ethan's normal/thumb/toggle recording button: the first press starts recording and pressing that same button again performs a normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
+The **primary button** is Ethan's normal/thumb/toggle recording button: while idle, one press starts after a 0.45-second debounce, while two accepted presses inside that window cancel the pending start before UI/audio/media work. Once recording begins, pressing that same button again performs the existing normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
 
 Read [VoiceInk++ terminology](TERMINOLOGY.md) for the complete alias map, timing table, and history of the deliberately reverted Next-toggle experiment.
 Before changing capture, paste, focus, Return, semantic Send, or verification, also read
@@ -240,8 +240,10 @@ event through its existing vendor software, such as Logitech G HUB. No VoiceInk-
 macro and no Karabiner configuration are required.
 
 Keep the ordinary mouse button assigned to the existing VoiceInk++ recording shortcut. A normal
-single stop now resolves after VoiceInk++'s at-most-0.45-second pause decision window; a double
-press during recording toggles pause/resume without changing the chosen delivery policy. Assign the
+single idle press begins recording after VoiceInk++'s 0.45-second start-debounce window, while an
+idle double press cancels before recording UI/audio/media lifecycle begins. A normal single stop
+still resolves after the separate at-most-0.45-second pause decision window; a recording-time double
+press toggles pause/resume without changing the chosen delivery policy. Assign the
 alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button for the entire time
 any recorder/transcription bar is visible; eligible recording and transcription states perform
 their normal destination action, while an ineligible visible-bar press is consumed as a safe no-op.

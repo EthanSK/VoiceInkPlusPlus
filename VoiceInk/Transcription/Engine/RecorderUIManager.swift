@@ -417,9 +417,19 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
 
     // MARK: - Recorder Panel Management
 
+    /// Join the one launch-cleanup boundary before Primary begins its idle debounce
+    /// reservation. Shortcut monitoring can become live slightly earlier; reserving
+    /// directly in the engine would let that reset invalidate the token and turn the
+    /// first post-launch single press into a silent no-op.
+    func reserveRecordingStartAfterLaunchReset() async -> UUID? {
+        await resetOnLaunch()
+        return engine?.reserveRecordingStart()
+    }
+
     func toggleRecorderPanel(
         modeId: UUID? = nil,
-        stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput
+        stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput,
+        reservedStartRequestID: UUID? = nil
     ) async {
         // The shortcut monitor can become live while launch cleanup is still draining.
         // Join that one reset instead of letting an unstructured launch task erase a
@@ -428,6 +438,24 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         guard let engine = engine else { return }
 
         vippLog.info("toggleRecorderPanel: enter panelVisible=\(self.isRecorderPanelVisible, privacy: .public) state=\(String(describing: engine.recordingState), privacy: .public) modeId=\(modeId?.uuidString ?? "nil", privacy: .public)")
+
+        if let reservedStartRequestID,
+           engine.recordingState != .idle {
+            // This token came from an idle-only debounce. A different route won the
+            // microphone while the timer yielded, so release the token and leave that
+            // session untouched; never reinterpret a stale Start as Stop/Cancel.
+            engine.cancelRecordingStartReservation(reservedStartRequestID)
+            return
+        }
+
+        if let reservedStartRequestID,
+           !engine.canCommitRecordingStartReservation(reservedStartRequestID) {
+            // A reset can invalidate the token without materializing a session.
+            // Reject it before showing a panel so a stale debounce completion can
+            // never leave an idle recorder bar behind.
+            engine.cancelRecordingStartReservation(reservedStartRequestID)
+            return
+        }
 
         if isRecorderPanelVisible {
             switch engine.recordingState {
@@ -483,7 +511,17 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
                 // sessions OR the user is starting fresh, a toggle here STARTS a new
                 // recording — UNLESS the assistant is awaiting a follow-up, which takes
                 // precedence as before.
-                if engine.assistantSession.canSendFollowUp {
+                if let reservedStartRequestID {
+                    // The idle-only Primary debounce already owns this exact start
+                    // token and its FIFO delivery barrier. Commit it once instead of
+                    // letting the generic pending-start guard mistake it for a
+                    // duplicate press and preserve it forever.
+                    await engine.toggleRecord(
+                        modeId: modeId,
+                        isAssistantFollowUp: engine.assistantSession.canSendFollowUp,
+                        reservedStartRequestID: reservedStartRequestID
+                    )
+                } else if engine.assistantSession.canSendFollowUp {
                     await engine.toggleRecord(
                         modeId: modeId,
                         isAssistantFollowUp: true
@@ -514,9 +552,17 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
             guard showRecorderPanel(
                 reason: "recording start",
                 rearmFailureNotification: true
-            ) else { return }
+            ) else {
+                if let reservedStartRequestID {
+                    engine.cancelRecordingStartReservation(reservedStartRequestID)
+                }
+                return
+            }
             isRecorderPanelVisible = true
-            await engine.toggleRecord(modeId: modeId)
+            await engine.toggleRecord(
+                modeId: modeId,
+                reservedStartRequestID: reservedStartRequestID
+            )
         }
     }
 

@@ -150,6 +150,18 @@ class RecordingShortcutManager: ObservableObject {
             },
             cancelRecording: {
                 await recorderUIManager.cancelRecording()
+            },
+            reserveRecordingStart: {
+                await recorderUIManager.reserveRecordingStartAfterLaunchReset()
+            },
+            cancelRecordingStartReservation: { requestID in
+                engine.cancelRecordingStartReservation(requestID)
+            },
+            startReservedRecording: { requestID, modeId in
+                await recorderUIManager.toggleRecorderPanel(
+                    modeId: modeId,
+                    reservedStartRequestID: requestID
+                )
             }
         )
 
@@ -358,7 +370,7 @@ class RecordingShortcutManager: ObservableObject {
                     // Next owns a different physical gesture and destination route.
                     // Cancel the delayed single-Primary decision first so it cannot
                     // fire after Next has already stopped the same recording.
-                    self.shortcutModeHandler.cancelPendingPrimaryStopDecision()
+                    self.shortcutModeHandler.cancelPendingPrimaryDecisions()
 
                     if self.engine.recordingState.isRecordingOrPaused,
                        self.recorderUIManager.isRecorderPanelVisible {
@@ -487,6 +499,87 @@ private final class RecordingShortcutModeSource {
 
     init(primaryMode: RecordingShortcutManager.Mode) {
         self.primaryMode = primaryMode
+    }
+}
+
+/// Pure timing state for Primary presses while no recording owns the microphone.
+///
+/// Starting capture immediately makes an accidental double-click briefly create a
+/// session, pause media, and enter the cancellation path. Delay only the idle start:
+/// click one reserves the forthcoming capture, click two inside the same bounded
+/// window cancels that reservation, and extra clicks in the consumed burst are
+/// ignored. Recording-time stop/pause/triple classification remains entirely in
+/// `PrimaryRecordingPressCoordinator` below.
+struct PrimaryIdleStartPressCoordinator {
+    enum Decision: Equatable {
+        case deferStart(generation: Int)
+        case cancelPendingStart
+        case ignoreCompletedDoublePress
+        case performOverdueStart
+    }
+
+    private struct PendingStart {
+        let eventTime: TimeInterval
+        let generation: Int
+    }
+
+    let startDecisionInterval: TimeInterval
+    private var nextGeneration = 0
+    private var pendingStart: PendingStart?
+    private var completedDoublePressAt: TimeInterval?
+
+    var hasPendingStart: Bool {
+        pendingStart != nil
+    }
+
+    func isPendingStart(generation: Int) -> Bool {
+        pendingStart?.generation == generation
+    }
+
+    init(startDecisionInterval: TimeInterval) {
+        self.startDecisionInterval = startDecisionInterval
+    }
+
+    mutating func registerPress(eventTime: TimeInterval) -> Decision {
+        if let completedDoublePressAt {
+            let elapsed = eventTime - completedDoublePressAt
+            if elapsed >= 0, elapsed <= startDecisionInterval {
+                return .ignoreCompletedDoublePress
+            }
+            self.completedDoublePressAt = nil
+        }
+
+        if let pendingStart {
+            let elapsed = eventTime - pendingStart.eventTime
+            self.pendingStart = nil
+            if elapsed >= 0, elapsed <= startDecisionInterval {
+                completedDoublePressAt = eventTime
+                return .cancelPendingStart
+            }
+            completedDoublePressAt = nil
+            // The sleep task normally commits first. If MainActor scheduling is
+            // delayed, preserve click one's promised start instead of silently
+            // reinterpreting a slow second click as cancellation.
+            return .performOverdueStart
+        }
+
+        nextGeneration += 1
+        pendingStart = PendingStart(
+            eventTime: eventTime,
+            generation: nextGeneration
+        )
+        return .deferStart(generation: nextGeneration)
+    }
+
+    mutating func consumeDeferredStart(generation: Int) -> Bool {
+        guard pendingStart?.generation == generation else { return false }
+        pendingStart = nil
+        return true
+    }
+
+    mutating func reset() {
+        pendingStart = nil
+        completedDoublePressAt = nil
     }
 }
 
@@ -692,6 +785,9 @@ final class RecordingShortcutModeHandler {
     private let toggleRecordingPause: @MainActor () async -> Bool
     private let finishRecordingToClipboard: @MainActor (UUID?) async -> Bool
     private let cancelRecording: @MainActor () async -> Void
+    private let reserveRecordingStart: @MainActor () async -> UUID?
+    private let cancelRecordingStartReservation: @MainActor (UUID) -> Void
+    private let startReservedRecording: (@MainActor (UUID, UUID?) async -> Void)?
     // Feature A (2026-06-21): resolve the active Shortcut for an action so we can read
     // whether it's modifier-only + its required modifier mask. See the STOP-hold logic.
     private let shortcutForAction: @MainActor (ShortcutAction) -> Shortcut?
@@ -731,8 +827,15 @@ final class RecordingShortcutModeHandler {
     private var interruptedRecordingActions = Set<ShortcutAction>()
     private var activeShortcutCanCancelAccidentalStart = false
     private var lastShortcutPressTime: Date?
+    private var primaryIdleStartCoordinator: PrimaryIdleStartPressCoordinator
     private var primaryPressCoordinator: PrimaryRecordingPressCoordinator
     private var primaryDuplicateChordCoalescer: PrimaryShortcutDuplicateChordCoalescer
+    private var primaryStartDecisionTask: Task<Void, Never>?
+    private var pendingPrimaryStartReservation: (
+        generation: Int,
+        requestID: UUID,
+        modeId: UUID?
+    )?
     private var primaryStopDecisionTask: Task<Void, Never>?
     private var primaryPauseAction: (id: UUID, task: Task<Bool, Never>)?
 
@@ -775,10 +878,14 @@ final class RecordingShortcutModeHandler {
         toggleRecordingPause: @escaping @MainActor () async -> Bool = { false },
         finishRecordingToClipboard: @escaping @MainActor (UUID?) async -> Bool = { _ in false },
         cancelRecording: @escaping @MainActor () async -> Void,
+        reserveRecordingStart: @escaping @MainActor () async -> UUID? = { UUID() },
+        cancelRecordingStartReservation: @escaping @MainActor (UUID) -> Void = { _ in },
+        startReservedRecording: (@MainActor (UUID, UUID?) async -> Void)? = nil,
         shortcutForAction: @escaping @MainActor (ShortcutAction) -> Shortcut? = { _ in nil },
         primaryDoublePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
             systemDoubleClickInterval: NSEvent.doubleClickInterval
         ),
+        primaryStartDebounceInterval: TimeInterval? = nil,
         primaryTriplePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.triplePressContinuationInterval(
             systemDoubleClickInterval: NSEvent.doubleClickInterval
         ),
@@ -791,7 +898,13 @@ final class RecordingShortcutModeHandler {
         self.toggleRecordingPause = toggleRecordingPause
         self.finishRecordingToClipboard = finishRecordingToClipboard
         self.cancelRecording = cancelRecording
+        self.reserveRecordingStart = reserveRecordingStart
+        self.cancelRecordingStartReservation = cancelRecordingStartReservation
+        self.startReservedRecording = startReservedRecording
         self.shortcutForAction = shortcutForAction
+        self.primaryIdleStartCoordinator = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: primaryStartDebounceInterval ?? primaryDoublePressInterval
+        )
         self.primaryPressCoordinator = PrimaryRecordingPressCoordinator(
             normalStopDecisionInterval: primaryDoublePressInterval,
             triplePressContinuationInterval: primaryTriplePressInterval
@@ -805,7 +918,7 @@ final class RecordingShortcutModeHandler {
     }
 
     func reset() {
-        cancelPendingPrimaryStopDecision()
+        cancelPendingPrimaryDecisions()
         primaryPauseAction?.task.cancel()
         primaryPauseAction = nil
         isShortcutPressed = false
@@ -1080,6 +1193,18 @@ final class RecordingShortcutModeHandler {
         eventTime: TimeInterval,
         modeId: UUID?
     ) async {
+        if recordingState() == .idle {
+            await handlePrimaryIdleStartPress(
+                eventTime: eventTime,
+                modeId: modeId
+            )
+            return
+        }
+
+        // Once capture startup or a live recording owns the action, no idle timer
+        // may survive and start another session later. This does not touch the
+        // recording-time stop/pause/triple coordinator.
+        cancelPendingPrimaryStartDecision()
         let decision = primaryPressCoordinator.registerPress(
             recordingState: recordingState(),
             eventTime: eventTime
@@ -1148,6 +1273,114 @@ final class RecordingShortcutModeHandler {
         }
     }
 
+    private func handlePrimaryIdleStartPress(
+        eventTime: TimeInterval,
+        modeId: UUID?
+    ) async {
+        switch primaryIdleStartCoordinator.registerPress(eventTime: eventTime) {
+        case .deferStart(let generation):
+            guard canHandleShortcutAction() else {
+                primaryIdleStartCoordinator.reset()
+                return
+            }
+            guard let requestID = await reserveRecordingStart() else {
+                primaryIdleStartCoordinator.reset()
+                return
+            }
+            // Launch cleanup can yield while the first press is reserving. If the
+            // matching second press canceled this generation during that await, the
+            // returned token must be released instead of resurrecting the start.
+            guard primaryIdleStartCoordinator.isPendingStart(
+                generation: generation
+            ) else {
+                cancelRecordingStartReservation(requestID)
+                return
+            }
+            pendingPrimaryStartReservation = (
+                generation: generation,
+                requestID: requestID,
+                modeId: modeId
+            )
+            schedulePrimaryStart(generation: generation)
+
+        case .cancelPendingStart:
+            primaryStartDecisionTask?.cancel()
+            primaryStartDecisionTask = nil
+            cancelPendingPrimaryStartReservation()
+            vippLog.info("shortcut: Primary idle double-press canceled pending recording start")
+
+        case .ignoreCompletedDoublePress:
+            vippLog.info("shortcut: ignored extra Primary press inside canceled idle double-click gesture")
+
+        case .performOverdueStart:
+            primaryStartDecisionTask?.cancel()
+            primaryStartDecisionTask = nil
+            guard let pendingPrimaryStartReservation else { return }
+            self.pendingPrimaryStartReservation = nil
+            vippLog.info("shortcut: overdue Primary idle single press committed as recording start")
+            await commitPrimaryStart(pendingPrimaryStartReservation)
+        }
+    }
+
+    private func schedulePrimaryStart(generation: Int) {
+        primaryStartDecisionTask?.cancel()
+        let delay = primaryIdleStartCoordinator.startDecisionInterval
+        vippLog.info("shortcut: Primary idle press deferred for \(delay, privacy: .public)s awaiting accidental second click")
+        primaryStartDecisionTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return
+            }
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.primaryIdleStartCoordinator.consumeDeferredStart(
+                      generation: generation
+                  ),
+                  let pending = self.pendingPrimaryStartReservation,
+                  pending.generation == generation else {
+                return
+            }
+            self.pendingPrimaryStartReservation = nil
+            self.primaryStartDecisionTask = nil
+            await self.commitPrimaryStart(pending)
+        }
+    }
+
+    private func commitPrimaryStart(
+        _ pending: (generation: Int, requestID: UUID, modeId: UUID?)
+    ) async {
+        guard recordingState() == .idle,
+              canHandleShortcutAction() else {
+            cancelRecordingStartReservation(pending.requestID)
+            return
+        }
+
+        vippLog.info("shortcut: Primary idle single-press window expired → recording start")
+        if let startReservedRecording {
+            await startReservedRecording(pending.requestID, pending.modeId)
+        } else {
+            // Tests and non-engine embeddings can retain the existing toggle hook;
+            // production always supplies the reservation-aware start closure.
+            await toggleRecorderPanel(pending.modeId, .primaryCurrentInput)
+        }
+    }
+
+    private func cancelPendingPrimaryStartReservation() {
+        guard let pendingPrimaryStartReservation else { return }
+        self.pendingPrimaryStartReservation = nil
+        cancelRecordingStartReservation(pendingPrimaryStartReservation.requestID)
+    }
+
+    private func cancelPendingPrimaryStartDecision() {
+        primaryStartDecisionTask?.cancel()
+        primaryStartDecisionTask = nil
+        primaryIdleStartCoordinator.reset()
+        cancelPendingPrimaryStartReservation()
+    }
+
     private func schedulePrimaryNormalStop(
         generation: Int,
         modeId: UUID?
@@ -1180,7 +1413,8 @@ final class RecordingShortcutModeHandler {
         }
     }
 
-    func cancelPendingPrimaryStopDecision() {
+    func cancelPendingPrimaryDecisions() {
+        cancelPendingPrimaryStartDecision()
         primaryStopDecisionTask?.cancel()
         primaryStopDecisionTask = nil
         primaryPressCoordinator.cancelPendingStop()

@@ -1161,6 +1161,53 @@ struct VoiceInkTests {
         #expect(!coordinator.hasPendingNormalStop)
     }
 
+    @Test func primaryIdleDoublePressCancelsOnlyThePendingStart() {
+        var coordinator = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: 0.45
+        )
+
+        #expect(coordinator.registerPress(eventTime: 10) == .deferStart(
+            generation: 1
+        ))
+        #expect(coordinator.hasPendingStart)
+        #expect(coordinator.registerPress(eventTime: 10.25) == .cancelPendingStart)
+        #expect(!coordinator.hasPendingStart)
+        let canceledStartCommitted = coordinator.consumeDeferredStart(generation: 1)
+        #expect(!canceledStartCommitted)
+
+        // A bounce/third click in the already canceled burst cannot become a new
+        // recording. Once the bounded window expires, one fresh press can start.
+        #expect(coordinator.registerPress(
+            eventTime: 10.4
+        ) == .ignoreCompletedDoublePress)
+        #expect(coordinator.registerPress(eventTime: 10.8) == .deferStart(
+            generation: 2
+        ))
+    }
+
+    @Test func primaryIdleSinglePressCommitsExactlyOnce() {
+        var coordinator = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: 0.45
+        )
+        #expect(coordinator.registerPress(eventTime: 20) == .deferStart(
+            generation: 1
+        ))
+        let firstCommitAccepted = coordinator.consumeDeferredStart(generation: 1)
+        #expect(firstCommitAccepted)
+        let duplicateCommitAccepted = coordinator.consumeDeferredStart(generation: 1)
+        #expect(!duplicateCommitAccepted)
+
+        var delayedMainActor = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: 0.45
+        )
+        #expect(delayedMainActor.registerPress(
+            eventTime: 30
+        ) == .deferStart(generation: 1))
+        #expect(delayedMainActor.registerPress(
+            eventTime: 30.6
+        ) == .performOverdueStart)
+    }
+
     @Test func genuinePrimaryTriplePressFinishesToClipboard() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
@@ -1690,19 +1737,18 @@ struct VoiceInkTests {
 
     @Test func duplicateChordCannotCancelStartingOrTurnOneStopIntoPause() {
         var idleCoalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
-        var idleCoordinator = PrimaryRecordingPressCoordinator(doublePressInterval: 0.45)
-        var idleDecisions: [PrimaryRecordingPressCoordinator.Decision] = []
+        var idleCoordinator = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: 0.45
+        )
+        var idleDecisions: [PrimaryIdleStartPressCoordinator.Decision] = []
         for eventTime in [50.0, 50.012] where !idleCoalescer.shouldCoalesce(
             action: .primaryRecording,
             mode: .toggle,
             eventTime: eventTime
         ) {
-            idleDecisions.append(idleCoordinator.registerPress(
-                recordingState: .idle,
-                eventTime: eventTime
-            ))
+            idleDecisions.append(idleCoordinator.registerPress(eventTime: eventTime))
         }
-        #expect(idleDecisions == [.startOrCancelImmediately])
+        #expect(idleDecisions == [.deferStart(generation: 1)])
 
         var recordingCoalescer = PrimaryShortcutDuplicateChordCoalescer(interval: 0.09)
         var recordingCoordinator = PrimaryRecordingPressCoordinator(doublePressInterval: 0.45)
@@ -1721,7 +1767,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func duplicatePrimaryChordCannotCancelStartingHandlerSession() async {
+    @Test func duplicatePrimaryChordCannotCancelDebouncedHandlerStart() async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .idle,
             isRecorderVisible: false
@@ -1735,6 +1781,7 @@ struct VoiceInkTests {
             },
             cancelRecording: {},
             primaryDoublePressInterval: 0.45,
+            primaryStartDebounceInterval: 0.02,
             primaryTriplePressInterval: 0.8,
             primaryDuplicateChordInterval: 0.09
         )
@@ -1759,6 +1806,7 @@ struct VoiceInkTests {
             eventTime: 70.013,
             mode: .toggle
         )
+        try? await Task.sleep(nanoseconds: 40_000_000)
 
         #expect(state.toggleDestinations == [.primaryCurrentInput])
         #expect(state.recordingState == .starting)
@@ -1778,11 +1826,203 @@ struct VoiceInkTests {
             eventTime: 70.201,
             mode: .toggle
         )
+        try? await Task.sleep(nanoseconds: 40_000_000)
         #expect(state.toggleDestinations == [
             .primaryCurrentInput,
             .primaryCurrentInput,
         ])
         #expect(state.recordingState == .starting)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func idlePrimaryDoublePressReleasesReservationWithoutStarting() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .idle,
+            isRecorderVisible: false
+        )
+        let requestID = UUID()
+        var reserved: [UUID] = []
+        var canceled: [UUID] = []
+        var committed: [UUID] = []
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            cancelRecording: {},
+            reserveRecordingStart: {
+                reserved.append(requestID)
+                return requestID
+            },
+            cancelRecordingStartReservation: { id in
+                canceled.append(id)
+            },
+            startReservedRecording: { id, _ in
+                committed.append(id)
+                state.toggle(destination: .primaryCurrentInput)
+            },
+            primaryDoublePressInterval: 0.45,
+            primaryStartDebounceInterval: 0.05,
+            primaryTriplePressInterval: 0.8,
+            primaryDuplicateChordInterval: 0.005
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 90,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 90.001,
+            mode: .toggle
+        )
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 90.03,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 90.031,
+            mode: .toggle
+        )
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        #expect(reserved == [requestID])
+        #expect(canceled == [requestID])
+        #expect(committed.isEmpty)
+        #expect(state.recordingState == .idle)
+        #expect(!state.isRecorderVisible)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func idlePrimarySinglePressReservesImmediatelyThenStartsAfterWindow() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .idle,
+            isRecorderVisible: false
+        )
+        let requestID = UUID()
+        var reserved: [UUID] = []
+        var committed: [UUID] = []
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            cancelRecording: {},
+            reserveRecordingStart: {
+                reserved.append(requestID)
+                return requestID
+            },
+            startReservedRecording: { id, _ in
+                committed.append(id)
+                state.toggle(destination: .primaryCurrentInput)
+            },
+            primaryDoublePressInterval: 0.45,
+            primaryStartDebounceInterval: 0.02,
+            primaryTriplePressInterval: 0.8,
+            primaryDuplicateChordInterval: 0.005
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 100,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 100.001,
+            mode: .toggle
+        )
+        #expect(reserved == [requestID])
+        #expect(committed.isEmpty)
+        #expect(state.recordingState == .idle)
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(committed == [requestID])
+        #expect(state.recordingState == .starting)
+        #expect(state.isRecorderVisible)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func idleSecondPressCannotBeLostWhileFirstReservationAwaits() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .idle,
+            isRecorderVisible: false
+        )
+        let requestID = UUID()
+        var reservationContinuation: CheckedContinuation<UUID?, Never>?
+        var canceled: [UUID] = []
+        var committed: [UUID] = []
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            cancelRecording: {},
+            reserveRecordingStart: {
+                await withCheckedContinuation { continuation in
+                    reservationContinuation = continuation
+                }
+            },
+            cancelRecordingStartReservation: { id in
+                canceled.append(id)
+            },
+            startReservedRecording: { id, _ in
+                committed.append(id)
+                state.toggle(destination: .primaryCurrentInput)
+            },
+            primaryDoublePressInterval: 0.45,
+            primaryStartDebounceInterval: 0.05,
+            primaryTriplePressInterval: 0.8,
+            primaryDuplicateChordInterval: 0.005
+        )
+
+        let firstPress = Task { @MainActor in
+            await handler.handleKeyDown(
+                action: .primaryRecording,
+                eventTime: 110,
+                mode: .toggle
+            )
+        }
+        while reservationContinuation == nil {
+            await Task.yield()
+        }
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 110.001,
+            mode: .toggle
+        )
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 110.03,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 110.031,
+            mode: .toggle
+        )
+
+        reservationContinuation?.resume(returning: requestID)
+        reservationContinuation = nil
+        await firstPress.value
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        #expect(canceled == [requestID])
+        #expect(committed.isEmpty)
+        #expect(state.recordingState == .idle)
+        #expect(!state.isRecorderVisible)
         handler.reset()
     }
 
@@ -2897,7 +3137,7 @@ struct VoiceInkTests {
         ))
         let nextBody = source[nextStart.lowerBound..<monitorEnd.lowerBound]
         let cancellation = try #require(nextBody.range(
-            of: "cancelPendingPrimaryStopDecision()"
+            of: "cancelPendingPrimaryDecisions()"
         ))
         let recordingStartRoute = try #require(nextBody.range(
             of: "stopPasteDestination: .recordingStart"
@@ -2909,7 +3149,7 @@ struct VoiceInkTests {
             of: "    private func schedulePrimaryNormalStop("
         ))
         let deferredEnd = try #require(source.range(
-            of: "    func cancelPendingPrimaryStopDecision()",
+            of: "    func cancelPendingPrimaryDecisions()",
             range: deferredStart.upperBound..<source.endIndex
         ))
         let deferredBody = source[

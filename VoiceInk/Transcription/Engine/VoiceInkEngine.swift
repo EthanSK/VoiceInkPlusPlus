@@ -143,10 +143,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var resourceCleanupTask: Task<Void, Never>?
     private var isResettingRecordingSession = false
 
+    private struct PreparedRecordingStart {
+        let requestID: UUID
+        let focusedInput: FocusLockService.Target?
+    }
+
     // Reservation across requestRecordPermission → startNewSession scheduling. Without
     // this synchronous token, two rapid Primary start events can both observe no active
     // session before either scheduled MainActor task appends one, creating two mic owners.
     private var recordingStartReservation = RecordingStartReservation()
+    private var preparedRecordingStart: PreparedRecordingStart?
 
     /// Recorder-panel visibility must include the synchronous start lifecycle, not
     /// only materialized session cards. An older pipeline may finish while this token
@@ -468,6 +474,50 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Toggle Record
 
+    /// Reserve one prospective recording before the idle-only Primary debounce yields.
+    /// The delivery barrier must begin at the physical single-press candidate, not
+    /// 0.45 seconds later, so an older FIFO transcript cannot press Return underneath
+    /// the user's new capture intent. Capture the passive Next-only input now as well:
+    /// Electron's exact pre-chord snapshot expires before the debounce timer does.
+    /// A matching second click cancels this token without showing UI, touching audio,
+    /// pausing media, or posting the YouTube recording-start notification.
+    func reserveRecordingStart() -> UUID? {
+        assert(activeRecordingSession == nil, "one-active-recording invariant violated")
+        guard !isResettingRecordingSession else {
+            vippLog.notice("record start reservation ignored while a full recording reset is draining old jobs")
+            return nil
+        }
+        guard let requestID = recordingStartReservation.reserve() else {
+            vippLog.notice("duplicate START ignored while an earlier start request is pending")
+            return nil
+        }
+
+        activeRecordingDeliveryBarrier.beginCapture(owner: requestID)
+        let focusedInput = FocusLockService.shared.captureRecordingStartInputSnapshot()
+        preparedRecordingStart = PreparedRecordingStart(
+            requestID: requestID,
+            focusedInput: focusedInput
+        )
+        return requestID
+    }
+
+    func cancelRecordingStartReservation(_ requestID: UUID) {
+        guard recordingStartReservation.pendingID == requestID else { return }
+        if preparedRecordingStart?.requestID == requestID {
+            preparedRecordingStart = nil
+        }
+        recordingStartReservation.cancel(requestID)
+        activeRecordingDeliveryBarrier.endCapture(owner: requestID)
+        reportUnresolvedPrimaryAutoSendIfQueueDrained()
+    }
+
+    func canCommitRecordingStartReservation(_ requestID: UUID) -> Bool {
+        recordingStartReservation.pendingID == requestID
+            && preparedRecordingStart?.requestID == requestID
+            && activeRecordingSession == nil
+            && !isResettingRecordingSession
+    }
+
     // The single entry point for the record shortcut / record button. Behaviour:
     //   • A session is actively RECORDING → STOP it (move to .transcribing + enqueue its
     //     pipeline on the serial queue, NON-blocking). Mic frees immediately.
@@ -480,8 +530,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
         isAssistantFollowUp: Bool = false,
         stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput,
         completionDisposition: RecordingCompletionDisposition = .normalDelivery,
-        stopPlaybackDisposition: RecordingStopPlaybackDisposition = .restoreOwnedPlayback
+        stopPlaybackDisposition: RecordingStopPlaybackDisposition = .restoreOwnedPlayback,
+        reservedStartRequestID: UUID? = nil
     ) async {
+        if let reservedStartRequestID,
+           activeRecordingSession != nil {
+            // A delayed idle start may only create a new capture. If another route
+            // acquired the microphone while its timer yielded, cancel the stale
+            // token rather than turning it into a stop of that unrelated session.
+            cancelRecordingStartReservation(reservedStartRequestID)
+            vippLog.notice("toggleRecord: reserved START refused because another session owns capture requestID=\(reservedStartRequestID.uuidString, privacy: .public)")
+            return
+        }
+
         // Mid-start re-press: the active session is still starting → cancel it.
         if let active = activeRecordingSession, active.liveRecordingState == .starting {
             await cancelSession(active)
@@ -626,22 +687,25 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
         } else {
             // ── START branch ─────────────────────────────────────────────────────────
-            // Reserve synchronously before the permission callback schedules another
-            // MainActor task. A second rapid start press in this gap is ignored rather
-            // than becoming a second session that points at the same shared Recorder.
-            assert(activeRecordingSession == nil, "one-active-recording invariant violated")
-            guard !isResettingRecordingSession else {
-                vippLog.notice("toggleRecord: START ignored while a full recording reset is draining old jobs")
+            // Primary idle debounce may already own a synchronous reservation. Other
+            // start routes reserve here and commit immediately. Either way the exact
+            // prepared token is consumed once; a stale timer can never create capture.
+            let startRequestID: UUID
+            if let reservedStartRequestID {
+                startRequestID = reservedStartRequestID
+            } else if let requestID = reserveRecordingStart() {
+                startRequestID = requestID
+            } else {
                 return
             }
-            guard let startRequestID = recordingStartReservation.reserve() else {
-                vippLog.notice("toggleRecord: duplicate START ignored while an earlier start request is pending")
+            guard recordingStartReservation.pendingID == startRequestID,
+                  let preparedRecordingStart,
+                  preparedRecordingStart.requestID == startRequestID else {
+                cancelRecordingStartReservation(startRequestID)
+                vippLog.notice("toggleRecord: stale reserved START refused requestID=\(startRequestID.uuidString, privacy: .public)")
                 return
             }
-            // Begin before the permission/start task yields. Otherwise an older result
-            // can finish in the few-millisecond reservation-to-session gap and paste
-            // after Ethan has already pressed Primary to begin the next dictation.
-            activeRecordingDeliveryBarrier.beginCapture(owner: startRequestID)
+            self.preparedRecordingStart = nil
 
             let canContinueAssistantSession = isAssistantFollowUp && assistantSession.canSendFollowUp
             let useCase: RecordingSession.UseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
@@ -653,8 +717,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // This passive recording-start capture exists solely for a possible Next
             // stop. A normal Primary stop discards it structurally and never enters an
             // app-specific resolver, even though the user could choose Next later.
-            let recordingStartFocusedInput = FocusLockService.shared
-                .captureRecordingStartInputSnapshot()
+            let recordingStartFocusedInput = preparedRecordingStart.focusedInput
             let recordingStartIdentityTask: Task<
                 FocusLockService.Target,
                 Never
@@ -1634,6 +1697,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         // every retained queue task (running and waiting). Waiting Task<Void, Never>
         // jobs still recheck generation after their previous tail returns, and a running
         // pipeline must pass isDeliveryAuthorized before it can paste completed text.
+        preparedRecordingStart = nil
         recordingStartReservation.invalidate()
         activeRecordingDeliveryBarrier.reset()
         primaryQueuedAutoSendTracker.reset()
