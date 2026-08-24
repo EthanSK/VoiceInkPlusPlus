@@ -397,6 +397,24 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Paste transport failures
 
+### Stripping literal `&#x20;` in VoiceInk++ output
+
+- **State:** REJECTED by source and persisted-result evidence on 2026-08-24.
+- **Temptation:** Remove a trailing `&#x20;` in VoiceInk++ before paste, or repair it after Return,
+  because the entity appeared immediately after a VoiceInk++ paste and Codex auto-send attempt.
+- **Observed failure condition:** The correlated VoiceInk++ history row ended with ordinary text and
+  contained no entity, non-breaking space, or trailing space. `CursorPaster` also exposed only its
+  plain-string payload. The installed Codex renderer contains the Markdown boundary-space encoder,
+  and upstream Codex issues reproduce literal `&#x20;` during draft/history restoration without
+  VoiceInk++. A VoiceInk++ replacement would therefore operate before the mutation exists.
+- **Use instead:** Keep exact transcript bytes unchanged and fix/update the destination composer's
+  serialization/restoration boundary. Diagnose future cases by comparing the VoiceInk++ persisted
+  final with the destination draft before changing Primary paste or Return.
+- **Reconsider only if:** A correlated VoiceInk++ history row or owned pasteboard lease already
+  contains an entity that was absent from the provider final, with the destination editor excluded
+  as the mutating boundary. Any cleanup must then be provenance-aware so legitimate literal code is
+  never rewritten.
+
 ### Clipboard-mutating selected-text capture during recording-context setup
 
 - **State:** REJECTED after a physical rapid-recording regression in v2.0.285.

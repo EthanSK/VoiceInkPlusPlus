@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-24T00:32:00Z
+**Trigger:** Ethan reported that a VoiceInk++ paste followed by Codex auto-send left a visible literal `&#x20;` at the end of the Codex composer.
+**Symptom:** The ChatGPT-hosted Codex composer displayed and later submitted a literal hexadecimal HTML space entity after the dictated text, making the delivery path appear to have appended it.
+**Root cause:** VoiceInk++ history stored the correlated final without the entity, non-breaking space, or trailing space, and its clipboard transaction exposes only the plain-string payload. The installed Codex 26.818.41509 renderer bundles a Markdown serializer that encodes a boundary space as `&#x20;`; Codex's draft/history restoration can then rehydrate that serialized Markdown as literal editor text. Open upstream issues 39844 and 40136 independently reproduce the same entity leakage in Codex draft restoration and recalled input history.
+**Fix:** Investigation only; no VoiceInk++ delivery behavior changed. Keep VoiceInk++ from stripping or rewriting literal entity text because doing so would corrupt legitimate dictated code and would not repair Codex's serializer/restoration boundary. Use an official Codex fix/update for the permanent repair.
+**Commit:** 694f79f
+**Guard:** For a future recurrence, first query the correlated VoiceInk++ history row and inspect the final bytes, then verify the pasteboard types written by `CursorPaster`; if both are clean, classify the mutation at the destination composer boundary rather than changing Primary paste or Return. Do not infer the source from the text visible after Codex restores a draft.
+---
+
+---
 **Date:** 2026-08-20T20:20:27Z
 **Trigger:** Ethan requested an idle-only start debounce on 2026-08-20.
 **Symptom:** An accidental idle Primary double-click could briefly start recording and trigger recorder/media lifecycle.
