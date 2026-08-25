@@ -1248,7 +1248,10 @@ struct VoiceInkTests {
             recordingState: .recording,
             eventTime: 20.2
         ) == .deferClipboardFinish(generation: 2))
-        #expect(coordinator.consumeDeferredClipboardFinish(generation: 2))
+        let firstClipboardFinishCommitted = coordinator.consumeDeferredClipboardFinish(
+            generation: 2
+        )
+        #expect(firstClipboardFinishCommitted)
 
         // The completed double-click ended its recording. A later recording gets
         // a fresh gesture and cannot inherit the prior pair as click one/two.
@@ -1510,7 +1513,10 @@ struct VoiceInkTests {
             recordingState: .recording,
             eventTime: 30.2
         ) == .deferClipboardFinish(generation: 2))
-        #expect(separateGesture.consumeDeferredClipboardFinish(generation: 2))
+        let separateClipboardFinishCommitted = separateGesture.consumeDeferredClipboardFinish(
+            generation: 2
+        )
+        #expect(separateClipboardFinishCommitted)
         #expect(separateGesture.registerPress(
             recordingState: .recording,
             eventTime: 31.01
