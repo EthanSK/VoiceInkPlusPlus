@@ -17,7 +17,7 @@ import Foundation
 ///   - `com.ethansk.voiceink.recordingStarted`  → posted when a dictation recording begins.
 ///   - `com.ethansk.voiceink.recordingStopped`  → posted when a dictation recording ends.
 ///   - `com.ethansk.voiceink.recordingStoppedPreservingPlayback` → posted when a genuine Primary
-///     triple-click finalizes to the clipboard; consumers must end recording ownership without
+///     double-click finalizes to the clipboard; consumers must end recording ownership without
 ///     issuing play, pause, or another playback mutation.
 /// These notifications are intentionally scoped to the proven YouTube pause/resume bridge. ChatGPT
 /// Voice microphone suppression is a separate, direct `Recorder` capture-state lease: it must not

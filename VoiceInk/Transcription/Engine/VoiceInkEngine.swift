@@ -451,7 +451,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     }
 
     /// Finalizes the active recording as a one-shot clipboard result. This is the
-    /// genuine Primary triple-click route: it is neither cancel/discard nor any of
+    /// genuine Primary double-click route: it is neither cancel/discard nor any of
     /// the three paste destinations. The session still transcribes normally, while
     /// the pipeline's completion disposition guarantees no paste or auto-send.
     @discardableResult
@@ -608,7 +608,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // stop boundary, however, persist the last HUD text beside the original
             // WAV before starting asynchronous finalization. This is local recovery
             // state only: it never creates or mutates a destination-app draft. A
-            // genuine Primary triple-click therefore leaves a reopenable draft even
+            // genuine Primary double-click therefore leaves a reopenable draft even
             // if the provider or app exits before the final clipboard result arrives.
             active.recoverablePartialTranscript = active.partialTranscript
             active.partialTranscript = ""

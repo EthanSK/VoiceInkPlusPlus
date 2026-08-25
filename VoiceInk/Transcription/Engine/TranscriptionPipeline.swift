@@ -575,7 +575,7 @@ class TranscriptionPipeline {
             return
         }
 
-        // A genuine Primary triple-click is a completion gesture, not a fourth
+        // A genuine Primary double-click is a completion gesture, not a fourth
         // paste destination. Finish the ordinary transcription/format/enhancement
         // work, then copy once and return before resolving any Accessibility target,
         // mode output action, custom command, paste, or Return key.

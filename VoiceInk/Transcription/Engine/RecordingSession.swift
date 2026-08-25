@@ -30,7 +30,7 @@ enum RecordingPasteDestination: Equatable {
 ///
 /// This is deliberately independent from `RecordingPasteDestination`: Primary and
 /// the two Next routes still own where a normal delivery goes. A genuine Primary
-/// triple-click chooses no paste destination at all. It completes the same audio and
+/// double-click chooses no paste destination at all. It completes the same audio and
 /// transcription pipeline, then leaves the usable result on the clipboard without
 /// issuing Command-V, Return, a custom command, or a recorder response.
 enum RecordingCompletionDisposition: Equatable {
@@ -222,7 +222,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // re-renders its on/off (subdued vs amber) state the instant it flips.
     @Published var skipPostProcessing: Bool = false
 
-    // A genuine Primary triple-click sets this one-shot value before the session
+    // A genuine Primary double-click sets this one-shot value before the session
     // leaves `.recording`. It must travel with this exact session because another
     // recording may already exist while this one finishes in the FIFO pipeline.
     // Unlike the separate raw/skip toggle, clipboard-only completion still applies

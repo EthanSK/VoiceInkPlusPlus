@@ -252,8 +252,8 @@ enum RecordingMediaPausePolicy {
 // Playback ownership is deliberately independent from Recorder's system-output
 // unmute task. Each successful recording receives one lease. A rapid successor that
 // also requires suppression transfers the owned source without a duplicate command;
-// a successor on external output leaves the prior resume alone. Primary double-click
-// pause/resume never touches the lease. A genuine Primary triple-click releases only
+// a successor on external output leaves the prior resume alone. Primary triple-click
+// pause and single-click resume never touch the lease. A genuine Primary double-click releases only
 // its lease with `.preserveCurrentPlayback`, issuing neither play nor pause.
 @MainActor
 final class PlaybackController: ObservableObject {
@@ -546,7 +546,7 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Ends exactly one recording lease. Normal completion schedules one owned
-    /// resume; clipboard-only triple-click abandons ownership without playback.
+    /// resume; clipboard-only double-click abandons ownership without playback.
     func finishRecordingPause(
         _ lease: RecordingMediaPauseLease?,
         playbackDisposition: RecordingStopPlaybackDisposition

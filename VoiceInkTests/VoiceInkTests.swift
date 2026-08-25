@@ -759,7 +759,7 @@ struct VoiceInkTests {
             of: "    func toggleRecorderPanel("
         ))
         let toggleEnd = try #require(source.range(
-            of: "    /// Genuine Primary triple-click:",
+            of: "    /// Genuine Primary double-click:",
             range: toggleStart.upperBound..<source.endIndex
         ))
         let toggleBody = source[toggleStart.lowerBound..<toggleEnd.lowerBound]
@@ -1141,7 +1141,7 @@ struct VoiceInkTests {
         ))
     }
 
-    @Test func primaryDoublePressDefersStopThenTogglesPause() {
+    @Test func primaryDoublePressDefersClipboardFinish() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
         )
@@ -1157,8 +1157,9 @@ struct VoiceInkTests {
             recordingState: .recording,
             eventTime: 10.3
         )
-        #expect(secondDecision == .togglePause)
+        #expect(secondDecision == .deferClipboardFinish(generation: 2))
         #expect(!coordinator.hasPendingNormalStop)
+        #expect(coordinator.hasPendingClipboardFinish)
     }
 
     @Test func primaryIdleDoublePressCancelsOnlyThePendingStart() {
@@ -1208,7 +1209,7 @@ struct VoiceInkTests {
         ) == .performOverdueStart)
     }
 
-    @Test func genuinePrimaryTriplePressFinishesToClipboard() {
+    @Test func genuinePrimaryTriplePressPauses() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
         )
@@ -1220,21 +1221,21 @@ struct VoiceInkTests {
         #expect(coordinator.registerPress(
             recordingState: .recording,
             eventTime: 10.2
+        ) == .deferClipboardFinish(generation: 2))
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 10.4
         ) == .togglePause)
+
+        // Once Pause has actually settled, the next press is deliberately the
+        // immediate Resume action even when it follows the triple quickly.
         #expect(coordinator.registerPress(
             recordingState: .paused,
-            eventTime: 10.4
-        ) == .finishToClipboard)
-
-        // A fourth press/bounce inside the same multi-click window must not start
-        // a new recording after the clipboard-only finalization begins.
-        #expect(coordinator.registerPress(
-            recordingState: .idle,
             eventTime: 10.45
-        ) == .ignoreCompletedGesture)
+        ) == .resumeImmediately)
     }
 
-    @Test func separatePrimaryDoublePressesNeverBecomeTriplePress() {
+    @Test func separatePrimaryDoublePressesNeverBecomePause() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
         )
@@ -1246,18 +1247,19 @@ struct VoiceInkTests {
         #expect(coordinator.registerPress(
             recordingState: .recording,
             eventTime: 20.2
-        ) == .togglePause)
+        ) == .deferClipboardFinish(generation: 2))
+        #expect(coordinator.consumeDeferredClipboardFinish(generation: 2))
 
-        // The gap ends the first macOS-bounded gesture. This is click one of a
-        // fresh double-click, not click three of the earlier one.
+        // The completed double-click ended its recording. A later recording gets
+        // a fresh gesture and cannot inherit the prior pair as click one/two.
         #expect(coordinator.registerPress(
-            recordingState: .paused,
+            recordingState: .recording,
             eventTime: 21
-        ) == .deferNormalStop(generation: 2))
+        ) == .deferNormalStop(generation: 3))
         #expect(coordinator.registerPress(
-            recordingState: .paused,
+            recordingState: .recording,
             eventTime: 21.2
-        ) == .togglePause)
+        ) == .deferClipboardFinish(generation: 4))
     }
 
     @Test func canceledTranscriptionRecoveryPrefersFinishedTextThenHUDPartial() {
@@ -1393,7 +1395,7 @@ struct VoiceInkTests {
         ))
     }
 
-    @Test func triplePressStopPreservesPlaybackAndUsesNoCancelPath() throws {
+    @Test func doubleClickFinishPreservesPlaybackAndUsesNoCancelPath() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -1403,19 +1405,19 @@ struct VoiceInkTests {
             ),
             encoding: .utf8
         )
-        let tripleStart = try #require(shortcutSource.range(
-            of: "        case .finishToClipboard:"
+        let finishStart = try #require(shortcutSource.range(
+            of: "    private func finishPrimaryRecordingToClipboard(modeId: UUID?) async {"
         ))
-        let nextCase = try #require(shortcutSource.range(
-            of: "        case .ignoreCompletedGesture:",
-            range: tripleStart.upperBound..<shortcutSource.endIndex
+        let finishEnd = try #require(shortcutSource.range(
+            of: "\n    func cancelPendingPrimaryDecisions()",
+            range: finishStart.upperBound..<shortcutSource.endIndex
         ))
-        let tripleBody = shortcutSource[
-            tripleStart.lowerBound..<nextCase.lowerBound
+        let finishBody = shortcutSource[
+            finishStart.lowerBound..<finishEnd.lowerBound
         ]
-        #expect(tripleBody.contains("finishRecordingToClipboard(modeId)"))
-        #expect(!tripleBody.contains("cancelRecording"))
-        #expect(!tripleBody.contains("toggleRecorderPanel"))
+        #expect(finishBody.contains("finishRecordingToClipboard(modeId)"))
+        #expect(!finishBody.contains("cancelRecording"))
+        #expect(!finishBody.contains("toggleRecorderPanel"))
 
         let recorderSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent("VoiceInk/Recorder.swift"),
@@ -1444,14 +1446,14 @@ struct VoiceInkTests {
         #expect(finish.lowerBound < preservingNotifier.lowerBound)
     }
 
-    @Test func primaryPauseDoublePressWindowCapsSlowSystemPreference() {
+    @Test func primarySecondPressWindowCapsSlowSystemPreference() {
         #expect(
-            PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
+            PrimaryRecordingPressCoordinator.secondPressInterval(
                 systemDoubleClickInterval: 0.8
             ) == 0.45
         )
         #expect(
-            PrimaryRecordingPressCoordinator.pauseDoublePressInterval(
+            PrimaryRecordingPressCoordinator.secondPressInterval(
                 systemDoubleClickInterval: 0.3
             ) == 0.3
         )
@@ -1475,13 +1477,13 @@ struct VoiceInkTests {
         #expect(coordinator.registerPress(
             recordingState: .recording,
             eventTime: 10.3
-        ) == .togglePause)
+        ) == .deferClipboardFinish(generation: 2))
         // 0.6s after click two would have failed under the old 0.45s reuse,
-        // but is one genuine continuation under Ethan's 0.8s macOS setting.
+        // but is one genuine Pause continuation under Ethan's 0.8s setting.
         #expect(coordinator.registerPress(
-            recordingState: .paused,
+            recordingState: .recording,
             eventTime: 10.9
-        ) == .finishToClipboard)
+        ) == .togglePause)
 
         var slowFirstPair = PrimaryRecordingPressCoordinator(
             normalStopDecisionInterval: 0.45,
@@ -1507,11 +1509,12 @@ struct VoiceInkTests {
         #expect(separateGesture.registerPress(
             recordingState: .recording,
             eventTime: 30.2
-        ) == .togglePause)
+        ) == .deferClipboardFinish(generation: 2))
+        #expect(separateGesture.consumeDeferredClipboardFinish(generation: 2))
         #expect(separateGesture.registerPress(
-            recordingState: .paused,
+            recordingState: .recording,
             eventTime: 31.01
-        ) == .deferNormalStop(generation: 2))
+        ) == .deferNormalStop(generation: 3))
     }
 
     @Test func errorNotificationClearsExpandedRealtimeMiniRecorder() {
@@ -1540,21 +1543,18 @@ struct VoiceInkTests {
         #expect(reservedHeight == 213)
     }
 
-    @Test func primaryDoublePressWhilePausedResumesInsteadOfStopping() {
+    @Test func primarySinglePressWhilePausedResumesImmediately() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
         )
 
-        let firstDecision = coordinator.registerPress(
+        let decision = coordinator.registerPress(
             recordingState: .paused,
             eventTime: 20
         )
-        #expect(firstDecision == .deferNormalStop(generation: 1))
-        let secondDecision = coordinator.registerPress(
-            recordingState: .paused,
-            eventTime: 20.4
-        )
-        #expect(secondDecision == .togglePause)
+        #expect(decision == .resumeImmediately)
+        #expect(!coordinator.hasPendingNormalStop)
+        #expect(!coordinator.hasPendingClipboardFinish)
     }
 
     @Test func primarySinglePressCommitsExactlyOneDeferredStop() {
@@ -1654,7 +1654,7 @@ struct VoiceInkTests {
         )
         // F21 alone, F22 alone, Corsair F19, and an ordinary same-button double
         // all arrive as this identical chord. A human-scale second activation
-        // must continue into the existing pause/triple coordinator.
+        // must continue into the existing clipboard/triple-pause coordinator.
         let acceptedDeliberateSecond = !coalescer.shouldCoalesce(
             action: .primaryRecording,
             mode: .toggle,
@@ -2027,11 +2027,12 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func duplicatePrimaryChordCannotBecomePauseInHandler() async {
+    @Test func duplicatePrimaryChordCannotBecomeClipboardFinishInHandler() async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .recording,
             isRecorderVisible: true
         )
+        var finishCallCount = 0
         let handler = RecordingShortcutModeHandler(
             canHandleShortcutAction: { true },
             isRecorderVisible: { state.isRecorderVisible },
@@ -2044,9 +2045,15 @@ struct VoiceInkTests {
                 state.recordingState = .paused
                 return true
             },
+            finishRecordingToClipboard: { _ in
+                finishCallCount += 1
+                state.recordingState = .idle
+                state.isRecorderVisible = false
+                return true
+            },
             cancelRecording: {},
             primaryDoublePressInterval: 0.45,
-            primaryTriplePressInterval: 0.8,
+            primaryTriplePressInterval: 0.05,
             primaryDuplicateChordInterval: 0.09
         )
 
@@ -2071,10 +2078,12 @@ struct VoiceInkTests {
             mode: .toggle
         )
         #expect(state.pauseCallCount == 0)
+        #expect(finishCallCount == 0)
         #expect(state.toggleDestinations.isEmpty)
 
         // The duplicate never re-anchors the interval, so a deliberate second
-        // press 200 ms after click one still reaches the accepted pause route.
+        // press 200 ms after click one still reaches the accepted double-click
+        // route. Its clipboard finish remains deferred for a possible third click.
         await handler.handleKeyDown(
             action: .primaryRecording,
             eventTime: 80.2,
@@ -2085,8 +2094,74 @@ struct VoiceInkTests {
             eventTime: 80.201,
             mode: .toggle
         )
+        #expect(state.pauseCallCount == 0)
+        #expect(finishCallCount == 0)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        #expect(finishCallCount == 1)
+        #expect(state.recordingState == .idle)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func primaryTripleClickPausesAndOnePausedClickResumesInHandler() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .recording,
+            isRecorderVisible: true
+        )
+        var finishCallCount = 0
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            toggleRecordingPause: {
+                state.pauseCallCount += 1
+                state.recordingState = state.recordingState == .paused ? .recording : .paused
+                return true
+            },
+            finishRecordingToClipboard: { _ in
+                finishCallCount += 1
+                return true
+            },
+            cancelRecording: {},
+            primaryDoublePressInterval: 0.45,
+            primaryTriplePressInterval: 0.8,
+            primaryDuplicateChordInterval: 0.005
+        )
+
+        for eventTime in [90.0, 90.2, 90.4] {
+            await handler.handleKeyDown(
+                action: .primaryRecording,
+                eventTime: eventTime,
+                mode: .toggle
+            )
+            await handler.handleKeyUp(
+                action: .primaryRecording,
+                eventTime: eventTime + 0.001,
+                mode: .toggle
+            )
+        }
+
         #expect(state.pauseCallCount == 1)
+        #expect(finishCallCount == 0)
         #expect(state.recordingState == .paused)
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 90.45,
+            mode: .toggle
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 90.451,
+            mode: .toggle
+        )
+
+        #expect(state.pauseCallCount == 2)
+        #expect(finishCallCount == 0)
+        #expect(state.recordingState == .recording)
         handler.reset()
     }
 
@@ -3035,7 +3110,7 @@ struct VoiceInkTests {
         #expect(ownership.shouldPerformResume(request))
     }
 
-    @Test func tripleClickAbandonsOnlyItsLeaseWithoutAResumeRequest() {
+    @Test func doubleClickAbandonsOnlyItsLeaseWithoutAResumeRequest() {
         var ownership = RecordingMediaPauseOwnership<String>()
         let recording = ownership.beginRecording(scope: .spotifyOnly)
         let recordedSource = ownership.recordPausedSource(

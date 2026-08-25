@@ -6,7 +6,7 @@ This is the canonical glossary for Ethan's mouse controls and recording destinat
 
 | Preferred term | Ethan may also say | Exact meaning |
 | --- | --- | --- |
-| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. While idle, one press starts after a 0.45-second debounce; a second accepted press in that window cancels the pending start before UI/audio/media side effects. While recording or paused, one press performs a normal stop after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds; two presses inside that window toggle capture pause/resume. After a recognized recording-time double, a third consecutive press may use the full macOS multi-click interval and finalizes to a recoverable clipboard-only draft without paste/Return. In code, the shortcut uses `.toggle` mode. |
+| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. While idle, one press starts after a 0.45-second debounce; a second accepted press in that window cancels the pending start before UI/audio/media side effects. While recording, one press performs a normal stop after the shorter of the macOS double-click interval and 0.45 seconds; two presses finish to a recoverable clipboard-only draft if no third press arrives, and three presses pause capture. While paused, one press resumes immediately. In code, the shortcut uses `.toggle` mode. |
 | **Next button** | forward button, secondary button, secondary mouse button, Next Track, Next Track media key/action/event, latch button, retarget button | The separate programmable mouse button mapped to the macOS Next Track media event (`NX_KEYTYPE_NEXT`). Its action depends on whether VoiceInk++ is recording or a normal-stop result is still loading. It is not the primary button and “secondary” does not mean macOS right-click. |
 
 In this repository, **toggle** without another qualifier means the primary button's start/stop lifecycle. It never means toggling a paste destination on or off. The short-lived Next-destination toggle experiment was deliberately reverted.
@@ -33,8 +33,8 @@ ordinary Primary activation.
 If both Razer DPI buttons are released together, Karabiner can emit two complete equivalent chords.
 VoiceInk++ coalesces only the second chord when its event-tap timestamp lands less than 90 ms after
 the last accepted Primary chord. A rejected duplicate does not extend the window. A later human
-double-click still reaches the existing pause/resume coordinator, and click three still reaches the
-clipboard-only route. Do not replace this narrow boundary with the old 500 ms Primary cooldown: that
+double-click still reaches the clipboard-only coordinator, and click three still reaches Pause. Do
+not replace this narrow boundary with the old 500 ms Primary cooldown: that
 would erase both accepted multi-click gestures.
 
 ## Timing defines the route
@@ -53,10 +53,9 @@ either physical button.
 | Idle | Primary button once | Immediately reserve continuation intent and the passive Next-only recording-start candidate, then start recorder UI/audio/media lifecycle after the 0.45-second start window expires | Not yet final |
 | Idle | Primary button twice within 0.45 seconds | Cancel the pending start and its reservation; do not show the recorder, open the microphone, pause media, or notify the YouTube helper | No recording |
 | Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
-| Recording | Primary button twice within the VoiceInk++ pause decision window | Pause this same recording and stop microphone/WAV/stream input; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
-| Paused | Primary button twice within the VoiceInk++ pause decision window | Resume capture into this same recording; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
-| Recording or paused | Primary button three times as one continuous click gesture | Wait for the double-click capture transition, persist the original WAV plus current realtime HUD text in History, then finalize normally to the clipboard; do not paste, Return, cancel/discard, or change media/YouTube playback | No paste destination; clipboard only |
-| Paused | Primary button once | After the same decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
+| Recording | Primary button twice within the VoiceInk++ second-press window | Wait through the remaining third-press interval, then persist the original WAV plus current realtime HUD text in History and finalize normally to the clipboard; do not paste, Return, cancel/discard, or change media/YouTube playback | No paste destination; clipboard only |
+| Recording | Primary button three times as one continuous click gesture | Cancel the pending clipboard finish, pause this same recording, and stop microphone/WAV/stream input; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button once | Resume capture immediately into this same recording; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
 | Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
 | Recorder bar visible, but no session remains eligible for a destination change | Next button | Consume the press as a VoiceInk++ no-op; never advance media while the bar is visible | Existing destination remains unchanged |
@@ -74,13 +73,11 @@ output mute when capture resumes. Only recording start and final stop/cancel own
 pause/resume lifecycle.
 
 The first-to-second Primary interval remains capped at 0.45 seconds because that timer also delays
-every ordinary single stop. Once click two has canceled the pending stop, click three uses the full
-macOS multi-click interval (0.8 seconds in the verified 2026-08-02 setup), making the clipboard exit
-more forgiving without slowing normal stops. Once that platform interval expires, the next press
-begins a fresh gesture; a later double-click therefore pauses/resumes normally and cannot become
-click three of the earlier double. The genuine triple's final stop balances VoiceInk/bridge recording
-ownership without issuing play or pause, so whatever video state exists immediately before click
-three remains unchanged.
+every ordinary single stop. Once click two has canceled the pending stop, its clipboard-only finish
+waits for click three through the full macOS multi-click interval (0.8 seconds in the verified
+2026-08-02 setup). Click three inside that interval pauses; after it expires, the double-click finish
+commits and a later click begins a fresh gesture. While paused, the next Primary press resumes
+immediately without another timing window.
 
 The same 0.45-second bound also delays only a prospective idle Start. The first physical press still
 reserves FIFO continuation intent immediately so an older Primary result cannot press Return beneath
@@ -89,7 +86,8 @@ is still valid. A second accepted idle press cancels that reservation before rec
 media, or helper lifecycle begins. Once a single idle press commits, the existing recording-time
 single/double/triple classifier is unchanged.
 
-At click three, VoiceInk++ finalizes the WAV and saves a `recoverableDraft` History record before the
+After a completed double-click receives no third press, VoiceInk++ finalizes the WAV and saves a
+`recoverableDraft` History record before the
 asynchronous provider finalization is enqueued. The record contains the original audio plus the last
 realtime HUD transcript/translation; History can replay, copy, reveal, or retranscribe it even if the
 provider or app exits before the final clipboard text arrives. Automatic retention jobs do not delete
@@ -101,12 +99,14 @@ The recorder bar is the strict ownership boundary for the physical Next button. 
 
 ### Primary normal stop is always base VoiceInk
 
-One Primary press while recording or paused does not latch any exact input. After the short
+One Primary press while recording does not latch any exact input. After the short
 double-click decision window proves it was a single press, it posts ordinary system-focused paste
 and the current Mode's generic auto-send key to whichever keyboard input macOS owns at delivery. It
 must not capture, reuse, restore, verify, or fall back to the tentative recording-start input, and it
 must never enter Telegram/OpenAI/Terminal or other app-specific delivery. A second Primary press
-inside that window cancels the pending stop and only toggles capture pause/resume.
+inside that window cancels the pending stop and schedules the clipboard-only finish; a third press
+inside the continuation window cancels that finish and pauses capture. While paused, one press only
+resumes capture.
 
 The recording-start or “old known” input is invoked only by pressing the Next button while recording.
 

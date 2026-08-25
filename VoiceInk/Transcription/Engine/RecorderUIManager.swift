@@ -566,7 +566,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         }
     }
 
-    /// Genuine Primary triple-click: finish the active recording through the
+    /// Genuine Primary double-click: finish the active recording through the
     /// normal transcription pipeline, but select the session's clipboard-only
     /// completion disposition. This never routes through cancel, paste, Return,
     /// or app-specific exact delivery.
@@ -577,7 +577,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
               engine.recordingState.isRecordingOrPaused else {
             return false
         }
-        vippLog.info("finishRecordingToClipboard: genuine Primary triple-click")
+        vippLog.info("finishRecordingToClipboard: genuine Primary double-click")
         return await engine.finishActiveRecordingToClipboard(modeId: modeId)
     }
 

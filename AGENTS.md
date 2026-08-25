@@ -17,7 +17,7 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Canonical mouse terminology
 
-Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. While idle, one press starts recording only after VoiceInk++'s 0.45-second bounded start-debounce window; a second accepted press inside that window cancels the pending start before recorder UI, microphone capture, media pause, or the YouTube-helper start edge. This debounce applies only to Start. While recording or paused, one press performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`) after VoiceInk++'s pause decision window—the shorter of the macOS double-click interval and 0.45 seconds; two presses inside that window toggle capture pause/resume without finalizing. The system keyboard focus and current Mode at delivery decide paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. While idle, one press starts recording only after VoiceInk++'s 0.45-second bounded start-debounce window; a second accepted press inside that window cancels the pending start before recorder UI, microphone capture, media pause, or the YouTube-helper start edge. This debounce applies only to Start. While recording, one press performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`) after the shorter of the macOS double-click interval and 0.45 seconds. Two presses select the existing clipboard-only/no-paste finish after the full third-press window expires; three presses inside that bounded sequence pause capture. While paused, one press resumes immediately. The system keyboard focus and current Mode at delivery decide a normal stop's paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
@@ -28,7 +28,7 @@ same Shift-Control-Option Primary chord. VoiceInk++ owns the final duplicate bou
 recover the originating control after Karabiner's exclusive HID grab. Coalesce only a second complete
 Primary-toggle chord whose event-tap timestamp is less than 90 ms after the last accepted chord; a
 suppressed duplicate must not re-anchor that window. Never restore the legacy 500 ms Primary cooldown:
-it would consume the accepted double-click pause/resume and triple-click clipboard gestures. Preserve
+it would consume the accepted double-click clipboard and triple-click pause gestures. Preserve
 independent F19/F21/F22 activation, reset coalescing across monitor and Next boundaries, and require the
 paired-release, ordinary double-click, genuine triple-click, and lock-screen physical checks before
 accepting a release.
@@ -68,30 +68,30 @@ VoiceInk++ has three distinct one-click destination routes. Do not merge them, r
 
 An idle Primary press is not a destination route. It immediately reserves continuation intent and the passive Next-only recording-start input, but defers recorder UI/audio/media lifecycle for 0.45 seconds. A second accepted Primary press in that idle-only window cancels the reservation and starts nothing. Once a single press commits, all recording-time rules below are unchanged.
 
-1. **Primary button once while recording or paused:** after the double-click decision window, normal stop through base VoiceInk (`primaryCurrentInput`). Do not save an input; paste and generic auto-send follow the system keyboard focus and current Mode at delivery.
+1. **Primary button once while recording:** after the double-click decision window, normal stop through base VoiceInk (`primaryCurrentInput`). Do not save an input; paste and generic auto-send follow the system keyboard focus and current Mode at delivery.
 2. **Next Track while recording:** stop recording and save the input captured at recording start (`recordingStart`), with the documented safe application fallback for Electron/Chromium.
 3. **Next Track after a normal stop, while the newest result is still transcribing and before post-processing begins:** this is Ethan's **second chance**. Replace that pending session's destination with the exact editable input focused now (`focusedDuringTranscription`). It does not stop anything, toggle anything, or release the target. Never skip an ineligible newer pending result to retarget an older session.
 
-A Primary double-press while recording or paused is deliberately not a destination route. It cancels
-the pending single-press stop and toggles microphone/WAV/realtime capture inside the same session.
-Pause/resume must not finalize, paste, change Mode, or change the tentative `recordingStart`
-destination. Paused audio must be excluded from both the saved WAV and streaming provider, media and
-the YouTube helper must remain untouched on both pause and resume, and the mirrored HUD remains
-visible with a pause indication. Ethan controls playback himself while capture is paused.
-VoiceInk++ may lift and restore its own optional system-output mute across pause/resume, but only
-recording start and final stop/cancel own the media/YouTube-helper lifecycle. Next while paused still
-stops through `recordingStart`.
-
-A genuine Primary triple-click is also not a destination route. It is three consecutive presses in
-one macOS-bounded click sequence: first-to-second retains the normal-stop cap, while the third press
-uses the full system multi-click interval after the deferred stop is already canceled. The third
-press waits for the double-click pause transition, then finalizes that same session to a persistent
-clipboard-only result. Before asynchronous finalization begins, persist a recovery record containing
-the original WAV and last realtime HUD transcript/translation. It must not cancel/discard,
+A Primary double-click while recording is deliberately not a destination route. It cancels the
+pending single-press stop, then waits through the full third-press interval before finalizing that
+same session to a persistent clipboard-only result. Before asynchronous finalization begins,
+persist a recovery record containing the original WAV and last realtime HUD transcript/translation.
+It must not cancel/discard,
 paste, auto-send, run a Mode command/response, or resolve an Accessibility destination. It must
 preserve current media/YouTube playback exactly while balancing recorder/bridge ownership. A later
 double-click after the decision interval starts a fresh gesture and must never inherit the earlier
-double as click three; suppress only extra presses still inside an already-consumed triple gesture.
+double as click three.
+
+A genuine Primary triple-click while recording is also not a destination route. Its third press
+cancels the pending clipboard-only finish and pauses microphone/WAV/realtime capture inside the same
+session. Paused audio must be excluded from both the saved WAV and streaming provider, media and the
+YouTube helper must remain untouched, and the mirrored HUD remains visible with a pause indication.
+While paused, one Primary press resumes immediately; it must not wait for or require another double
+or triple gesture. Pause/resume must not finalize, paste, change Mode, or change the tentative
+`recordingStart` destination. VoiceInk++ may lift and restore its own optional system-output mute
+across pause/resume, but only recording start and final stop/cancel own the media/YouTube-helper
+lifecycle. Next while paused still stops through `recordingStart`.
+
 If an explicit cancel occurs while transcription is in flight, retain a completed provider result
 or the saved realtime HUD partial in clipboard plus history with a distinct retained-cancellation
 status; an empty cancellation remains an ordinary canceled record and performs no delivery. An

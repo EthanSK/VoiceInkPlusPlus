@@ -44,11 +44,11 @@ final class Transcription {
     /// Last provider text shown in the realtime recorder HUD before capture ended.
     ///
     /// This is deliberately VoiceInk-local recovery data, not destination-app draft
-    /// state. Persisting it beside `audioFileURL` means a clipboard-only triple-click,
+    /// state. Persisting it beside `audioFileURL` means a clipboard-only double-click,
     /// explicit no-delivery exit, provider failure, or app interruption still leaves
     /// both the original WAV and the words already visible to the user in History.
     var realtimeDraftText: String?
-    /// Triple-click and explicit no-delivery exits promise a recoverable local draft.
+    /// Double-click clipboard finishes and explicit no-delivery exits promise a recoverable local draft.
     /// Automatic retention jobs must not delete their original WAV or history row;
     /// only a separate explicit user deletion may clear them.
     var preservesOriginalAudioForRecovery: Bool = false
