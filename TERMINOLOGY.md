@@ -53,7 +53,7 @@ either physical button.
 | Idle | Primary button once | Immediately reserve continuation intent and the passive Next-only recording-start candidate, then start recorder UI/audio/media lifecycle after the 0.45-second start window expires | Not yet final |
 | Idle | Primary button twice within 0.45 seconds | Cancel the pending start and its reservation; do not show the recorder, open the microphone, pause media, or notify the YouTube helper | No recording |
 | Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
-| Recording | Primary button twice within the VoiceInk++ second-press window | Wait through the remaining third-press interval, then persist the original WAV plus current realtime HUD text in History and finalize normally to the clipboard; do not paste, Return, cancel/discard, or change media/YouTube playback | No paste destination; clipboard only |
+| Recording | Primary button twice within the VoiceInk++ second-press window | Immediately show a red **Won’t paste** HUD state on every monitor, wait through the remaining third-press interval, then persist the original WAV plus current realtime HUD text in History and finalize normally to the clipboard; do not paste, Return, cancel/discard, or change media/YouTube playback | No paste destination; clipboard only |
 | Recording | Primary button three times as one continuous click gesture | Cancel the pending clipboard finish, pause this same recording, and stop microphone/WAV/stream input; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
 | Paused | Primary button once | Resume capture immediately into this same recording; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
 | Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
@@ -75,9 +75,11 @@ pause/resume lifecycle.
 The first-to-second Primary interval remains capped at 0.45 seconds because that timer also delays
 every ordinary single stop. Once click two has canceled the pending stop, its clipboard-only finish
 waits for click three through the full macOS multi-click interval (0.8 seconds in the verified
-2026-08-02 setup). Click three inside that interval pauses; after it expires, the double-click finish
-commits and a later click begins a fresh gesture. While paused, the next Primary press resumes
-immediately without another timing window.
+2026-08-02 setup). The red **Won’t paste** state appears as soon as click two is accepted and stays
+visible through a committed clipboard-only transcription. Click three inside the interval clears it
+before showing Pause; after the interval expires, the double-click finish commits and a later click
+begins a fresh gesture. While paused, the next Primary press resumes immediately without another
+timing window.
 
 The same 0.45-second bound also delays only a prospective idle Start. The first physical press still
 reserves FIFO continuation intent immediately so an older Primary result cannot press Return beneath

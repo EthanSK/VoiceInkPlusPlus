@@ -82,8 +82,10 @@ impossible.
 
 A second consecutive Primary press inside the first decision window selects **finish to clipboard**.
 VoiceInk++ waits through the remaining third-press interval before committing it, because a third
-press means Pause. If no third press arrives, it stops and transcribes the same session, immediately
-saves the original WAV plus the last realtime HUD
+press means Pause. The accepted second press immediately replaces the waveform/status with a red
+**Won’t paste** indicator on every mirrored recorder panel. If click three arrives, VoiceInk++ clears
+that state before showing Pause. If no third press arrives, the red state remains visible while it
+stops and transcribes the same session, immediately saves the original WAV plus the last realtime HUD
 transcript/translation as a local `recoverableDraft`, and leaves the final processed result on the clipboard. It does
 not paste, Return, cancel/discard, run the Mode's command/response, or resolve a saved input. It also
 balances recording ownership without sending a media/YouTube play or pause command.

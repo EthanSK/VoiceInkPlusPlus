@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-26T18:26:13Z
+**Trigger:** Ethan reported that the Primary double-click clipboard-only action had no visible UI indication that it registered or would not paste.
+**Symptom:** After the accepted second Primary press, the recorder HUD kept showing its ordinary waveform until the delayed clipboard-only finish committed, so the gesture looked identical to normal recording during the click-three window.
+**Root cause:** RecordingCompletionDisposition was non-observable and changed only at the final stop boundary; RecordingShortcutModeHandler did not publish the provisional click-two selection and RecorderStatusDisplay had no clipboard-only presentation.
+**Fix:** Commit 79dbbed makes the active session completion disposition observable, selects clipboard-only immediately on click two, clears it on click three and alternate/reset boundaries, and renders a red Won’t paste status on every mini/notch recorder panel through committed transcription.
+**Commit:** 79dbbede6ce6bfd2aac09f0c5bafad38d2a86684
+**Guard:** The exact build-307 Mac Mini bundle passed all 257 named tests in 8 suites through the documented already-built-bundle fallback after canonical TestManager stalled at zero tests. Signed v2.0.307 is installed with executable SHA-256 b6ac8c90fee013cd0b7e2993f6ef0df83bee2679445e953ffc4fd3845b4e1813, CDHash 760f168929bad30b307169f7154dd2c9e2c49d85, deep/strict validity, Automation/audio-input entitlements, and a preserved v2.0.306 rollback. Physical double-click visual acceptance remains pending Ethan’s check.
+---
+
+
+---
 **Date:** 2026-08-26T00:15:01Z
 **Trigger:** Ethan asked to make discard/clipboard finish more common than Pause and require one Primary press to resume.
 **Symptom:** Recording-time Primary double-click paused capture, triple-click performed the recoverable clipboard-only/no-paste finish, and a paused session required another double-click to resume.
