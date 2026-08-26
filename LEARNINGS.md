@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-26T00:15:01Z
+**Trigger:** Ethan asked to make discard/clipboard finish more common than Pause and require one Primary press to resume.
+**Symptom:** Recording-time Primary double-click paused capture, triple-click performed the recoverable clipboard-only/no-paste finish, and a paused session required another double-click to resume.
+**Root cause:** PrimaryRecordingPressCoordinator bound the accepted second press directly to Pause and reserved the third press for clipboard finalization; paused state reused the same deferred single/double classifier.
+**Fix:** Commit 8a62fcb makes click two cancel the pending normal stop and defer the clipboard-only finish through the third-press interval, makes click three cancel that finish and pause, and makes the first Primary press while paused resume immediately.
+**Commit:** 8a62fcb04ef1ef4ef6e71833409d5a886b2259c8
+**Guard:** The exact build-306 Mac Mini bundle passed all 256 named tests in 8 suites through the documented already-built-bundle fallback, including coordinator and handler guards for double-click clipboard finish, triple-click Pause, one-click Resume, and duplicate-chord isolation. Signed v2.0.306 is installed with executable SHA-256 2779a6b22add42eda8475d9bc70b9d0c505969255af06da3ca17c36355019c54, CDHash 2032c7e52acb7dd990f18cbd1e417b604f88e1bd, deep/strict validity, Automation/audio-input entitlements, a preserved v2.0.305 rollback, and official VoiceInk unchanged. Physical double/triple/resume acceptance remains pending.
+---
+
+
+---
 **Date:** 2026-08-24T00:32:00Z
 **Trigger:** Ethan reported that a VoiceInk++ paste followed by Codex auto-send left a visible literal `&#x20;` at the end of the Codex composer.
 **Symptom:** The ChatGPT-hosted Codex composer displayed and later submitted a literal hexadecimal HTML space entity after the dictated text, making the delivery path appear to have appended it.
