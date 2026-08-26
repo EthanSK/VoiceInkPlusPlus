@@ -450,6 +450,25 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Updates the active session's provisional or committed completion policy.
+    ///
+    /// Click two selects clipboard-only immediately so every mirrored HUD can confirm
+    /// that no paste will occur. Click three and alternate-stop/reset boundaries restore
+    /// normal delivery before they continue, while a committed double-click keeps the
+    /// same value through transcription.
+    @discardableResult
+    func setActiveRecordingCompletionDisposition(
+        _ disposition: RecordingCompletionDisposition
+    ) -> Bool {
+        guard let active = activeRecordingSession,
+              active.liveRecordingState.isRecordingOrPaused,
+              !active.shouldCancel else {
+            return false
+        }
+        active.completionDisposition = disposition
+        return true
+    }
+
     /// Finalizes the active recording as a one-shot clipboard result. This is the
     /// genuine Primary double-click route: it is neither cancel/discard nor any of
     /// the three paste destinations. The session still transcribes normally, while

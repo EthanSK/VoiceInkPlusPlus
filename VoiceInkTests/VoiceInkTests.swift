@@ -212,6 +212,7 @@ private final class PrimaryShortcutHandlerTestState {
     var recordingState: RecordingState
     var isRecorderVisible: Bool
     var toggleDestinations: [RecordingPasteDestination] = []
+    var completionDispositions: [RecordingCompletionDisposition] = []
     var pauseCallCount = 0
 
     init(
@@ -238,6 +239,10 @@ private final class PrimaryShortcutHandlerTestState {
         default:
             break
         }
+    }
+
+    func setCompletionDisposition(_ disposition: RecordingCompletionDisposition) {
+        completionDispositions.append(disposition)
     }
 }
 
@@ -1549,6 +1554,42 @@ struct VoiceInkTests {
         #expect(reservedHeight == 213)
     }
 
+    @Test func clipboardOnlySelectionRendersAsRedNoPasteHUDState() throws {
+        let stateProviderSource = try repositorySource(
+            "VoiceInk/Views/Recorder/RecorderStateProvider.swift"
+        )
+        let sessionSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/RecordingSession.swift"
+        )
+        let componentsSource = try repositorySource(
+            "VoiceInk/Views/Recorder/RecorderComponents.swift"
+        )
+        let miniSource = try repositorySource(
+            "VoiceInk/Views/Recorder/MiniRecorderView.swift"
+        )
+        let notchSource = try repositorySource(
+            "VoiceInk/Views/Recorder/NotchRecorderView.swift"
+        )
+
+        #expect(stateProviderSource.contains(
+            "var completionDisposition: RecordingCompletionDisposition { get }"
+        ))
+        #expect(sessionSource.contains(
+            "@Published var completionDisposition: RecordingCompletionDisposition = .normalDelivery"
+        ))
+        #expect(componentsSource.contains(
+            "if completionDisposition == .clipboardOnly {"
+        ))
+        #expect(componentsSource.contains("String(localized: \"Won’t paste\")"))
+        #expect(componentsSource.contains(".foregroundStyle(AppTheme.Status.error)"))
+        #expect(miniSource.contains(
+            "completionDisposition: stateProvider.completionDisposition"
+        ))
+        #expect(notchSource.contains(
+            "completionDisposition: stateProvider.completionDisposition"
+        ))
+    }
+
     @Test func primarySinglePressWhilePausedResumesImmediately() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
@@ -2051,6 +2092,9 @@ struct VoiceInkTests {
                 state.recordingState = .paused
                 return true
             },
+            setActiveRecordingCompletionDisposition: { disposition in
+                state.setCompletionDisposition(disposition)
+            },
             finishRecordingToClipboard: { _ in
                 finishCallCount += 1
                 state.recordingState = .idle
@@ -2102,6 +2146,7 @@ struct VoiceInkTests {
         )
         #expect(state.pauseCallCount == 0)
         #expect(finishCallCount == 0)
+        #expect(state.completionDispositions == [.clipboardOnly])
         try? await Task.sleep(nanoseconds: 80_000_000)
         #expect(finishCallCount == 1)
         #expect(state.recordingState == .idle)
@@ -2126,6 +2171,9 @@ struct VoiceInkTests {
                 state.pauseCallCount += 1
                 state.recordingState = state.recordingState == .paused ? .recording : .paused
                 return true
+            },
+            setActiveRecordingCompletionDisposition: { disposition in
+                state.setCompletionDisposition(disposition)
             },
             finishRecordingToClipboard: { _ in
                 finishCallCount += 1
@@ -2153,6 +2201,7 @@ struct VoiceInkTests {
         #expect(state.pauseCallCount == 1)
         #expect(finishCallCount == 0)
         #expect(state.recordingState == .paused)
+        #expect(state.completionDispositions == [.clipboardOnly, .normalDelivery])
 
         await handler.handleKeyDown(
             action: .primaryRecording,

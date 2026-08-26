@@ -774,18 +774,37 @@ struct PasteDestinationIndicator: View {
 
 struct RecorderStatusDisplay: View {
     let currentState: RecordingState
+    let completionDisposition: RecordingCompletionDisposition
     @ObservedObject var recorder: Recorder
     let menuBarHeight: CGFloat?
 
-    init(currentState: RecordingState, recorder: Recorder, menuBarHeight: CGFloat? = nil) {
+    init(
+        currentState: RecordingState,
+        completionDisposition: RecordingCompletionDisposition,
+        recorder: Recorder,
+        menuBarHeight: CGFloat? = nil
+    ) {
         self.currentState = currentState
+        self.completionDisposition = completionDisposition
         self.recorder = recorder
         self.menuBarHeight = menuBarHeight
     }
 
     var body: some View {
         Group {
-            if currentState == .enhancing {
+            if completionDisposition == .clipboardOnly {
+                // Click two selects clipboard-only before its click-three window ends.
+                // Replace the ordinary waveform/spinner immediately so the HUD clearly
+                // confirms that this result will not paste; click three restores Pause.
+                HStack(spacing: 3) {
+                    Image(systemName: "nosign")
+                    Text(String(localized: "Won’t paste"))
+                }
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(AppTheme.Status.error)
+                .fixedSize(horizontal: true, vertical: false)
+                .transition(.opacity)
+            } else if currentState == .enhancing {
                 ProcessingStatusDisplay(mode: .enhancing, color: .white).transition(.opacity)
             } else if currentState == .transcribing {
                 ProcessingStatusDisplay(mode: .transcribing, color: .white).transition(.opacity)
@@ -811,6 +830,7 @@ struct RecorderStatusDisplay: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: currentState)
+        .animation(.easeInOut(duration: 0.15), value: completionDisposition)
     }
 }
 

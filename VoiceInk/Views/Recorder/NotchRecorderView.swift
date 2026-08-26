@@ -224,6 +224,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 Spacer(minLength: 0)
                 RecorderStatusDisplay(
                     currentState: stateProvider.recordingState,
+                    completionDisposition: stateProvider.completionDisposition,
                     recorder: recorder,
                     menuBarHeight: notchHeight
                 )

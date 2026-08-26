@@ -145,6 +145,9 @@ class RecordingShortcutManager: ObservableObject {
             toggleRecordingPause: {
                 await engine.toggleRecordingPause()
             },
+            setActiveRecordingCompletionDisposition: { disposition in
+                engine.setActiveRecordingCompletionDisposition(disposition)
+            },
             finishRecordingToClipboard: { modeId in
                 await recorderUIManager.finishRecordingToClipboard(modeId: modeId)
             },
@@ -814,6 +817,9 @@ final class RecordingShortcutModeHandler {
     private let recordingState: @MainActor () -> RecordingState
     private let toggleRecorderPanel: @MainActor (UUID?, RecordingPasteDestination) async -> Void
     private let toggleRecordingPause: @MainActor () async -> Bool
+    private let setActiveRecordingCompletionDisposition: @MainActor (
+        RecordingCompletionDisposition
+    ) -> Void
     private let finishRecordingToClipboard: @MainActor (UUID?) async -> Bool
     private let cancelRecording: @MainActor () async -> Void
     private let reserveRecordingStart: @MainActor () async -> UUID?
@@ -906,6 +912,9 @@ final class RecordingShortcutModeHandler {
         recordingState: @escaping @MainActor () -> RecordingState,
         toggleRecorderPanel: @escaping @MainActor (UUID?, RecordingPasteDestination) async -> Void,
         toggleRecordingPause: @escaping @MainActor () async -> Bool = { false },
+        setActiveRecordingCompletionDisposition: @escaping @MainActor (
+            RecordingCompletionDisposition
+        ) -> Void = { _ in },
         finishRecordingToClipboard: @escaping @MainActor (UUID?) async -> Bool = { _ in false },
         cancelRecording: @escaping @MainActor () async -> Void,
         reserveRecordingStart: @escaping @MainActor () async -> UUID? = { UUID() },
@@ -926,6 +935,7 @@ final class RecordingShortcutModeHandler {
         self.recordingState = recordingState
         self.toggleRecorderPanel = toggleRecorderPanel
         self.toggleRecordingPause = toggleRecordingPause
+        self.setActiveRecordingCompletionDisposition = setActiveRecordingCompletionDisposition
         self.finishRecordingToClipboard = finishRecordingToClipboard
         self.cancelRecording = cancelRecording
         self.reserveRecordingStart = reserveRecordingStart
@@ -1252,6 +1262,10 @@ final class RecordingShortcutModeHandler {
             )
 
         case .deferClipboardFinish(let generation):
+            // Click two has already canceled the normal stop, so show the real
+            // no-paste policy now rather than making Ethan wait through the click-three
+            // window. A third click or alternate route clears it before continuing.
+            setActiveRecordingCompletionDisposition(.clipboardOnly)
             schedulePrimaryClipboardFinish(
                 generation: generation,
                 modeId: modeId
@@ -1260,6 +1274,7 @@ final class RecordingShortcutModeHandler {
         case .togglePause:
             primaryGestureDecisionTask?.cancel()
             primaryGestureDecisionTask = nil
+            setActiveRecordingCompletionDisposition(.normalDelivery)
             guard canHandleShortcutAction() else { return }
             let didPause = await toggleRecordingPause()
             vippLog.info("shortcut: genuine Primary triple-click pause success=\(didPause, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
@@ -1476,6 +1491,7 @@ final class RecordingShortcutModeHandler {
         primaryGestureDecisionTask?.cancel()
         primaryGestureDecisionTask = nil
         primaryPressCoordinator.cancelPendingStop()
+        setActiveRecordingCompletionDisposition(.normalDelivery)
         // Next and monitor-reset boundaries end any pending Primary burst too;
         // a later Primary action must never inherit suppression across them.
         primaryDuplicateChordCoalescer.reset()

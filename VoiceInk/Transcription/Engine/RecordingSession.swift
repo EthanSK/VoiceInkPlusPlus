@@ -228,7 +228,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // Unlike the separate raw/skip toggle, clipboard-only completion still applies
     // the session's normal formatting/enhancement; it changes only the final side
     // effect so no destination app is touched.
-    var completionDisposition: RecordingCompletionDisposition = .normalDelivery
+    @Published var completionDisposition: RecordingCompletionDisposition = .normalDelivery
 
     // Realtime partials normally exist only in the recorder HUD and are cleared when
     // capture stops. Keep one private per-session snapshot so an explicit cancel while
