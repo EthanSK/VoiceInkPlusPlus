@@ -1590,6 +1590,31 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func clipboardOnlyCompletionUsesOnlyTheRecorderHUDForFeedback() throws {
+        let pipelineSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+        )
+        let branchStart = try #require(pipelineSource.range(
+            of: "if completionDispositionNow == .clipboardOnly {"
+        ))
+        let branchRemainder = pipelineSource[branchStart.lowerBound...]
+        let branchEnd = try #require(branchRemainder.range(
+            of: "let pasteTargetForDelivery"
+        ))
+        let clipboardOnlyBranch = branchRemainder[..<branchEnd.lowerBound]
+
+        #expect(clipboardOnlyBranch.contains(
+            "ClipboardManager.copyToClipboard(clipboardText)"
+        ))
+        #expect(clipboardOnlyBranch.contains(
+            "SoundManager.shared.playStopSound()"
+        ))
+        #expect(!clipboardOnlyBranch.contains(
+            "NotificationManager.shared.showNotification"
+        ))
+        #expect(!clipboardOnlyBranch.contains("playEscSound"))
+    }
+
     @Test func primarySinglePressWhilePausedResumesImmediately() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5

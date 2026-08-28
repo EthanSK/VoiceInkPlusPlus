@@ -78,8 +78,9 @@ waits for click three through the full macOS multi-click interval (0.8 seconds i
 2026-08-02 setup). The red **Won’t paste** state appears as soon as click two is accepted and stays
 visible through a committed clipboard-only transcription. Click three inside the interval clears it
 before showing Pause; after the interval expires, the double-click finish commits and a later click
-begins a fresh gesture. While paused, the next Primary press resumes immediately without another
-timing window.
+begins a fresh gesture. The recorder HUD is the only expected-route feedback; successful clipboard-only
+completion never opens a separate notification banner or plays the error sound. While paused, the next
+Primary press resumes immediately without another timing window.
 
 The same 0.45-second bound also delays only a prospective idle Start. The first physical press still
 reserves FIFO continuation intent immediately so an older Primary result cannot press Return beneath

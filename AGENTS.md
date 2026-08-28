@@ -119,7 +119,7 @@ The visible recorder/transcription bar is the strict ownership boundary for the 
 
 - Recorder panels appear on every connected monitor.
 - Do not show routine “Recording” text above the waveform; visible text is reserved for real warnings/errors.
-- A recording-time Primary double-click immediately replaces the waveform/status with a red **Won’t paste** indicator on every mirrored panel while VoiceInk++ waits for a possible third press. A third press must clear that state before showing Pause; a committed double-click keeps it visible through transcription so the no-paste policy remains unambiguous.
+- A recording-time Primary double-click immediately replaces the waveform/status with a red **Won’t paste** indicator on every mirrored panel while VoiceInk++ waits for a possible third press. A third press must clear that state before showing Pause; a committed double-click keeps it visible through transcription so the no-paste policy remains unambiguous. This expected route uses the recorder HUD only: never open a separate notification banner or play the error sound for its clipboard completion. Genuine transcription/provider failures remain errors.
 - When a warning/error bar is visible with the bottom-anchored mini recorder, its bottom edge must sit above the recorder's actual rendered envelope, including the expanded real-time transcript, assistant panel, and stacked transcription cards. Use the shared recorder layout metrics; never restore a fixed compact-bar offset that can overlap taller states.
 - Mode icon/emoji is left of the waveform.
 - The right side has two separate icons: current focused app first, then the per-session locked destination.

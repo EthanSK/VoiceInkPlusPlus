@@ -88,7 +88,9 @@ that state before showing Pause. If no third press arrives, the red state remain
 stops and transcribes the same session, immediately saves the original WAV plus the last realtime HUD
 transcript/translation as a local `recoverableDraft`, and leaves the final processed result on the clipboard. It does
 not paste, Return, cancel/discard, run the Mode's command/response, or resolve a saved input. It also
-balances recording ownership without sending a media/YouTube play or pause command.
+balances recording ownership without sending a media/YouTube play or pause command. The red recorder
+state is the only expected-route feedback; clipboard-only completion does not open a separate
+notification banner or play the error sound. Genuine transcription/provider failures remain visible.
 
 An explicit cancel remains different from the double-click clipboard finish. Cancel during active microphone capture
 leaves the active UI without delivery but saves the finalized WAV and any realtime HUD text in

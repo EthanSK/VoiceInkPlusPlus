@@ -587,12 +587,11 @@ class TranscriptionPipeline {
             if transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue,
                !clipboardText.isEmpty {
                 let copied = ClipboardManager.copyToClipboard(clipboardText)
-                NotificationManager.shared.showNotification(
-                    title: copied
-                        ? String(localized: "Transcription copied to clipboard")
-                        : String(localized: "Transcription completed, but couldn’t be copied to the clipboard"),
-                    type: copied ? .info : .error
-                )
+                // The mirrored Won’t paste recorder state is the complete expected-route
+                // feedback. The old completion banner made this deliberate gesture look
+                // like an error and played the error sound if the clipboard was busy;
+                // History still retains the result and genuine transcription failures
+                // continue through their separate error path.
                 vippLog.info("pipeline: clipboard-only completion chars=\(clipboardText.count, privacy: .public) digest=\(TranscriptionLineageDigest.make(clipboardText), privacy: .public) clipboard=\(copied, privacy: .public) paste=false autoSend=false")
             } else {
                 vippLog.info("pipeline: clipboard-only completion had no completed usable text to copy")
