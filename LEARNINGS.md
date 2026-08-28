@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-28T22:57:56Z
+**Trigger:** Expected clipboard-only double-click completion displayed duplicate error feedback.
+**Symptom:** Double-clicking Primary correctly selected clipboard-only delivery and showed the red Won’t paste recorder HUD, but completion also opened a separate copy-failure notification whose error style played the error tone.
+**Root cause:** The legacy clipboard-only completion branch still called NotificationManager after the recorder HUD became the expected-route feedback owner; a transient clipboard-write failure selected the notification error style and its escape sound.
+**Fix:** Removed the clipboard-only completion notification while preserving clipboard copying, history persistence, logs, and the ordinary recording stop sound. Genuine transcription and provider failures still use their existing error paths.
+**Commit:** 47fa09fffbe87c7942cb618508f9ccd5905a78c3
+**Guard:** Keep clipboardOnlyCompletionUsesOnlyTheRecorderHUDForFeedback and clipboardOnlySelectionRendersAsRedNoPasteHUDState passing. The complete direct xctest gate passed 258 tests, and signed VoiceInk++ build 308 was installed and verified; final physical double-click acceptance remains user-observed.
+---
+
+
+---
 **Date:** 2026-08-26T18:26:13Z
 **Trigger:** Ethan reported that the Primary double-click clipboard-only action had no visible UI indication that it registered or would not paste.
 **Symptom:** After the accepted second Primary press, the recorder HUD kept showing its ordinary waveform until the delayed clipboard-only finish committed, so the gesture looked identical to normal recording during the click-three window.
