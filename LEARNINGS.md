@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-29T21:32:45Z
+**Trigger:** Ethan asked for Won't paste to resume the YouTube video when VoiceInk++ had paused it.
+**Symptom:** Primary double-click Won't paste finished without pasting but left the paired YouTube video paused.
+**Root cause:** finishActiveRecordingToClipboard explicitly selected .preserveCurrentPlayback, so Recorder abandoned the recording-owned media pause lease and posted the playback-preserving stop edge instead of restoring the source VoiceInk++ paused.
+**Fix:** VoiceInkEngine now finalizes clipboard-only delivery with .restoreOwnedPlayback; the gesture still copies without paste/Return, while Recorder resumes only playback owned by that recording. Updated route logs, terminology, comments, and regression coverage.
+**Commit:** a6c0195cf93a76adf816942bfc02dc26df6e0384
+**Guard:** The exact build-309 full direct xctest fallback passed 258 tests in 8 suites, including doubleClickFinishRestoresOwnedPlaybackAndUsesNoCancelPath, clipboard-only HUD feedback, capture pause/resume isolation, and owned media lease tests. Signed v2.0.309 is installed with PID 46921, CDHash 8a95f28528dbf7b4ab1a5d4838e6c0185f314d9c, deep/strict validity, and Automation/audio-input entitlements; physical YouTube Won't paste acceptance remains Ethan-observed.
+---
+
+
+---
 **Date:** 2026-08-28T22:57:56Z
 **Trigger:** Expected clipboard-only double-click completion displayed duplicate error feedback.
 **Symptom:** Double-clicking Primary correctly selected clipboard-only delivery and showed the red Won’t paste recorder HUD, but completion also opened a separate copy-failure notification whose error style played the error tone.
