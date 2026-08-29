@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-29T23:42:54Z
+**Trigger:** Ethan report 2026-08-30: VoiceInk++ voice sync and recording gestures lag heavily; distinguish VoiceInk from Agentic Mouse and revisit prior failed investigation
+**Symptom:** The intended 0.45-second Primary decision timers stretched to roughly 0.65-1.2 seconds under pressure, and one otherwise on-time start then paused about 1.39 seconds before streaming preparation. GPT Live finalization stayed about 0.5-0.8 seconds with zero dropped chunks; Agentic Mouse stayed near-idle and neither app showed an accumulating idle resource leak.
+**Root cause:** A live sample caught VoiceInk++ main-thread blocked in MenuBarView initialization: @State launchAtLoginEnabled eagerly called LaunchAtLogin.isEnabled, which synchronously queried SMAppService.status over XPC every time SwiftUI reconstructed the menu scene during recorder/HUD invalidation. Severe concurrent system paging amplified the stall, but was not the app root cause. The earlier recorder-panel coalescing fix remained present and did not cover this separate synchronous menu initializer.
+**Fix:** Commit 10b8031 initializes the state without I/O, lazily reads launch status once when the real menu appears, and writes it only from the explicit Toggle binding. Build 311 was signed, installed, and relaunched with settings and the official VoiceInk app preserved.
+**Commit:** 10b8031
+**Guard:** Exact release source passed 260 named tests in 8 suites, including the new menuBarLaunchAtLoginStatusIsLazyAndNotQueriedDuringViewConstruction guard plus Primary, Next, queue, realtime-HUD, and bounded auto-send guards. Installed build 311 verified deep/strict signing, Automation/audio entitlements, CDHash 424df7cc5b6be0960baca86c38e886e2714eb7a7, executable hash f562aace18f4760297d4867f820d25728b1d7fc496b56e7015705a11f0f61a98, and a 3-second idle sample with zero LaunchAtLogin, SMAppService, or blocking XPC frames.
+---
+
+
+---
 **Date:** 2026-08-29T21:48:36Z
 **Trigger:** Ethan clarified that both Cancel and Won't paste must use only their recorder HUD feedback even when the provider returns an empty/API error.
 **Symptom:** Won't paste showed the provider/API Transcription failed banner and error sound when no usable text was returned.
