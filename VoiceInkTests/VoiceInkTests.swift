@@ -6807,6 +6807,24 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func menuBarLaunchAtLoginStatusIsLazyAndNotQueriedDuringViewConstruction() throws {
+        let menuBarSource = try repositorySource("VoiceInk/Views/MenuBarView.swift")
+
+        // `LaunchAtLogin.isEnabled` synchronously asks ServiceManagement for the main app's
+        // status. SwiftUI may construct the menu view during unrelated recorder updates, so the
+        // query belongs behind the menu's real appearance boundary, never in a State initializer.
+        #expect(!menuBarSource.contains(
+            "@State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled"
+        ))
+        #expect(menuBarSource.contains(
+            "@State private var launchAtLoginEnabled = false"
+        ))
+        #expect(menuBarSource.contains(".onAppear {"))
+        #expect(menuBarSource.contains(
+            "launchAtLoginEnabled = LaunchAtLogin.isEnabled"
+        ))
+    }
+
     @Test func dailyUpdateNotificationDeduplicatesNewUpstreamReleases() {
         #expect(VoiceInkUpdatePolicy.isNewerRelease(
             "v2.0.1",

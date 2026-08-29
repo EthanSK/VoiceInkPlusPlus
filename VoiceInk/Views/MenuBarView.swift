@@ -14,7 +14,13 @@ struct MenuBarView: View {
     @ObservedObject private var modeManager = ModeManager.shared
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
-    @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
+    // Do not read `LaunchAtLogin.isEnabled` from a stored-property initializer. SwiftUI creates
+    // fresh `MenuBarView` values whenever the app scene invalidates, including during recorder HUD
+    // updates. That getter synchronously asks ServiceManagement for `SMAppService.mainApp.status`;
+    // if smd is busy, reconstructing an otherwise closed menu can block VoiceInk++'s main thread
+    // and delay the recording gesture. Load it only when the user actually opens this menu.
+    @State private var launchAtLoginEnabled = false
+    @State private var didLoadLaunchAtLoginState = false
     
     var body: some View {
         VStack {
@@ -133,10 +139,18 @@ struct MenuBarView: View {
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
 
-            Toggle("Launch at Login", isOn: $launchAtLoginEnabled)
-                .onChange(of: launchAtLoginEnabled) { oldValue, newValue in
+            Toggle("Launch at Login", isOn: Binding(
+                get: { launchAtLoginEnabled },
+                set: { newValue in
+                    launchAtLoginEnabled = newValue
                     LaunchAtLogin.isEnabled = newValue
                 }
+            ))
+            .onAppear {
+                guard !didLoadLaunchAtLoginState else { return }
+                didLoadLaunchAtLoginState = true
+                launchAtLoginEnabled = LaunchAtLogin.isEnabled
+            }
 
             Divider()
 
