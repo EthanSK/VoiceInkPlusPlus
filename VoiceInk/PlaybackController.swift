@@ -147,7 +147,7 @@ struct RecordingMediaPauseOwnership<Source: Equatable> {
         generation &+= 1
         guard let pausedSource else { return .none }
         if preserveCurrentPlayback {
-            // A clipboard-only stop can abandon only playback that this ownership
+            // A playback-preserving stop can abandon only playback that this ownership
             // episode actually paused or inherited. A lease canceled before its
             // bounded Pause succeeds has no playback state to preserve and must
             // remain a no-op instead of canceling unrelated restoration work.
@@ -546,7 +546,7 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Ends exactly one recording lease. Normal completion schedules one owned
-    /// resume; clipboard-only double-click abandons ownership without playback.
+    /// resume; an explicit playback-preserving stop abandons ownership without playback.
     func finishRecordingPause(
         _ lease: RecordingMediaPauseLease?,
         playbackDisposition: RecordingStopPlaybackDisposition

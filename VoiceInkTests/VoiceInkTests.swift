@@ -1403,7 +1403,7 @@ struct VoiceInkTests {
         ))
     }
 
-    @Test func doubleClickFinishPreservesPlaybackAndUsesNoCancelPath() throws {
+    @Test func doubleClickFinishRestoresOwnedPlaybackAndUsesNoCancelPath() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -1427,6 +1427,27 @@ struct VoiceInkTests {
         #expect(!finishBody.contains("cancelRecording"))
         #expect(!finishBody.contains("toggleRecorderPanel"))
 
+        let engineSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "VoiceInk/Transcription/Engine/VoiceInkEngine.swift"
+            ),
+            encoding: .utf8
+        )
+        let engineFinishStart = try #require(engineSource.range(
+            of: "    func finishActiveRecordingToClipboard(modeId: UUID? = nil) async -> Bool {"
+        ))
+        let toggleStart = try #require(engineSource.range(
+            of: "        await toggleRecord(",
+            range: engineFinishStart.upperBound..<engineSource.endIndex
+        ))
+        let engineFinishEnd = try #require(engineSource.range(
+            of: "        return true",
+            range: toggleStart.upperBound..<engineSource.endIndex
+        ))
+        let engineFinishBody = engineSource[toggleStart.lowerBound..<engineFinishEnd.lowerBound]
+        #expect(engineFinishBody.contains("stopPlaybackDisposition: .restoreOwnedPlayback"))
+        #expect(!engineFinishBody.contains("stopPlaybackDisposition: .preserveCurrentPlayback"))
+
         let recorderSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent("VoiceInk/Recorder.swift"),
             encoding: .utf8
@@ -1446,12 +1467,12 @@ struct VoiceInkTests {
             of: "playbackController.finishRecordingPause(",
             range: join.upperBound..<stopBody.endIndex
         ))
-        let preservingNotifier = try #require(stopBody.range(
-            of: "RecordingActivityNotifier.postRecordingStoppedPreservingPlayback()",
+        let restoringNotifier = try #require(stopBody.range(
+            of: "RecordingActivityNotifier.postRecordingStopped()",
             range: finish.upperBound..<stopBody.endIndex
         ))
         #expect(join.lowerBound < finish.lowerBound)
-        #expect(finish.lowerBound < preservingNotifier.lowerBound)
+        #expect(finish.lowerBound < restoringNotifier.lowerBound)
     }
 
     @Test func primarySecondPressWindowCapsSlowSystemPreference() {

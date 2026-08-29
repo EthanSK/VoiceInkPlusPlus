@@ -1483,7 +1483,7 @@ final class RecordingShortcutModeHandler {
             return
         }
         let didFinish = await finishRecordingToClipboard(modeId)
-        vippLog.info("shortcut: Primary double-click clipboard-only finish success=\(didFinish, privacy: .public) paste=false autoSend=false playback=preserved")
+        vippLog.info("shortcut: Primary double-click clipboard-only finish success=\(didFinish, privacy: .public) paste=false autoSend=false playback=restoredIfOwned")
     }
 
     func cancelPendingPrimaryDecisions() {

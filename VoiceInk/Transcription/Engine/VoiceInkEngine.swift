@@ -472,7 +472,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// Finalizes the active recording as a one-shot clipboard result. This is the
     /// genuine Primary double-click route: it is neither cancel/discard nor any of
     /// the three paste destinations. The session still transcribes normally, while
-    /// the pipeline's completion disposition guarantees no paste or auto-send.
+    /// the pipeline's completion disposition guarantees no paste or auto-send. Its
+    /// final stop restores only playback that this recording actually paused, so
+    /// Won't paste does not leave the paired YouTube video paused.
     @discardableResult
     func finishActiveRecordingToClipboard(modeId: UUID? = nil) async -> Bool {
         guard let active = activeRecordingSession,
@@ -486,7 +488,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             modeId: modeId,
             stopPasteDestination: .primaryCurrentInput,
             completionDisposition: .clipboardOnly,
-            stopPlaybackDisposition: .preserveCurrentPlayback
+            stopPlaybackDisposition: .restoreOwnedPlayback
         )
         return true
     }

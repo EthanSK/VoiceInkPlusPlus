@@ -16,9 +16,9 @@ import Foundation
 /// thing both apps must agree on is the exact name string:
 ///   - `com.ethansk.voiceink.recordingStarted`  → posted when a dictation recording begins.
 ///   - `com.ethansk.voiceink.recordingStopped`  → posted when a dictation recording ends.
-///   - `com.ethansk.voiceink.recordingStoppedPreservingPlayback` → posted when a genuine Primary
-///     double-click finalizes to the clipboard; consumers must end recording ownership without
-///     issuing play, pause, or another playback mutation.
+///   - `com.ethansk.voiceink.recordingStoppedPreservingPlayback` → posted when a stop explicitly
+///     preserves playback; consumers must end recording ownership without issuing play, pause, or
+///     another playback mutation.
 /// These notifications are intentionally scoped to the proven YouTube pause/resume bridge. ChatGPT
 /// Voice microphone suppression is a separate, direct `Recorder` capture-state lease: it must not
 /// attach another consumer here, because capture pause/resume and transcription lifetime differ from

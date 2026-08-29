@@ -88,7 +88,7 @@ that state before showing Pause. If no third press arrives, the red state remain
 stops and transcribes the same session, immediately saves the original WAV plus the last realtime HUD
 transcript/translation as a local `recoverableDraft`, and leaves the final processed result on the clipboard. It does
 not paste, Return, cancel/discard, run the Mode's command/response, or resolve a saved input. It also
-balances recording ownership without sending a media/YouTube play or pause command. The red recorder
+restores only media/YouTube playback that VoiceInk++ paused when this recording began. The red recorder
 state is the only expected-route feedback; clipboard-only completion does not open a separate
 notification banner or play the error sound. Genuine transcription/provider failures remain visible.
 
@@ -141,7 +141,7 @@ tests repeatedly failed on the real destination apps.
 | Stop action | Paste destination |
 | --- | --- |
 | Primary/thumb/toggle button once while recording | After the double-click interval, normal stop: base VoiceInk pastes into whichever system keyboard input is focused at delivery and uses that current Mode; it never invokes a saved input |
-| Primary/thumb/toggle button twice while recording | After the third-press interval expires, finish the same session to the clipboard only, with no paste/Return and no playback mutation |
+| Primary/thumb/toggle button twice while recording | After the third-press interval expires, finish the same session to the clipboard only, with no paste/Return, then resume only playback VoiceInk++ paused for that recording |
 | Primary/thumb/toggle button three times in one genuine gesture | Pause capture without changing media playback, finalizing, or choosing a delivery route |
 | Primary/thumb/toggle button once while paused | Resume capture immediately into the same session without changing media playback |
 | **Next button** while recording or paused | The exact text input focused when you started recording, or that application when macOS hides the editor element |
