@@ -22,20 +22,20 @@ enum TranscriptionCancellationRecovery: Equatable {
     }
 }
 
-/// Separates an explicit cancel/reset from an unexpected provider failure. A failure
-/// retains the original audio and the strongest HUD draft, while a requested cancel
-/// continues through the existing canceled-result path without a second error notice.
+/// Separates an intentional no-delivery exit from an unexpected provider failure. A
+/// normal failure retains the original audio and the strongest HUD draft, while Cancel
+/// and Won't paste rely on their recorder HUD state without a second error notice.
 enum TranscriptionFailureRecoveryDisposition: Equatable {
-    case intentionalCancellation
+    case silentNoDeliveryFailure
     case retainAudioOnly
     case retainAudioAndText(String)
 
     static func resolve(
-        cancellationRequested: Bool,
+        shouldSuppressFailureNotification: Bool,
         textCandidates: [String?]
     ) -> Self {
-        guard !cancellationRequested else {
-            return .intentionalCancellation
+        guard !shouldSuppressFailureNotification else {
+            return .silentNoDeliveryFailure
         }
         switch TranscriptionCancellationRecovery.resolve(textCandidates) {
         case .noResult:
@@ -468,7 +468,12 @@ class TranscriptionPipeline {
             vippLog.error("pipeline: transcribe FAILED isCancelled=\(isCancelled, privacy: .public) error=\(errorDescription, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
 
             let failureRecovery = TranscriptionFailureRecoveryDisposition.resolve(
-                cancellationRequested: shouldCancel(),
+                // Won't paste can legitimately produce an empty/provider error because
+                // the user has already chosen a no-delivery exit. The red recorder HUD
+                // is its feedback, just like Cancel, so neither path gets a second error
+                // banner or sound. Ordinary recording failures remain visible.
+                shouldSuppressFailureNotification: shouldCancel()
+                    || completionDispositionNow == .clipboardOnly,
                 textCandidates: [
                     transcription.recoverableRealtimeDraftText,
                     recoverablePartialTranscriptNow
@@ -477,9 +482,9 @@ class TranscriptionPipeline {
             // Unexpected failures used to live only in logs/history while the bar
             // vanished; surface the reason unless the user deliberately canceled.
             switch failureRecovery {
-            case .intentionalCancellation:
-                // The normal canceled-result path below retains any useful provider/HUD
-                // result without surfacing a second provider error.
+            case .silentNoDeliveryFailure:
+                // The normal no-delivery path below retains the recording without
+                // surfacing a second provider error.
                 break
 
             case .retainAudioOnly:

@@ -4085,19 +4085,30 @@ struct VoiceInkTests {
         #expect(abortBody.contains("Recording stopped before startup completed"))
     }
 
-    @Test func providerFailureRecoveryDistinguishesCancellationAudioAndHUDText() {
+    @Test func providerFailureRecoveryDistinguishesSilentExitAudioAndHUDText() {
         #expect(TranscriptionFailureRecoveryDisposition.resolve(
-            cancellationRequested: true,
+            shouldSuppressFailureNotification: true,
             textCandidates: ["already visible"]
-        ) == .intentionalCancellation)
+        ) == .silentNoDeliveryFailure)
         #expect(TranscriptionFailureRecoveryDisposition.resolve(
-            cancellationRequested: false,
+            shouldSuppressFailureNotification: false,
             textCandidates: [nil, "  "]
         ) == .retainAudioOnly)
         #expect(TranscriptionFailureRecoveryDisposition.resolve(
-            cancellationRequested: false,
+            shouldSuppressFailureNotification: false,
             textCandidates: [nil, "  recover these words  "]
         ) == .retainAudioAndText("recover these words"))
+    }
+
+    @Test func providerFailureWarningIsSilentForCancelAndClipboardOnly() throws {
+        let pipelineSource = try repositorySource(
+            "VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"
+        )
+
+        #expect(pipelineSource.contains(
+            "shouldSuppressFailureNotification: shouldCancel()\n" +
+            "                    || completionDispositionNow == .clipboardOnly"
+        ))
     }
 
     @Test func openAIRecoveryTelemetryIsAllowlistedWithoutTranscriptContents() throws {
