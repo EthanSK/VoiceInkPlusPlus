@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-29T21:48:36Z
+**Trigger:** Ethan clarified that both Cancel and Won't paste must use only their recorder HUD feedback even when the provider returns an empty/API error.
+**Symptom:** Won't paste showed the provider/API Transcription failed banner and error sound when no usable text was returned.
+**Root cause:** Provider-failure suppression checked only the session cancel flag; Won't paste uses RecordingCompletionDisposition.clipboardOnly and therefore fell through the ordinary failure notification path.
+**Fix:** Treat Cancel and clipboard-only completion as intentional no-delivery exits for failure feedback, while keeping ordinary provider failures visible.
+**Commit:** a088b8f
+**Guard:** Unit coverage proves the pure failure-recovery branch stays silent when requested, and a source contract requires the pipeline suppression condition to combine shouldCancel() with .clipboardOnly.
+---
+
+
+---
 **Date:** 2026-08-29T21:32:45Z
 **Trigger:** Ethan asked for Won't paste to resume the YouTube video when VoiceInk++ had paused it.
 **Symptom:** Primary double-click Won't paste finished without pasting but left the paired YouTube video paused.
