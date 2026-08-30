@@ -6204,11 +6204,13 @@ struct VoiceInkTests {
         #expect(primaryBody.contains(
             "Self.primaryCurrentInputSettleNanoseconds"
         ))
-        #expect(primaryBody.contains("method: .systemEvents"))
+        #expect(primaryBody.contains("method: .cgEvent"))
         #expect(primaryBody.contains(
-            "primary current-input System Events auto-send issued=true"
+            "primary current-input HID auto-send issued=true"
         ))
         #expect(primaryBody.contains("verification=notRequired"))
+        #expect(!primaryBody.contains("method: .systemEvents"))
+        #expect(!primaryBody.contains("System Events auto-send"))
         #expect(!primaryBody.contains("focusedInput"))
         #expect(!primaryBody.contains("foregroundAutoSendMethod"))
         #expect(!primaryBody.contains("await performAutoSend("))
@@ -6219,7 +6221,7 @@ struct VoiceInkTests {
         #expect(!primaryBody.contains("pressNearbySubmitButton"))
         #expect(!primaryBody.contains("foregroundOpenAIVerificationContext"))
         #expect(deliverySource.contains(
-            "primaryCurrentInputSettleNanoseconds: UInt64 = 100_000_000"
+            "primaryCurrentInputSettleNanoseconds: UInt64 = 220_000_000"
         ))
 
         let engineSource = try String(

@@ -5,9 +5,11 @@ import os
 @MainActor
 final class TranscriptionDelivery {
     // Upstream VoiceInk waits 500 ms after Cmd-V before generic auto-send. Primary
-    // keeps the same base current-input architecture, but uses a shorter settle so
-    // Electron has time to consume the paste without adding the old half-second lag.
-    private static let primaryCurrentInputSettleNanoseconds: UInt64 = 100_000_000
+    // keeps the same base current-input architecture, but 220 ms matches the proven
+    // effective timing of the former System Events path while staying well below
+    // the old half-second lag. The earlier 100 ms HID attempt could overtake Cmd-V
+    // in a lagging Electron input.
+    private static let primaryCurrentInputSettleNanoseconds: UInt64 = 220_000_000
 
     enum BackgroundAutoSendVerification: Equatable {
         case verifiedCleared
@@ -754,8 +756,8 @@ final class TranscriptionDelivery {
 
         // Keep this generic and current-input-driven: no app classifier, saved AX
         // wrapper, semantic Send, or verification. Upstream VoiceInk waits 500 ms
-        // here; 100 ms is the smallest bounded compromise after live traces showed
-        // that an immediate Return could overtake Cmd-V in a lagging Electron input.
+        // here; 220 ms preserves the effective delay of the last successful System
+        // Events route while giving a lagging Electron input time to consume Cmd-V.
         // A Mode with auto-send disabled needs no delay, but still reports its
         // successful tail paste so any earlier cohort suppression can resolve.
         if autoSendKey.isEnabled {
@@ -788,17 +790,18 @@ final class TranscriptionDelivery {
         let sendResult = await CursorPaster.performAutoSend(
             queuedAutoSend.effectiveKey,
             targetPID: currentPID,
-            // Keep Primary generic and current-input-driven, but use the public
-            // System Events key action that already handles frontmost OpenAI
-            // composers more reliably than an in-process synthetic HID Return.
-            // This adds no second key, retry, app-specific target, or extra wait.
-            method: .systemEvents,
+            // Keep Primary generic and current-input-driven. Do not send through
+            // the shared System Events process: killing a timed-out osascript does
+            // not cancel the Apple Event already wedged inside that singleton, so
+            // every later recording can lose Return. Post exactly one global HID
+            // down/up after the bounded settle—no retry, app classifier, or target.
+            method: .cgEvent,
             canPost: { true }
         )
         switch sendResult {
         case .commandPosted:
             onQueuedAutoSendIssued()
-            vippLog.info("paste: primary current-input System Events auto-send issued=true verification=notRequired settleMs=100 key=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
+            vippLog.info("paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=220 key=\(queuedAutoSend.effectiveKey.rawValue, privacy: .public) frontmostPid=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, privacy: .public)")
         case .actionGuardRefused:
             showAutoSendFailure(
                 "Transcription pasted, but Return could not be issued",
