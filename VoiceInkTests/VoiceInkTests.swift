@@ -1232,12 +1232,14 @@ struct VoiceInkTests {
             eventTime: 10.4
         ) == .togglePause)
 
-        // Once Pause has actually settled, the next press is deliberately the
-        // immediate Resume action even when it follows the triple quickly.
+        // Once Pause has actually settled, the next press begins a fresh paused
+        // gesture even when it follows the triple quickly. It becomes Resume only
+        // after the short window proves there was no second click.
         #expect(coordinator.registerPress(
             recordingState: .paused,
             eventTime: 10.45
-        ) == .resumeImmediately)
+        ) == .deferPausedResume(generation: 3))
+        #expect(coordinator.hasPendingPausedResume)
     }
 
     @Test func separatePrimaryDoublePressesNeverBecomePause() {
@@ -1636,7 +1638,7 @@ struct VoiceInkTests {
         #expect(!clipboardOnlyBranch.contains("playEscSound"))
     }
 
-    @Test func primarySinglePressWhilePausedResumesImmediately() {
+    @Test func primarySinglePressWhilePausedDefersResumeForDoubleClickDecision() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
         )
@@ -1645,9 +1647,37 @@ struct VoiceInkTests {
             recordingState: .paused,
             eventTime: 20
         )
-        #expect(decision == .resumeImmediately)
+        #expect(decision == .deferPausedResume(generation: 1))
+        #expect(coordinator.hasPendingPausedResume)
+        #expect(coordinator.consumeDeferredPausedResume(generation: 1))
+        #expect(!coordinator.consumeDeferredPausedResume(generation: 1))
         #expect(!coordinator.hasPendingNormalStop)
         #expect(!coordinator.hasPendingClipboardFinish)
+    }
+
+    @Test func primaryDoublePressWhilePausedFinishesClipboardOnly() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            doublePressInterval: 0.5
+        )
+
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 30
+        ) == .deferPausedResume(generation: 1))
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 30.2
+        ) == .finishPausedClipboardImmediately)
+        #expect(!coordinator.hasPendingPausedResume)
+        #expect(!coordinator.hasPendingNormalStop)
+        #expect(!coordinator.hasPendingClipboardFinish)
+
+        // A bounce after the consumed paused double cannot begin another route,
+        // even before asynchronous finalization has changed the paused state.
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 30.25
+        ) == .ignoreCompletedGesture)
     }
 
     @Test func primarySinglePressCommitsExactlyOneDeferredStop() {
@@ -2200,7 +2230,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func primaryTripleClickPausesAndOnePausedClickResumesInHandler() async {
+    @Test func primaryTripleClickPausesAndOnePausedClickResumesAfterDecisionWindow() async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .recording,
             isRecorderVisible: true
@@ -2226,12 +2256,12 @@ struct VoiceInkTests {
                 return true
             },
             cancelRecording: {},
-            primaryDoublePressInterval: 0.45,
-            primaryTriplePressInterval: 0.8,
+            primaryDoublePressInterval: 0.03,
+            primaryTriplePressInterval: 0.08,
             primaryDuplicateChordInterval: 0.005
         )
 
-        for eventTime in [90.0, 90.2, 90.4] {
+        for eventTime in [90.0, 90.01, 90.02] {
             await handler.handleKeyDown(
                 action: .primaryRecording,
                 eventTime: eventTime,
@@ -2251,18 +2281,72 @@ struct VoiceInkTests {
 
         await handler.handleKeyDown(
             action: .primaryRecording,
-            eventTime: 90.45,
+            eventTime: 90.03,
             mode: .toggle
         )
         await handler.handleKeyUp(
             action: .primaryRecording,
-            eventTime: 90.451,
+            eventTime: 90.031,
             mode: .toggle
         )
 
+        #expect(state.pauseCallCount == 1)
+        try? await Task.sleep(nanoseconds: 50_000_000)
         #expect(state.pauseCallCount == 2)
         #expect(finishCallCount == 0)
         #expect(state.recordingState == .recording)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func pausedPrimaryDoubleClickSelectsWontPasteWithoutResuming() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .paused,
+            isRecorderVisible: true
+        )
+        var finishCallCount = 0
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                state.toggle(destination: destination)
+            },
+            toggleRecordingPause: {
+                state.pauseCallCount += 1
+                state.recordingState = .recording
+                return true
+            },
+            setActiveRecordingCompletionDisposition: { disposition in
+                state.setCompletionDisposition(disposition)
+            },
+            finishRecordingToClipboard: { _ in
+                finishCallCount += 1
+                return true
+            },
+            cancelRecording: {},
+            primaryDoublePressInterval: 0.05,
+            primaryTriplePressInterval: 0.1,
+            primaryDuplicateChordInterval: 0.005
+        )
+
+        for eventTime in [100.0, 100.02] {
+            await handler.handleKeyDown(
+                action: .primaryRecording,
+                eventTime: eventTime,
+                mode: .toggle
+            )
+            await handler.handleKeyUp(
+                action: .primaryRecording,
+                eventTime: eventTime + 0.001,
+                mode: .toggle
+            )
+        }
+
+        #expect(finishCallCount == 1)
+        #expect(state.pauseCallCount == 0)
+        #expect(state.toggleDestinations.isEmpty)
+        #expect(state.completionDispositions == [.clipboardOnly])
         handler.reset()
     }
 

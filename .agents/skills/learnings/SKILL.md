@@ -64,7 +64,7 @@ For a realtime stop that pastes nothing or appears to skip Return, separate tran
 
 ## Normalize the two mouse controls before reasoning
 
-- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording, one press performs a base VoiceInk normal stop after the shorter of the macOS double-click interval and 0.45 seconds into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`). Two presses cancel that pending stop and, if no third press arrives through the full macOS multi-click interval, finish the session to a recoverable local audio/HUD draft plus final clipboard text without paste, auto-send, Mode command/response, or playback mutation. A third press inside that interval cancels the clipboard finish and pauses capture. While paused, one press resumes immediately. Primary owns no exact input or destination Mode.
+- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording, one press performs a base VoiceInk normal stop after the shorter of the macOS double-click interval and 0.45 seconds into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`). Two presses cancel that pending stop and, if no third press arrives through the full macOS multi-click interval, finish the session to a recoverable local audio/HUD draft plus final clipboard text without paste, auto-send, Mode command/response, or playback mutation. A third press inside that interval cancels the clipboard finish and pauses capture. While paused, one press resumes after the short second-press decision window; two presses inside it immediately finish through that same clipboard-only/no-paste route. Primary owns no exact input or destination Mode.
 - **Next button** is the preferred name for the separate forward/secondary control. **Forward button**, macOS **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases.
 - Unqualified **toggle** means the primary button's start/stop lifecycle and corresponding shortcut mode. Never reinterpret it as a Next-button destination toggle. Commit `671b4c7` tried that and was deliberately reverted by `bed22b7`.
 - **Second chance** names only the post-primary-stop, still-transcribing retarget route. **Latch** means preserve/replace one session's destination; it never means toggle the destination off.
@@ -104,7 +104,8 @@ Keep these three routes distinct:
 | Primary button once while recording | After the double-click decision window, base VoiceInk normal stop into the system keyboard input focused at final delivery (`primaryCurrentInput`); never capture, reuse, or fall back to `recordingStart` |
 | Primary button twice while recording | If no third press arrives through the full macOS multi-click interval, persist original WAV plus last realtime HUD text in History, then finish/transcribe the same session to the clipboard only; never paste, auto-send, run a Mode command/response, cancel/discard, or alter playback |
 | Primary button three times in one continuous gesture | Pause capture inside the same session; no finalization or destination decision |
-| Primary button once while paused | Resume capture immediately; do not wait for another press |
+| Primary button once while paused | Resume capture after the short second-press decision window |
+| Primary button twice while paused | Immediately finish through the same clipboard-only/no-paste route |
 | Next button while recording | Input captured at recording start (`recordingStart`) |
 | Primary normal stop, then Next button while the newest result is still transcribing and before post-processing | Second chance: replace that newest pending session's input and complete Mode atomically (`focusedDuringTranscription`) |
 
@@ -121,7 +122,9 @@ when an older delivery lease was acquired first: if Ethan has pressed Start agai
 suppress that older Return while the new microphone handshake waits.
 
 Pause is capture state, not a fourth delivery route. The third Primary press cancels the pending
-double-click clipboard finish and pauses; one Primary press while paused resumes immediately. Pause/resume must not paste, change Mode, or change the tentative recording-start
+double-click clipboard finish and pauses. While paused, one Primary press resumes after the short
+second-press window; two presses inside it finish immediately through the existing clipboard-only
+route. Pause/resume must not paste, change Mode, or change the tentative recording-start
 target. Gate callbacks before stopping AUHAL so paused audio enters neither WAV nor realtime
 streaming, keep the mirrored HUD visible with its frozen partial and pause indicator, leave media
 playback and the YouTube helper untouched on both pause and resume, and let Ethan control playback

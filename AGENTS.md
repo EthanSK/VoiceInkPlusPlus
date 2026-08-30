@@ -17,7 +17,7 @@ These repository-specific rules are mandatory for every future agent working on 
 
 ## Canonical mouse terminology
 
-Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. While idle, one press starts recording only after VoiceInk++'s 0.45-second bounded start-debounce window; a second accepted press inside that window cancels the pending start before recorder UI, microphone capture, media pause, or the YouTube-helper start edge. This debounce applies only to Start. While recording, one press performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`) after the shorter of the macOS double-click interval and 0.45 seconds. Two presses select the existing clipboard-only/no-paste finish after the full third-press window expires; three presses inside that bounded sequence pause capture. While paused, one press resumes immediately. The system keyboard focus and current Mode at delivery decide a normal stop's paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
+Read `TERMINOLOGY.md` before interpreting button names. The **primary button** is also Ethan's normal button, thumb button, toggle button, recording button, “same button,” and historical G5 button. While idle, one press starts recording only after VoiceInk++'s 0.45-second bounded start-debounce window; a second accepted press inside that window cancels the pending start before recorder UI, microphone capture, media pause, or the YouTube-helper start edge. While recording, one press performs a normal stop through base VoiceInk's current-input route (`primaryCurrentInput`) after the shorter of the macOS double-click interval and 0.45 seconds. Two presses select the existing clipboard-only/no-paste finish after the full third-press window expires; three presses inside that bounded sequence pause capture. While paused, the first press waits through that same short second-press window: one press resumes the existing session, while two presses immediately finish it through the same clipboard-only/no-paste route. The system keyboard focus and current Mode at delivery decide a normal stop's paste and optional Return. A primary normal stop never owns, restores, verifies, or falls back to `recordingStart` or any other saved input.
 
 The separate **Next button** is also the forward button, secondary button, Next Track control, latch button, and retarget button. In this repository, unqualified **toggle** means the primary button's start/stop lifecycle. It never means toggling a destination.
 
@@ -86,8 +86,10 @@ A genuine Primary triple-click while recording is also not a destination route. 
 cancels the pending clipboard-only finish and pauses microphone/WAV/realtime capture inside the same
 session. Paused audio must be excluded from both the saved WAV and streaming provider, media and the
 YouTube helper must remain untouched, and the mirrored HUD remains visible with a pause indication.
-While paused, one Primary press resumes immediately; it must not wait for or require another double
-or triple gesture. Pause/resume must not finalize, paste, change Mode, or change the tentative
+While paused, one Primary press resumes after the short second-press decision window; a second press
+inside that window instead finishes immediately through the same clipboard-only/no-paste route.
+The single-press delay exists only so VoiceInk++ can distinguish those two paused-state actions.
+Pause/resume must not finalize, paste, change Mode, or change the tentative
 `recordingStart` destination. VoiceInk++ may lift and restore its own optional system-output mute
 across pause/resume, but only recording start and final stop/cancel own the media/YouTube-helper
 lifecycle. Next while paused still stops through `recordingStart`.
@@ -119,7 +121,7 @@ The visible recorder/transcription bar is the strict ownership boundary for the 
 
 - Recorder panels appear on every connected monitor.
 - Do not show routine “Recording” text above the waveform; visible text is reserved for real warnings/errors.
-- A recording-time Primary double-click immediately replaces the waveform/status with a red **Won’t paste** indicator on every mirrored panel while VoiceInk++ waits for a possible third press. A third press must clear that state before showing Pause; a committed double-click keeps it visible through transcription so the no-paste policy remains unambiguous. This expected route uses the recorder HUD only: never open a separate notification banner or play the error sound for its clipboard completion. Genuine transcription/provider failures remain errors.
+- A recording-time Primary double-click and the second press of a paused-state double-click immediately replace the waveform/status with a red **Won’t paste** indicator on every mirrored panel. The recording-time route waits for a possible third press; that third press must clear the state before showing Pause. The paused-state route commits immediately because capture is already paused. A committed clipboard-only finish keeps the indicator visible through transcription so the no-paste policy remains unambiguous. This expected route uses the recorder HUD only: never open a separate notification banner or play the error sound for its clipboard completion. Genuine transcription/provider failures remain errors.
 - When a warning/error bar is visible with the bottom-anchored mini recorder, its bottom edge must sit above the recorder's actual rendered envelope, including the expanded real-time transcript, assistant panel, and stacked transcription cards. Use the shared recorder layout metrics; never restore a fixed compact-bar offset that can overlap taller states.
 - Mode icon/emoji is left of the waveform.
 - The right side has two separate icons: current focused app first, then the per-session locked destination.

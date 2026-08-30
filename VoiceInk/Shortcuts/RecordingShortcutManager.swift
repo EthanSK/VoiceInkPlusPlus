@@ -593,10 +593,11 @@ struct PrimaryIdleStartPressCoordinator {
 /// normal stop. A matching second press consumes that pending stop and begins a
 /// deferred clipboard-only finish; it cannot finalize immediately because a third
 /// consecutive press in the same macOS-bounded sequence means Pause instead. A
-/// press while already paused resumes immediately. Once the interval expires, the
-/// next press begins a fresh gesture, so two separate double-clicks can never be
-/// bridged into a triple-click. This coordinator never chooses a paste target; the
-/// eventual single stop remains `.primaryCurrentInput`.
+/// press while already paused waits through only the short second-press window: one
+/// press resumes, while two presses finish the same session as clipboard-only.
+/// Once an interval expires, the next press begins a fresh gesture, so two separate
+/// double-clicks can never be bridged into a triple-click. This coordinator never
+/// chooses a paste target; the eventual single stop remains `.primaryCurrentInput`.
 struct PrimaryRecordingPressCoordinator {
     // Ethan's global macOS double-click preference is intentionally generous
     // (0.8s), but applying that entire interval to a recording stop makes every
@@ -643,11 +644,13 @@ struct PrimaryRecordingPressCoordinator {
     enum Decision: Equatable {
         case startOrCancelImmediately
         case deferNormalStop(generation: Int)
+        case deferPausedResume(generation: Int)
         case deferClipboardFinish(generation: Int)
+        case finishPausedClipboardImmediately
         case togglePause
-        case resumeImmediately
         case ignoreCompletedGesture
         case performOverdueNormalStop
+        case performOverduePausedResume
         case performOverdueClipboardFinish
     }
 
@@ -661,12 +664,27 @@ struct PrimaryRecordingPressCoordinator {
         let generation: Int
     }
 
+    private struct PendingPausedResume {
+        let eventTime: TimeInterval
+        let generation: Int
+    }
+
+    /// A completed recording-time triple may be followed immediately by a fresh
+    /// paused-state gesture once Pause has settled. A paused-state clipboard double
+    /// has no such continuation: any extra/bounce press in the same bounded burst
+    /// must stay consumed while asynchronous finalization changes recorder state.
+    private struct CompletedMultiPress {
+        let eventTime: TimeInterval
+        let allowsFreshPausedGesture: Bool
+    }
+
     let normalStopDecisionInterval: TimeInterval
     let triplePressContinuationInterval: TimeInterval
     private var nextGeneration = 0
     private var pendingStop: PendingStop?
+    private var pendingPausedResume: PendingPausedResume?
     private var pendingClipboardFinish: PendingClipboardFinish?
-    private var completedTriplePressAt: TimeInterval?
+    private var completedMultiPress: CompletedMultiPress?
 
     init(doublePressInterval: TimeInterval) {
         self.normalStopDecisionInterval = doublePressInterval
@@ -689,26 +707,56 @@ struct PrimaryRecordingPressCoordinator {
         pendingClipboardFinish != nil
     }
 
+    var hasPendingPausedResume: Bool {
+        pendingPausedResume != nil
+    }
+
     mutating func registerPress(
         recordingState: RecordingState,
         eventTime: TimeInterval
     ) -> Decision {
-        if recordingState == .paused {
-            // Resume is intentionally the simplest paused-state action. Check it
-            // before completed-triple bounce suppression so a deliberate next press
-            // can resume immediately even when it follows the pause gesture quickly.
-            resetGesture()
-            return .resumeImmediately
+        if let completedMultiPress {
+            let elapsed = eventTime - completedMultiPress.eventTime
+            if elapsed >= 0, elapsed <= normalStopDecisionInterval {
+                if !(recordingState == .paused && completedMultiPress.allowsFreshPausedGesture) {
+                    // Keep bounce presses inside an already consumed gesture. The
+                    // only exception is a real post-triple press after Pause settled.
+                    return .ignoreCompletedGesture
+                }
+            }
+            self.completedMultiPress = nil
         }
 
-        if let completedTriplePressAt {
-            let elapsed = eventTime - completedTriplePressAt
-            if elapsed >= 0, elapsed <= normalStopDecisionInterval {
-                // Treat a fourth/bounce press as part of the already consumed
-                // multi-click gesture. Never start another recording or stop path.
-                return .ignoreCompletedGesture
+        if recordingState == .paused {
+            if let pendingPausedResume {
+                let elapsed = eventTime - pendingPausedResume.eventTime
+                self.pendingPausedResume = nil
+                if elapsed >= 0, elapsed <= normalStopDecisionInterval {
+                    // Paused capture already expresses the triple-click action, so
+                    // click two can finalize Won't paste immediately. Suppress any
+                    // bounce/extra press after that consumed double gesture.
+                    completedMultiPress = CompletedMultiPress(
+                        eventTime: eventTime,
+                        allowsFreshPausedGesture: false
+                    )
+                    return .finishPausedClipboardImmediately
+                }
+                // The timer should normally have resumed capture already. If the
+                // MainActor was delayed, honor the promised single-press Resume
+                // instead of reinterpreting a slow second press as Won't paste.
+                return .performOverduePausedResume
             }
-            self.completedTriplePressAt = nil
+
+            // A press immediately after the recording-time triple must begin a new
+            // paused gesture rather than inherit click four from the old sequence.
+            pendingStop = nil
+            pendingClipboardFinish = nil
+            nextGeneration += 1
+            pendingPausedResume = PendingPausedResume(
+                eventTime: eventTime,
+                generation: nextGeneration
+            )
+            return .deferPausedResume(generation: nextGeneration)
         }
 
         guard recordingState == .recording else {
@@ -720,7 +768,10 @@ struct PrimaryRecordingPressCoordinator {
             let elapsed = eventTime - pendingClipboardFinish.eventTime
             self.pendingClipboardFinish = nil
             if elapsed >= 0, elapsed <= triplePressContinuationInterval {
-                completedTriplePressAt = eventTime
+                completedMultiPress = CompletedMultiPress(
+                    eventTime: eventTime,
+                    allowsFreshPausedGesture: true
+                )
                 return .togglePause
             }
             // The sleep task should normally have committed the double-click
@@ -760,6 +811,12 @@ struct PrimaryRecordingPressCoordinator {
         return true
     }
 
+    mutating func consumeDeferredPausedResume(generation: Int) -> Bool {
+        guard pendingPausedResume?.generation == generation else { return false }
+        pendingPausedResume = nil
+        return true
+    }
+
     mutating func consumeDeferredClipboardFinish(generation: Int) -> Bool {
         guard pendingClipboardFinish?.generation == generation else { return false }
         pendingClipboardFinish = nil
@@ -772,8 +829,9 @@ struct PrimaryRecordingPressCoordinator {
 
     private mutating func resetGesture() {
         pendingStop = nil
+        pendingPausedResume = nil
         pendingClipboardFinish = nil
-        completedTriplePressAt = nil
+        completedMultiPress = nil
     }
 }
 
@@ -1223,7 +1281,9 @@ final class RecordingShortcutModeHandler {
     ) -> Bool {
         // Repeats from one held chord are still rejected by isShortcutPressed and
         // ShortcutMonitor's reducer. Only a released-and-pressed-again Primary
-        // toggle bypasses the legacy cooldown so the second click can mean pause.
+        // toggle bypasses the legacy cooldown so a recording-time second click can
+        // select Won't paste and a third can Pause; while already paused, the
+        // second click selects Won't paste without first resuming capture.
         !(action == .primaryRecording && mode == .toggle)
     }
 
@@ -1261,6 +1321,9 @@ final class RecordingShortcutModeHandler {
                 modeId: modeId
             )
 
+        case .deferPausedResume(let generation):
+            schedulePrimaryPausedResume(generation: generation)
+
         case .deferClipboardFinish(let generation):
             // Click two has already canceled the normal stop, so show the real
             // no-paste policy now rather than making Ethan wait through the click-three
@@ -1271,6 +1334,12 @@ final class RecordingShortcutModeHandler {
                 modeId: modeId
             )
 
+        case .finishPausedClipboardImmediately:
+            primaryGestureDecisionTask?.cancel()
+            primaryGestureDecisionTask = nil
+            setActiveRecordingCompletionDisposition(.clipboardOnly)
+            await finishPrimaryRecordingToClipboard(modeId: modeId)
+
         case .togglePause:
             primaryGestureDecisionTask?.cancel()
             primaryGestureDecisionTask = nil
@@ -1279,7 +1348,7 @@ final class RecordingShortcutModeHandler {
             let didPause = await toggleRecordingPause()
             vippLog.info("shortcut: genuine Primary triple-click pause success=\(didPause, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
 
-        case .resumeImmediately:
+        case .performOverduePausedResume:
             primaryGestureDecisionTask?.cancel()
             primaryGestureDecisionTask = nil
             guard recordingState() == .paused,
@@ -1287,10 +1356,10 @@ final class RecordingShortcutModeHandler {
                 return
             }
             let didResume = await toggleRecordingPause()
-            vippLog.info("shortcut: Primary single-press resume success=\(didResume, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
+            vippLog.info("shortcut: overdue paused Primary single press committed as resume success=\(didResume, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
 
         case .ignoreCompletedGesture:
-            vippLog.info("shortcut: ignored extra Primary press inside completed triple-click gesture")
+            vippLog.info("shortcut: ignored extra Primary press inside completed multi-click gesture")
 
         case .performOverdueNormalStop:
             primaryGestureDecisionTask?.cancel()
@@ -1446,6 +1515,35 @@ final class RecordingShortcutModeHandler {
             self.primaryGestureDecisionTask = nil
             self.vippLog.info("shortcut: Primary single press window expired → base-current-input normal stop")
             await self.toggleRecorderPanel(modeId, .primaryCurrentInput)
+        }
+    }
+
+    private func schedulePrimaryPausedResume(generation: Int) {
+        primaryGestureDecisionTask?.cancel()
+        let delay = primaryPressCoordinator.normalStopDecisionInterval
+        vippLog.info("shortcut: paused Primary first press deferred for \(delay, privacy: .public)s awaiting possible Won't paste double-click")
+        primaryGestureDecisionTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return
+            }
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.primaryPressCoordinator.consumeDeferredPausedResume(
+                      generation: generation
+                  ),
+                  self.recordingState() == .paused,
+                  self.isRecorderVisible(),
+                  self.canHandleShortcutAction() else {
+                return
+            }
+
+            self.primaryGestureDecisionTask = nil
+            let didResume = await self.toggleRecordingPause()
+            self.vippLog.info("shortcut: paused Primary single-press window expired → resume success=\(didResume, privacy: .public) state=\(String(describing: self.recordingState()), privacy: .public)")
         }
     }
 

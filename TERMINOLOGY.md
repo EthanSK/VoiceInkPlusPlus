@@ -6,7 +6,7 @@ This is the canonical glossary for Ethan's mouse controls and recording destinat
 
 | Preferred term | Ethan may also say | Exact meaning |
 | --- | --- | --- |
-| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. While idle, one press starts after a 0.45-second debounce; a second accepted press in that window cancels the pending start before UI/audio/media side effects. While recording, one press performs a normal stop after the shorter of the macOS double-click interval and 0.45 seconds; two presses finish to a recoverable clipboard-only draft if no third press arrives, and three presses pause capture. While paused, one press resumes immediately. In code, the shortcut uses `.toggle` mode. |
+| **Primary button** | normal button, thumb button, toggle button, recording button, same button, normal click/toggle, G5 | The programmable mouse button mapped to VoiceInk++'s normal recording shortcut. While idle, one press starts after a 0.45-second debounce; a second accepted press in that window cancels the pending start before UI/audio/media side effects. While recording, one press performs a normal stop after the shorter of the macOS double-click interval and 0.45 seconds; two presses finish to a recoverable clipboard-only draft if no third press arrives, and three presses pause capture. While paused, one press resumes after that short decision window; two presses finish immediately to the same clipboard-only/no-paste result. In code, the shortcut uses `.toggle` mode. |
 | **Next button** | forward button, secondary button, secondary mouse button, Next Track, Next Track media key/action/event, latch button, retarget button | The separate programmable mouse button mapped to the macOS Next Track media event (`NX_KEYTYPE_NEXT`). Its action depends on whether VoiceInk++ is recording or a normal-stop result is still loading. It is not the primary button and “secondary” does not mean macOS right-click. |
 
 In this repository, **toggle** without another qualifier means the primary button's start/stop lifecycle. It never means toggling a paste destination on or off. The short-lived Next-destination toggle experiment was deliberately reverted.
@@ -55,7 +55,8 @@ either physical button.
 | Recording | Primary button once | After the bounded double-click decision window, **normal stop** through base VoiceInk | Whichever system keyboard input is focused at delivery (`primaryCurrentInput`) |
 | Recording | Primary button twice within the VoiceInk++ second-press window | Immediately show a red **Won’t paste** HUD state on every monitor, wait through the remaining third-press interval, then persist the original WAV plus current realtime HUD text in History and finalize normally to the clipboard; do not paste, Return, or cancel/discard, and resume only media/YouTube playback VoiceInk++ paused for this recording | No paste destination; clipboard only |
 | Recording | Primary button three times as one continuous click gesture | Cancel the pending clipboard finish, pause this same recording, and stop microphone/WAV/stream input; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
-| Paused | Primary button once | Resume capture immediately into this same recording; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button once | Resume capture into this same recording after the short double-click decision window; leave media playback unchanged | Not yet final; existing tentative Next preview remains |
+| Paused | Primary button twice inside the short decision window | Finish the same session as recoverable clipboard-only “Won’t paste”; do not paste or auto-send | No exact destination; final text goes only to clipboard/history |
 | Recording or paused | Next button | Stop and send it back to the input captured when recording began | `recordingStart` |
 | Loading after a primary-button normal stop | Next button once | **Second chance:** replace that pending session's destination with the exact editable input focused at this press | `focusedDuringTranscription` |
 | Recorder bar visible, but no session remains eligible for a destination change | Next button | Consume the press as a VoiceInk++ no-op; never advance media while the bar is visible | Existing destination remains unchanged |
@@ -80,7 +81,8 @@ visible through a committed clipboard-only transcription. Click three inside the
 before showing Pause; after the interval expires, the double-click finish commits and a later click
 begins a fresh gesture. The recorder HUD is the only expected-route feedback; successful clipboard-only
 completion never opens a separate notification banner or plays the error sound. While paused, the next
-Primary press resumes immediately without another timing window.
+Primary press starts a fresh short decision window: it resumes when that window expires, or a second
+press finishes immediately through the same clipboard-only route.
 
 The same 0.45-second bound also delays only a prospective idle Start. The first physical press still
 reserves FIFO continuation intent immediately so an older Primary result cannot press Return beneath
@@ -108,8 +110,8 @@ and the current Mode's generic auto-send key to whichever keyboard input macOS o
 must not capture, reuse, restore, verify, or fall back to the tentative recording-start input, and it
 must never enter Telegram/OpenAI/Terminal or other app-specific delivery. A second Primary press
 inside that window cancels the pending stop and schedules the clipboard-only finish; a third press
-inside the continuation window cancels that finish and pauses capture. While paused, one press only
-resumes capture.
+inside the continuation window cancels that finish and pauses capture. While paused, one press resumes
+after the short decision window and two presses finish through the same clipboard-only route.
 
 The recording-start or “old known” input is invoked only by pressing the Next button while recording.
 

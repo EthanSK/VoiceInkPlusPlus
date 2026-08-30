@@ -60,7 +60,9 @@ macOS multi-click interval. Its arrival cancels the pending clipboard-only finis
 VoiceInk++ stops AUHAL itself while leaving the same WAV and realtime provider session open, so no
 paused audio is written or streamed. Media playback and the paired YouTube helper are left
 untouched; Ethan controls playback himself while paused. Press Primary once to restart capture into
-that same session immediately without changing playback. VoiceInk++ may unmute system output while
+that same session after the short second-press decision window without changing playback. Press it
+twice inside that window to finish immediately through the same recoverable clipboard-only “Won’t
+paste” route used by a recording-time double-click. VoiceInk++ may unmute system output while
 capture is paused and restore its optional output mute when capture resumes, but only recording
 start and final stop/cancel send the normal media/YouTube-helper pause and resume lifecycle.
 
@@ -143,7 +145,8 @@ tests repeatedly failed on the real destination apps.
 | Primary/thumb/toggle button once while recording | After the double-click interval, normal stop: base VoiceInk pastes into whichever system keyboard input is focused at delivery and uses that current Mode; it never invokes a saved input |
 | Primary/thumb/toggle button twice while recording | After the third-press interval expires, finish the same session to the clipboard only, with no paste/Return, then resume only playback VoiceInk++ paused for that recording |
 | Primary/thumb/toggle button three times in one genuine gesture | Pause capture without changing media playback, finalizing, or choosing a delivery route |
-| Primary/thumb/toggle button once while paused | Resume capture immediately into the same session without changing media playback |
+| Primary/thumb/toggle button once while paused | Resume capture after the short second-press decision window without changing media playback |
+| Primary/thumb/toggle button twice while paused | Immediately finish the same session to clipboard/history only, with no paste/Return, through the existing “Won’t paste” route |
 | **Next button** while recording or paused | The exact text input focused when you started recording, or that application when macOS hides the editor element |
 | **Next button** while the newest transcription is still loading | Second chance after a normal stop: replace that pending session's destination and auto-send behavior with the text input/app focused now |
 | **Next button** while the recorder bar is visible but no route is still eligible | VoiceInk++ consumes the press without changing the saved destination; it never advances media |
@@ -248,8 +251,9 @@ Keep the ordinary mouse button assigned to the existing VoiceInk++ recording sho
 single idle press begins recording after VoiceInk++'s 0.45-second start-debounce window, while an
 idle double press cancels before recording UI/audio/media lifecycle begins. A normal single stop
 still resolves after the separate at-most-0.45-second multi-click decision window; a recording-time
-double press finishes to clipboard if no third press arrives, a triple press pauses, and one paused-
-state press resumes immediately. None chooses an exact delivery destination. Assign the
+double press finishes to clipboard if no third press arrives, and a triple press pauses. While
+paused, one press resumes after the short decision window and two presses finish immediately to the
+same clipboard-only result. None chooses an exact delivery destination. Assign the
 alternative **Next button** to **Next Track**. VoiceInk++ intercepts that button for the entire time
 any recorder/transcription bar is visible; eligible recording and transcription states perform
 their normal destination action, while an ineligible visible-bar press is consumed as a safe no-op.
