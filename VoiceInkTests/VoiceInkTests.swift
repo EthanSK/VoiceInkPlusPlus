@@ -1649,8 +1649,10 @@ struct VoiceInkTests {
         )
         #expect(decision == .deferPausedResume(generation: 1))
         #expect(coordinator.hasPendingPausedResume)
-        #expect(coordinator.consumeDeferredPausedResume(generation: 1))
-        #expect(!coordinator.consumeDeferredPausedResume(generation: 1))
+        let firstConsumption = coordinator.consumeDeferredPausedResume(generation: 1)
+        let duplicateConsumption = coordinator.consumeDeferredPausedResume(generation: 1)
+        #expect(firstConsumption)
+        #expect(!duplicateConsumption)
         #expect(!coordinator.hasPendingNormalStop)
         #expect(!coordinator.hasPendingClipboardFinish)
     }
