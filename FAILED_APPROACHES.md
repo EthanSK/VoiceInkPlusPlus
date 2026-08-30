@@ -465,7 +465,24 @@ No row may be promoted merely because a later build reused part of it.
   did not repair the shared System Events process.
 - **Do not retry:** Run System Events auto-send off MainActor through `BoundedAppleScriptRunner` with
   the one-second deadline, terminate its helper at expiry, and treat timeout as an indeterminate
-  one-shot Return. Never retry through CGEvent or another transport after that timeout.
+  one-shot Return. Never retry through CGEvent or another transport after that timeout. This remains
+  a freeze-containment rule for exact foreground routes that still use System Events; it is not a
+  sufficient Primary isolation boundary.
+
+### A bounded `osascript` helper as Primary isolation from shared System Events
+
+- **State:** REJECTED for `primaryCurrentInput` auto-send; v2.0.304's one-second helper guard was a
+  useful freeze mitigation but did not isolate later Primary requests from the shared daemon.
+- **Attempt:** Keep Primary Return on System Events, run it off MainActor, and terminate the client
+  helper when its one-second deadline expires.
+- **Observed result:** An unrelated Codex task asked System Events for Rekordbox's `entire contents`.
+  The singleton daemon remained recursively wedged in an Accessibility traversal. Killing
+  VoiceInk++'s timed-out helper could not cancel the Apple Event already executing server-side, so
+  subsequent build-311 Primary Returns queued or failed even though paste continued to work.
+- **Do not retry:** Primary owns the current system keyboard focus, so after the fixed settlement
+  interval issue exactly one ordinary HID Return down/up directly. Do not put Primary back on System
+  Events, do not enumerate Accessibility, do not classify the app, and do not retry an indeterminate
+  Return. Keep exact Next routes surface-specific and separately guarded.
 
 ### Setting an entire generic `AXValue`
 

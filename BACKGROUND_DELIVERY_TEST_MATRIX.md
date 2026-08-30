@@ -4,6 +4,27 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
+**Current installed state verified 2026-08-30:** signed v2.0.312 is installed from exact source
+commit `f3c1023` (Primary transport fix `4a0d794`; paused Won't-paste gesture `b192820`). Primary
+`primaryCurrentInput` auto-send no longer asks the shared System Events daemon to press Return. It
+waits the fixed 220 ms paste-settlement interval and emits one normal HID Return down/up with no
+retry, app classifier, exact-input resolver, or Accessibility traversal. This supersedes v2.0.304's
+bounded-helper mitigation for Primary: terminating a timed-out `osascript` client does not cancel an
+Apple Event already executing server-side. An unrelated Rekordbox whole-window Accessibility
+enumeration left the singleton System Events process wedged, so later build-311 Primary requests
+pasted successfully but reported that Return could not be pressed. The exact release source's
+canonical focused and full Xcode actions compiled but stalled in TestManager before naming tests;
+the documented staged-framework `xcrun xctest` release fallback named and passed all 262 tests in 8
+suites. The installed executable SHA-256 is
+`6fbc47f92170cd8966567297cfeabfe2e2f9cbe4beeb39d643d6ca15130f0fdc`, its CDHash is
+`d095143258fa7b58956f60beeecf9b460db4160c`, deep/strict signing and outer Automation/audio-input
+entitlements verify, build 311 is preserved as rollback, OBS remained on its existing PID, and
+`/Applications/VoiceInk.app` remains untouched. A physical Primary run on installed PID 14967
+finalized GPT Live, pasted, logged the one direct HID Return, returned from delivery, and removed the
+session; Ethan confirmed the visible result worked. Exact Next delivery retains its separate
+surface-specific auto-send mechanisms. The installed paused-state double-click route is covered by
+named tests but still needs a physical mouse acceptance run.
+
 **Current installed state verified 2026-08-19:** signed v2.0.304 is installed from implementation
 commit `776a834` and release commit `6ae42d0`. Generic system-focused System Events auto-send now
 runs off MainActor through `BoundedAppleScriptRunner`, has a one-second hard timeout, terminates the
@@ -166,7 +187,7 @@ destination=primaryCurrentInput targetCaptured=false deliveryPolicy=baseCurrentI
 pipeline: about to DELIVER ... destination=primaryCurrentInput
 paste: primary current-input compatibility selected ... appSpecificDelivery=false
 paste: primary current-input command completed result=commandPosted
-paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=100
+paste: primary current-input HID auto-send issued=true verification=notRequired settleMs=220
 ```
 
 The same delivery must contain no exact-input preparation/resolution, Telegram identity, OpenAI Send,

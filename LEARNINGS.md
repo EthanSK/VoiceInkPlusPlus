@@ -25,6 +25,28 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-30T18:03:12Z
+**Trigger:** Ethan report: Transcription pasted, but couldn’t press Return automatically, after the workflow had mostly been working.
+**Symptom:** Build 311 usually pasted the transcript but suddenly showed Transcription pasted, but couldn’t press Return automatically; earlier recordings had mostly worked.
+**Root cause:** An unrelated Rekordbox full-window Accessibility enumeration wedged the singleton System Events process server-side. The build-304 timeout could kill only VoiceInk++’s osascript client, not cancel the Apple Event already executing inside System Events, so later Primary Return requests queued or failed.
+**Fix:** Commit 4a0d794 keeps only Primary current-input auto-send out of System Events: after 220 ms paste settlement it emits one ordinary HID Return down/up, with no retry, app classifier, exact-input resolver, or Accessibility traversal. Exact Next routes remain surface-specific. Build 312 was signed, installed, and physically accepted.
+**Commit:** 4a0d794
+**Guard:** Exact final source f3c1023 named and passed all 262 tests in 8 suites through the documented release fallback, including Primary isolation, queue-tail, cancellation, bounded-helper, realtime-HUD, and both Next-route guards. Installed PID 14967 verified build 312, deep/strict signing, Automation and audio-input entitlements, CDHash d095143258fa7b58956f60beeecf9b460db4160c, and executable SHA-256 6fbc47f92170cd8966567297cfeabfe2e2f9cbe4beeb39d643d6ca15130f0fdc. A physical 18:59 Primary run logged direct HID Return, delivery return, and session removal; Ethan confirmed it worked.
+---
+
+
+---
+**Date:** 2026-08-30T18:03:11Z
+**Trigger:** Ethan clarification: after pausing, double-click should do the Won’t paste action, not only while recording.
+**Symptom:** After a genuine Primary triple-click paused capture, a paused-state double-click needed to finish the same session as recoverable Won’t paste instead of resuming it.
+**Root cause:** The paused shortcut handler resumed on its first press, so it had no bounded second-press decision window and could not distinguish a single resume from the requested double-click clipboard-only finish.
+**Fix:** Commit b192820 defers paused single-press resume through the short decision window, makes the second press immediately select the existing clipboard-only no-paste route, and suppresses bounce while asynchronous finalization begins; f3c1023 corrects the final test assertions.
+**Commit:** f3c1023
+**Guard:** Exact build-312 source named and passed 262 tests in 8 suites through the documented release fallback, including primarySinglePressWhilePausedDefersResumeForDoubleClickDecision, primaryDoublePressWhilePausedFinishesClipboardOnly, primaryTripleClickPausesAndOnePausedClickResumesAfterDecisionWindow, pausedPrimaryDoubleClickSelectsWontPasteWithoutResuming, and the playback/YouTube ownership guard. The signed behavior is installed; physical paused-double acceptance remains pending.
+---
+
+
+---
 **Date:** 2026-08-29T23:42:54Z
 **Trigger:** Ethan report 2026-08-30: VoiceInk++ voice sync and recording gestures lag heavily; distinguish VoiceInk from Agentic Mouse and revisit prior failed investigation
 **Symptom:** The intended 0.45-second Primary decision timers stretched to roughly 0.65-1.2 seconds under pressure, and one otherwise on-time start then paused about 1.39 seconds before streaming preparation. GPT Live finalization stayed about 0.5-0.8 seconds with zero dropped chunks; Agentic Mouse stayed near-idle and neither app showed an accumulating idle resource leak.
