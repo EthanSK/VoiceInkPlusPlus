@@ -46,12 +46,16 @@ The API exposes no numeral-normalization switch: a physical `gpt-live-transcribe
 explicit number-word-to-digit example. Preserve live preferences until a documented dedicated
 control is proven; deterministic numerals require a separately tested VoiceInk++ post-processor.
 
-For optional recent-transcript context, do not accept a short-message-only live test. Correlate the
-counts-only `TranscriptionRequestContext` log with History status, age, stable Mode UUID, and raw
-character length, then include at least one realistic dictation longer than the current per-entry
-budget. A zero eligible count can otherwise look healthy in unit tests while ordinary long
-dictations are rejected whole and the feature appears inactive. Keep transcript and keyword text
-out of logs while gathering this evidence.
+For optional recent context, first distinguish exact active-Codex messages from the same-Mode
+History fallback. While verified Codex is frontmost, require the counts-only trace to show
+`Codex context captured messages=` and `request context frozen ... codexMessages=` greater than
+zero; do not infer exact task context from a recent session file, title, Accessibility destination,
+or shared Mode. For the History fallback, do not accept a short-message-only live test: correlate
+the counts-only request log with History status, age, stable Mode UUID, and raw character length,
+then include at least one realistic dictation longer than the current per-entry budget. A zero
+eligible count can otherwise look healthy in unit tests while ordinary long dictations are rejected
+whole and the feature appears inactive. Keep task identity, message, transcript, prompt, and keyword
+text out of logs while gathering this evidence.
 
 For a requested Soniox-versus-AssemblyAI comparison using saved recordings, read
 [references/provider-realtime-ab-test.md](references/provider-realtime-ab-test.md)

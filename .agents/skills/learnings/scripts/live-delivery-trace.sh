@@ -15,7 +15,7 @@ LOCK_PID_FILE="$LOCK_DIR/pid"
 LAUNCHD_LABEL="com.ethansk.voiceink.live-delivery-trace.$(id -u)"
 LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
 
-PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService" || category == "OpenAIStreamingProvider")))'
+PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock" || category == "CodexConversationContext" || category == "TranscriptionRequestContext")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService" || category == "OpenAIStreamingProvider")))'
 
 usage() {
   printf 'usage: %s start|status|stop|show [line-count]\n' "$0" >&2
@@ -284,6 +284,9 @@ run_trace() {
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'resetRecordingSession:'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'cleanupResources: DEFERRED'*|\
       *'[com.ethansk.VoiceInkPlusPlus:VIPPDebug]'*'deliver: enter'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:CodexConversationContext]'*'Codex context captured messages='*|\
+      *'[com.ethansk.VoiceInkPlusPlus:CodexConversationContext]'*'Codex context unavailable after exact frontmost-app check'*|\
+      *'[com.ethansk.VoiceInkPlusPlus:TranscriptionRequestContext]'*'request context frozen recentEntries='*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured editable input'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured Telegram exact-input identity'*|\
       *'[com.ethansk.VoiceInkPlusPlus:FocusLock]'*'Captured recording-start'*|\
