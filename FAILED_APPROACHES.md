@@ -968,6 +968,19 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Recording and transcription concurrency failures
 
+### Treating AudioDeviceID plus availability as prepared-AUHAL validity
+
+- **State:** REJECTED for reusable capture preparation.
+- **Observed result:** Rekordbox changed the selected Scarlett 18i8 from 48 kHz to 44.1 kHz while
+  keeping the same device ID. VoiceInk++ reused its old prepared callback format, sent zero GPT Live
+  chunks, and retained only a 4096-byte WAV header. Returning the device to 48 kHz made the same
+  running app capture again, which isolated the stale-format boundary from provider and delivery.
+- **Rule:** Snapshot and re-read the selected AUHAL input stream format plus device nominal rate
+  before reuse. Treat a format notification as advisory, never write a preferred rate back to the
+  device, and never tear down AUHAL during active capture; rebuild while idle or immediately after
+  stop. Reconsider device-ID-only reuse only if Core Audio documents that a stable ID also freezes
+  the complete stream format for the lifetime of the prepared unit.
+
 ### Streaming provisional text into destination-app ranges
 
 - **State:** SUPERSEDED by Ethan's corrected HUD-only real-time contract; never physically accepted.

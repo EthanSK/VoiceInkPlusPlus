@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-31T22:17:57Z
+**Trigger:** Ethan: VoiceInk lagged/froze after Rekordbox opened; investigate the previous failed fix and install the repair.
+**Symptom:** After Rekordbox changed the selected Scarlett 18i8 from 48 kHz to 44.1 kHz without changing its AudioDeviceID, VoiceInk++ could connect GPT Live yet send zero chunks and leave a 4096-byte header-only WAV.
+**Root cause:** CoreAudioRecorder treated a prepared AUHAL as reusable from initialized state, device identity and availability alone. The same-device stream and nominal sample rates could change underneath that cached callback format.
+**Fix:** Commits bb35810 and 02ad154 make build 314 snapshot the prepared AUHAL input ASBD plus nominal rate, listen passively for input stream-format changes, re-read both before reuse, and rebuild only while idle or immediately after stop; the callback never writes the hardware rate or tears down active capture.
+**Commit:** 02ad1547bd8425ddff987c5852c3a40ad5b9413a
+**Guard:** The exact commit named and passed five focused capture tests and all 267 unit tests in 8 suites on the Mac Mini. Signed build 314 is installed with CDHash 8460a055bd98d296e32d9cc570bf557606e7bd6a and executable SHA-256 e9a9f6e6cfb07128f768e8cfac6242c4a08f8e8ff6fbd036d4c087278c2d469d. Physical 48-to-44.1 kHz Rekordbox acceptance remains pending and must not be inferred from tests.
+---
+
+
+---
 **Date:** 2026-08-31T20:50:00Z
 **Trigger:** Ethan: Why does VoiceInk crash when I open record box? It just freezes.
 **Symptom:** After Rekordbox opened, a roughly 30-second VoiceInk++ recording connected to GPT Live normally but received/sent zero audio chunks. Its retained WAV contained zero audio bytes and only the 4096-byte header. The stop gesture still executed on time; a later sample of the restarted app showed a responsive main run loop, not a System Events wait.
