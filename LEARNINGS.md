@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-31T18:08:00Z
+**Trigger:** Ethan: I should be able to double click to do the won't paste thing while it's transcribing as well.
+**Symptom:** A Primary double-click while a stopped recording was transcribing canceled a prospective new recording but left the pending result free to paste.
+**Root cause:** With no active microphone session, the engine deliberately reports idle so another recording can start. The idle double-click path only canceled that start reservation. Separately, TranscriptionPipeline captured completionDisposition before awaiting the provider, so changing the session during transcription would still have been ignored.
+**Fix:** Capture the newest eligible pending session ID on the first idle press; the second press selects clipboard-only for that same still-newest session before canceling the prospective start. Freeze the session's completion policy after provider success or failure, before Mode effects begin. Keep the existing red HUD, clipboard/history retention, quiet intentional-failure path, single-click start, and playback ownership unchanged. Never claim to undo delivery that already crossed this cutoff.
+**Commit:** 6a0991d
+**Guard:** Exact build-313 source passed 265 named tests in 8 suites through the documented full-suite fallback after Xcode test discovery and the canonical test action stalled. New tests cover pending double-click, replacement-result rejection, the cutoff, and resolving disposition after provider success/error; the single-click test now covers a pending transcription too. Signed build 313 is installed and running, with CDHash ef7a40f52a7b45abc44c828c2e279594e6700bcc and executable SHA-256 37b2a352937040f13e50065d79336810da0d2719f7253d0b1dfe12d96add3568. Deep/strict signing and outer Automation/audio entitlements verify. Build 312 remains as rollback; the official VoiceInk app and OBS recording process were preserved. Physical transcription-time double-click acceptance remains pending.
+---
+
+---
 **Date:** 2026-08-30T18:03:12Z
 **Trigger:** Ethan report: Transcription pasted, but couldn’t press Return automatically, after the workflow had mostly been working.
 **Symptom:** Build 311 usually pasted the transcript but suddenly showed Transcription pasted, but couldn’t press Return automatically; earlier recordings had mostly worked.

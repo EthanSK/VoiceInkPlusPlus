@@ -4,7 +4,20 @@ This is the permanent compatibility matrix for Ethan's main destinations. Read i
 [FAILED_APPROACHES.md](FAILED_APPROACHES.md) before changing exact-input capture, background
 insertion, auto-send, focus restoration, or verification.
 
-**Current installed state verified 2026-08-30:** signed v2.0.312 is installed from exact source
+**Current installed state verified 2026-08-31:** signed v2.0.313 is installed from exact source
+commit `6a0991d`. A Primary double-click during pending transcription now selects clipboard-only
+for the result identified on the first click; provider completion freezes that choice before Mode
+effects begin. Primary's accepted HID Return transport and both exact Next routes are unchanged.
+All 265 named tests in 8 suites passed through the documented full-suite fallback after canonical
+Xcode discovery/testing stalled. Installed PID 81984, CDHash
+`ef7a40f52a7b45abc44c828c2e279594e6700bcc`, executable SHA-256
+`37b2a352937040f13e50065d79336810da0d2719f7253d0b1dfe12d96add3568`, deep/strict signature,
+and outer Automation/audio-input entitlements were verified. Build 312 is retained as rollback,
+the official VoiceInk app is unchanged, and OBS's recording process stayed on its existing PID.
+The new transcription-time double-click still needs physical acceptance; no current-build live
+Primary/Next compatibility result is inferred from unit tests or build 312's acceptance below.
+
+**Installed state verified 2026-08-30:** signed v2.0.312 was installed from exact source
 commit `f3c1023` (Primary transport fix `4a0d794`; paused Won't-paste gesture `b192820`). Primary
 `primaryCurrentInput` auto-send no longer asks the shared System Events daemon to press Return. It
 waits the fixed 220 ms paste-settlement interval and emits one normal HID Return down/up with no
