@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-08-31T20:50:00Z
+**Trigger:** Ethan: Why does VoiceInk crash when I open record box? It just freezes.
+**Symptom:** After Rekordbox opened, a roughly 30-second VoiceInk++ recording connected to GPT Live normally but received/sent zero audio chunks. Its retained WAV contained zero audio bytes and only the 4096-byte header. The stop gesture still executed on time; a later sample of the restarted app showed a responsive main run loop, not a System Events wait.
+**Root cause:** The recorder last configured the Scarlett's 20-channel input at 48000 Hz. Core Audio logged that same running recorder's input format changing to 44100 Hz at Rekordbox launch, but CoreAudioRecorder.isPrepared checks only the AudioUnit, initialized flag, device identity and availability. It does not validate the cached format, and no selected-device stream-format observer rebuilds it. This is an identified stale-format reuse defect and the leading explanation of the observed zero-audio capture; no deliberate live rate-change reproduction was performed on Ethan's active music setup.
+**Fix:** Diagnosis only; no runtime or recording-code change. A VoiceInk restart reconfigured capture at 44100 Hz and the following recording delivered 526 audio chunks and a nonempty result. A future repair should revalidate prepared capture against the actual selected-device format and safely handle format changes without altering Rekordbox's or the system's chosen rate. Do not diagnose this as the older Primary/System Events Return freeze or the new clipboard-only gesture merely because the HUD appears stuck.
+**Commit:** none (diagnosis against 4994ebe; capture source last changed in bb0d326)
+**Guard:** Correlate CoreAudioRecorder format logs, AUHAL stream-format notifications, streaming received/sent chunk counts and WAV metadata. A live same-device sample-rate-change test and regression coverage remain required before claiming a repair. No app restart, capture cancellation, audio-device write, playback change or Rekordbox UI action was performed by this investigation.
+---
+
+---
 **Date:** 2026-08-31T18:08:00Z
 **Trigger:** Ethan: I should be able to double click to do the won't paste thing while it's transcribing as well.
 **Symptom:** A Primary double-click while a stopped recording was transcribing canceled a prospective new recording but left the pending result free to paste.
