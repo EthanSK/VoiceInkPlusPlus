@@ -138,12 +138,11 @@ private struct EnhancementModelSettingsView: View {
     }
 }
 
-/// Opt-in recent-dictation context for the OpenAI transcription models.
+/// Opt-in recent context for the OpenAI transcription models.
 ///
-/// The help text states the real boundary rather than implying exact conversation
-/// scoping: VoiceInk++ deliberately refuses to resolve a saved Accessibility destination
-/// just to narrow a prompt, so the scope is "same Mode, last few minutes" and nothing
-/// stronger. Everything else — Primary/Next destinations, paste, auto-send — is untouched.
+/// When Codex is frontmost, its own selected-view thread ID supplies exact task scope
+/// without Accessibility. Elsewhere, the honest fallback remains recent same-Mode History.
+/// Everything else — Primary/Next destinations, paste, auto-send — is untouched.
 private struct RecentDictationContextSection: View {
     @EnvironmentObject private var transcriptionModelManager: TranscriptionModelManager
     @AppStorage(RecentTranscriptContextSettings.enabledKey) private var isRecentContextEnabled = false
@@ -154,7 +153,8 @@ private struct RecentDictationContextSection: View {
 
     private var informationMessage: String {
         String(
-            format: String(localized: "Adds bounded excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode, after your existing transcription prompt. A transcription's Mode is the one that finished it, so a trigger word or a Next-button destination can change which later recordings match it. Only OpenAI transcription models receive them; enhanced text, audio, app or destination details, and realtime partials are never included. Same Mode does not mean same app, chat, or document — leave this off if you dictate private material in that Mode. Deleting a transcription in History removes it from future context."),
+            format: String(localized: "When Codex is frontmost, adds up to %d recent user or assistant messages from the exactly selected local Codex task. System, developer, tool, environment, and draft composer content are excluded. If an exact Codex task cannot be proven, or in another app, it instead uses bounded sentence-aligned excerpts from up to %d completed History transcriptions from the last %d minutes in the same Mode. A transcription's Mode is the one that finished it, so a trigger word or Next-button destination can change which later recordings match it. Same Mode does not mean same app, chat, or document. Only OpenAI transcription models receive this context; audio, destinations, realtime partials, and enhanced text are never included. Deleting a transcription in History removes it from future context."),
+            CodexConversationContextPolicy.maximumMessages,
             RecentTranscriptContextPolicy.maximumEntries,
             RecentTranscriptContextPolicy.recencyWindowMinutes
         )
@@ -162,7 +162,8 @@ private struct RecentDictationContextSection: View {
 
     private var visibleSummary: String {
         String(
-            format: String(localized: "OpenAI receives sentence-aligned excerpts from up to %d completed History items from the last %d minutes whose Mode matches the Mode this recording starts in. It uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary."),
+            format: String(localized: "OpenAI receives up to %d bounded messages from the active Codex task when exact local task identity is available. Otherwise it receives sentence-aligned excerpts from up to %d completed History items from the last %d minutes whose Mode matches the Mode this recording starts in. The History fallback uses saved text after any paragraph formatting and Word Replacements; recent context never adds or changes Vocabulary."),
+            CodexConversationContextPolicy.maximumMessages,
             RecentTranscriptContextPolicy.maximumEntries,
             RecentTranscriptContextPolicy.recencyWindowMinutes
         )
@@ -172,7 +173,7 @@ private struct RecentDictationContextSection: View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 4) {
-                    Toggle("Send recent dictation as context (OpenAI)", isOn: $isRecentContextEnabled)
+                    Toggle("Send recent context (OpenAI)", isOn: $isRecentContextEnabled)
                         .toggleStyle(.switch)
                         .disabled(!hasUsableOpenAIModel)
                     InfoTip(informationMessage)
@@ -184,7 +185,7 @@ private struct RecentDictationContextSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
-            Text("Recent Dictation Context")
+            Text("Recent Transcription Context")
         } footer: {
             if !hasUsableOpenAIModel {
                 Text("Requires a configured OpenAI transcription model.")

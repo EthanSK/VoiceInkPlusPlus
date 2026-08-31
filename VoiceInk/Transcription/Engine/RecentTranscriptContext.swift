@@ -289,6 +289,7 @@ struct TranscriptionRequestInputSnapshot {
     let staticPrompt: String?
     let vocabulary: [String]
     let recentCandidates: [RecentTranscriptContextCandidate]
+    let codexMessages: [CodexConversationContextMessage]
     let capturedAt: Date
     let recentContextEnabled: Bool
 }
@@ -358,7 +359,8 @@ enum TranscriptionRequestContextSnapshot {
             includeRecentContext: includeRecentContext,
             now: now,
             vocabulary: { frozenVocabulary(from: modelContext) },
-            recentCandidates: { recentCandidates(from: modelContext) }
+            recentCandidates: { recentCandidates(from: modelContext) },
+            codexMessages: { CodexConversationContextReader.recentMessagesIfFrontmost() }
         )
     }
 
@@ -369,16 +371,21 @@ enum TranscriptionRequestContextSnapshot {
         includeRecentContext: Bool,
         now: Date,
         vocabulary: () -> [String],
-        recentCandidates: () -> [RecentTranscriptContextCandidate]
+        recentCandidates: () -> [RecentTranscriptContextCandidate],
+        codexMessages: () -> [CodexConversationContextMessage] = { [] }
     ) -> TranscriptionRequestInputSnapshot {
-        TranscriptionRequestInputSnapshot(
+        let frozenCodexMessages = includeRecentContext ? codexMessages() : []
+        return TranscriptionRequestInputSnapshot(
             staticPrompt: staticPrompt,
             vocabulary: vocabulary(),
-            // History can be much larger than Vocabulary. Do not query it at all while
-            // the opt-in feature is disabled.
-            recentCandidates: includeRecentContext
+            // Exact active-Codex messages supersede same-Mode History for this recording.
+            // This avoids mixing another Codex task merely because both used one Mode.
+            // History can be much larger than Vocabulary, so do not query it while the
+            // feature is disabled or exact Codex task context is already available.
+            recentCandidates: includeRecentContext && frozenCodexMessages.isEmpty
                 ? recentCandidates()
                 : [],
+            codexMessages: frozenCodexMessages,
             capturedAt: now,
             recentContextEnabled: includeRecentContext
         )
@@ -398,20 +405,27 @@ enum TranscriptionRequestContextSnapshot {
             )
         }
 
-        let entries = RecentTranscriptContextPolicy.eligibleEntries(
-            from: snapshot.recentCandidates,
-            currentModeID: modeID,
-            now: snapshot.capturedAt
-        )
-        let composed = RecentTranscriptContextPolicy.composedPrompt(
-            staticPrompt: snapshot.staticPrompt,
-            entries: entries
-        )
+        let entries = snapshot.codexMessages.isEmpty
+            ? RecentTranscriptContextPolicy.eligibleEntries(
+                from: snapshot.recentCandidates,
+                currentModeID: modeID,
+                now: snapshot.capturedAt
+            )
+            : []
+        let composed = snapshot.codexMessages.isEmpty
+            ? RecentTranscriptContextPolicy.composedPrompt(
+                staticPrompt: snapshot.staticPrompt,
+                entries: entries
+            )
+            : CodexConversationContextPolicy.composedPrompt(
+                staticPrompt: snapshot.staticPrompt,
+                messages: snapshot.codexMessages
+            )
 
         // Counts only. Prompt text, context entries, dictionary terms, transcript
         // excerpts, and Mode-identifying values must never enter any log.
         logger.info(
-            "request context frozen recentEntries=\(entries.count, privacy: .public) promptChars=\(composed?.count ?? snapshot.staticPrompt?.count ?? 0, privacy: .public) keywords=\(snapshot.vocabulary.count, privacy: .public)"
+            "request context frozen recentEntries=\(entries.count, privacy: .public) codexMessages=\(snapshot.codexMessages.count, privacy: .public) promptChars=\(composed?.count ?? snapshot.staticPrompt?.count ?? 0, privacy: .public) keywords=\(snapshot.vocabulary.count, privacy: .public)"
         )
 
         return TranscriptionRequestContext(

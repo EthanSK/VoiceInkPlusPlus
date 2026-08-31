@@ -29,7 +29,7 @@ enum AppDefaults {
             "SelectedLanguage": "en",
             "AppendTrailingSpace": true,
             "RecorderType": "mini",
-            // Off by default: sending recent dictation to OpenAI as context is opt-in.
+            // Off by default: sending recent Codex/dictation text to OpenAI is opt-in.
             RecentTranscriptContextSettings.enabledKey: false,
 
             // Cleanup

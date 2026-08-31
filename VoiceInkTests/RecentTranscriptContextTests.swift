@@ -392,6 +392,7 @@ struct RecentTranscriptContextTests {
             staticPrompt: "legacy prompt bytes",
             vocabulary: ["Project Alpha"],
             recentCandidates: [candidate],
+            codexMessages: [],
             capturedAt: Date(),
             recentContextEnabled: true
         )
@@ -416,6 +417,7 @@ struct RecentTranscriptContextTests {
             staticPrompt: "static prompt",
             vocabulary: ["Project Alpha"],
             recentCandidates: [],
+            codexMessages: [],
             capturedAt: capturedAt,
             recentContextEnabled: true
         )

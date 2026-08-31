@@ -1076,14 +1076,36 @@ No row may be promoted merely because a later build reused part of it.
   Electron, Telegram, and Notion also reuse wrappers across logical contexts, so a resolved
   wrapper would not have proven "same chat" even if it were allowed.
 - **Use instead:** Two boundaries that are already frozen, non-Accessibility, per-recording
-  state: a short recency window and an exact match on this recording's stable enabled Mode UUID. Say plainly
-  in the setting's help text that same Mode is **not** same app, chat, or document, and keep
-  the whole feature opt-in and off by default. `RecentTranscriptContextPolicy` documents this
-  and `RecentTranscriptContextTests` asserts the file references no destination, focus, paste,
-  or `AXUIElement` symbol.
+  state remain the general fallback: a short recency window and an exact match on this recording's
+  stable enabled Mode UUID. Build 315 adds one stronger boundary for a frontmost Codex host only:
+  the current Codex process's primary selected-view event plus the exact matching local session
+  JSONL. This is app-owned conversation identity, not a paste destination. Say plainly in the
+  setting's help text that fallback same Mode is **not** same app, chat, or document, and keep the
+  whole feature opt-in and off by default. The context source must continue to reference no
+  destination, focus, paste, or `AXUIElement` symbol.
 - **Reconsider only if:** Ethan explicitly asks for stronger scoping *and* a non-destination,
   non-Accessibility signal proves conversation identity. Never reuse `RecordingPasteTarget`,
   `FocusLockService`, or any exact-input resolver for prompt scoping.
+
+### Inferring the active Codex task from recency, title, or shared Mode
+
+- **State:** REJECTED by implementation audit on 2026-09-01.
+- **Temptation:** Pick the newest Codex session file or database row, match a visible task title,
+  or assume recent VoiceInk dictations with the same Mode belong to the Codex task receiving the
+  next recording.
+- **Why it fails:** Codex tasks can run and update concurrently, titles are mutable and non-unique,
+  and one VoiceInk Mode intentionally spans apps and conversations. Any of those heuristics can
+  silently send unrelated conversation text to OpenAI as prompt context.
+- **Use instead:** Only while the verified Codex host is frontmost, read the newest `active=true`
+  event for the current Codex process's visible primary renderer. Require its valid thread UUID to
+  resolve to exactly one date-bounded native session file, then parse only bounded user/assistant
+  message text. A later primary `active=false`, missing/ambiguous file, unreadable tail, or any
+  identity failure must produce no Codex messages and allow the documented History fallback.
+  Never activate Codex, inspect its Accessibility tree, scrape the screen, or log thread/message
+  content for this feature.
+- **Reconsider only if:** Codex replaces the selected-view event/session format with a documented
+  local active-task API. Update the exact parser and fail-closed tests before accepting that API;
+  do not substitute a recency or title heuristic during migration.
 
 ### Appending recent-transcript context to the shared provider prompt
 

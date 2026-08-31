@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-01T00:20:00Z
+**Trigger:** Ethan asked why VoiceInk++ was not using the last few Codex task messages to resolve dictated references and spelling.
+**Symptom:** The opt-in recent-context feature sent only recent VoiceInk History dictations from the same Mode, so a phrase such as "spell it the way this Codex task just used it" had no exact task conversation context.
+**Root cause:** The original "recent chat history" request had been narrowed during implementation to VoiceInk's own dictation history. Same-Mode History is a useful fallback but cannot identify one Codex task and can mix unrelated chats that share a Mode.
+**Fix:** Build 315 reads Codex's current-process, primary selected-view activity event only while the verified Codex host is frontmost, maps its opaque UUIDv7 thread ID to exactly one native local session JSONL, and freezes up to four bounded user/assistant messages for the recording. System, developer, tool, environment, delegation, draft-composer, and other response items are excluded; prompt content and thread identity are never logged. Exact Codex messages supersede History for that recording, while an unproven/non-Codex boundary fails back to the existing same-Mode History context. This read-only source is structurally separate from Accessibility, paste destinations, Primary/Next routing, and delivery.
+**Commit:** build 315 release change set
+**Guard:** The canonical Mini focused run named and passed all 36 selected tests, including eight `CodexConversationContextTests`, the complete existing recent-context suite, and the Primary current-input, second-chance, and realtime-HUD isolation guards. Release-wide and installed-runtime evidence is recorded separately at the release boundary.
+---
+
+---
 **Date:** 2026-08-31T22:17:57Z
 **Trigger:** Ethan: VoiceInk lagged/froze after Rekordbox opened; investigate the previous failed fix and install the repair.
 **Symptom:** After Rekordbox changed the selected Scarlett 18i8 from 48 kHz to 44.1 kHz without changing its AudioDeviceID, VoiceInk++ could connect GPT Live yet send zero chunks and leave a 4096-byte header-only WAV.
