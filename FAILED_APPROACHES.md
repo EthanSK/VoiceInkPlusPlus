@@ -1294,6 +1294,17 @@ No row may be promoted merely because a later build reused part of it.
 - **Rule:** Transfer a signed `.app` as an archive stream and verify version, signature, CDHash, and
   entitlement after extraction.
 
+### Packaging the app from test-action DerivedData
+
+- **State:** REJECTED by build-315 release inspection on 2026-09-01.
+- **Failure:** The app host produced by `xcodebuild test` was deep/strict-signable but contained the
+  injected unit-test bundle plus XCTest/Testing frameworks and support dylibs. Passing tests and a
+  valid signature therefore did not make that host a clean install artifact.
+- **Rule:** Run a separate ordinary `xcodebuild build` in a fresh DerivedData directory for the
+  install candidate. Before signing or archiving it, fail if the app contains any `*.xctest` item
+  or XCTest-named payload. Never copy the app from a test action's Products directory into the
+  release merely because its executable and build number match.
+
 ### Building on the live MacBook
 
 - **State:** REJECTED workflow.
