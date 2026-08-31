@@ -170,7 +170,7 @@ class TranscriptionPipeline {
         // closure's rewrite were ever lost downstream, this explicit flag forces the
         // raw-paste branch at delivery.
         let skipPostProcessingNow = skipPostProcessing()
-        let completionDispositionNow = completionDisposition()
+        var completionDispositionNow = RecordingCompletionDisposition.normalDelivery
         let recoverablePartialTranscriptNow = recoverablePartialTranscript()
         if transcription.recoverableRealtimeDraftText == nil,
            !recoverablePartialTranscriptNow
@@ -277,6 +277,8 @@ class TranscriptionPipeline {
                     context: transcriptionConfiguration.requestContext
                 )
             }
+            completionDispositionNow = completionDisposition() // A transcription-time double-click was ignored when this value froze before awaiting the provider. Freeze it now, before any Mode response or delivery. (Codex task: 01a039f7-873c-7c30-b3dc-af8a6724ace5)
+            transcription.preservesOriginalAudioForRecovery = transcription.preservesOriginalAudioForRecovery || completionDispositionNow == .clipboardOnly
             text = TranscriptionOutputFilter.filter(text)
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
             vippLog.info("pipeline: transcribe SUCCESS chars=\(text.count, privacy: .public) digest=\(TranscriptionLineageDigest.make(text), privacy: .public) elapsed=\(transcriptionDuration, format: .fixed(precision: 3), privacy: .public)s \(jobIdentity.logDescription, privacy: .public)")
@@ -458,6 +460,8 @@ class TranscriptionPipeline {
 
             transcription.transcriptionStatus = TranscriptionStatus.completed.rawValue
         } catch {
+            completionDispositionNow = completionDisposition() // Provider errors must honor Won't paste selected while that request was in flight, too.
+            transcription.preservesOriginalAudioForRecovery = transcription.preservesOriginalAudioForRecovery || completionDispositionNow == .clipboardOnly
             let errorDescription = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             // VIPPDebug: transcription threw. A URLError(.cancelled) here means the
             // upload/finalization Task was torn down (including Swift CancellationError

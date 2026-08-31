@@ -151,6 +151,10 @@ class RecordingShortcutManager: ObservableObject {
             finishRecordingToClipboard: { modeId in
                 await recorderUIManager.finishRecordingToClipboard(modeId: modeId)
             },
+            pendingClipboardOnlySessionID: { engine.pendingClipboardOnlySessionID },
+            selectPendingClipboardOnlyCompletion: { sessionID in
+                engine.selectPendingClipboardOnlyCompletion(sessionID: sessionID)
+            },
             cancelRecording: {
                 await recorderUIManager.cancelRecording()
             },
@@ -879,6 +883,8 @@ final class RecordingShortcutModeHandler {
         RecordingCompletionDisposition
     ) -> Void
     private let finishRecordingToClipboard: @MainActor (UUID?) async -> Bool
+    private let pendingClipboardOnlySessionID: @MainActor () -> UUID?
+    private let selectPendingClipboardOnlyCompletion: @MainActor (UUID) -> Bool
     private let cancelRecording: @MainActor () async -> Void
     private let reserveRecordingStart: @MainActor () async -> UUID?
     private let cancelRecordingStartReservation: @MainActor (UUID) -> Void
@@ -926,6 +932,7 @@ final class RecordingShortcutModeHandler {
     private var primaryPressCoordinator: PrimaryRecordingPressCoordinator
     private var primaryDuplicateChordCoalescer: PrimaryShortcutDuplicateChordCoalescer
     private var primaryStartDecisionTask: Task<Void, Never>?
+    private var pendingPrimaryClipboardTarget: (generation: Int, sessionID: UUID)?
     private var pendingPrimaryStartReservation: (
         generation: Int,
         requestID: UUID,
@@ -974,6 +981,8 @@ final class RecordingShortcutModeHandler {
             RecordingCompletionDisposition
         ) -> Void = { _ in },
         finishRecordingToClipboard: @escaping @MainActor (UUID?) async -> Bool = { _ in false },
+        pendingClipboardOnlySessionID: @escaping @MainActor () -> UUID? = { nil },
+        selectPendingClipboardOnlyCompletion: @escaping @MainActor (UUID) -> Bool = { _ in false },
         cancelRecording: @escaping @MainActor () async -> Void,
         reserveRecordingStart: @escaping @MainActor () async -> UUID? = { UUID() },
         cancelRecordingStartReservation: @escaping @MainActor (UUID) -> Void = { _ in },
@@ -995,6 +1004,8 @@ final class RecordingShortcutModeHandler {
         self.toggleRecordingPause = toggleRecordingPause
         self.setActiveRecordingCompletionDisposition = setActiveRecordingCompletionDisposition
         self.finishRecordingToClipboard = finishRecordingToClipboard
+        self.pendingClipboardOnlySessionID = pendingClipboardOnlySessionID
+        self.selectPendingClipboardOnlyCompletion = selectPendingClipboardOnlyCompletion
         self.cancelRecording = cancelRecording
         self.reserveRecordingStart = reserveRecordingStart
         self.cancelRecordingStartReservation = cancelRecordingStartReservation
@@ -1384,11 +1395,16 @@ final class RecordingShortcutModeHandler {
     ) async {
         switch primaryIdleStartCoordinator.registerPress(eventTime: eventTime) {
         case .deferStart(let generation):
+            pendingPrimaryClipboardTarget = pendingClipboardOnlySessionID().map {
+                (generation: generation, sessionID: $0)
+            } // Bind click two to the result present at click one, not an older card revealed if that result finishes meanwhile.
             guard canHandleShortcutAction() else {
+                pendingPrimaryClipboardTarget = nil
                 primaryIdleStartCoordinator.reset()
                 return
             }
             guard let requestID = await reserveRecordingStart() else {
+                pendingPrimaryClipboardTarget = nil
                 primaryIdleStartCoordinator.reset()
                 return
             }
@@ -1411,6 +1427,12 @@ final class RecordingShortcutModeHandler {
         case .cancelPendingStart:
             primaryStartDecisionTask?.cancel()
             primaryStartDecisionTask = nil
+            let target = pendingPrimaryClipboardTarget
+            pendingPrimaryClipboardTarget = nil
+            if let target {
+                let selected = selectPendingClipboardOnlyCompletion(target.sessionID)
+                vippLog.info("shortcut: Primary transcription double-click clipboard-only selected=\(selected, privacy: .public) paste=false")
+            }
             cancelPendingPrimaryStartReservation()
             vippLog.info("shortcut: Primary idle double-press canceled pending recording start")
 
@@ -1457,6 +1479,9 @@ final class RecordingShortcutModeHandler {
     private func commitPrimaryStart(
         _ pending: (generation: Int, requestID: UUID, modeId: UUID?)
     ) async {
+        if pendingPrimaryClipboardTarget?.generation == pending.generation {
+            pendingPrimaryClipboardTarget = nil
+        }
         guard recordingState() == .idle,
               canHandleShortcutAction() else {
             cancelRecordingStartReservation(pending.requestID)
@@ -1480,6 +1505,7 @@ final class RecordingShortcutModeHandler {
     }
 
     private func cancelPendingPrimaryStartDecision() {
+        pendingPrimaryClipboardTarget = nil
         primaryStartDecisionTask?.cancel()
         primaryStartDecisionTask = nil
         primaryIdleStartCoordinator.reset()

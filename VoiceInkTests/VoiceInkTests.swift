@@ -2026,10 +2026,80 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func idlePrimarySinglePressReservesImmediatelyThenStartsAfterWindow() async {
+    @Test(arguments: [false, true]) func transcribingPrimaryDoubleClickSelectsFirstClicksResultWithoutStarting(replaceResult: Bool) async {
+        let state = PrimaryShortcutHandlerTestState(recordingState: .idle, isRecorderVisible: true)
+        let session = RecordingSession(phase: .transcribing)
+        let original = UUID()
+        var current = original
+        var selected: [UUID] = []
+        var canceledReservations = 0
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in state.toggle(destination: destination) },
+            pendingClipboardOnlySessionID: { current },
+            selectPendingClipboardOnlyCompletion: { id in
+                selected.append(id)
+                return id == current && session.selectPendingClipboardOnlyCompletion()
+            },
+            cancelRecording: { Issue.record("Won't paste must not cancel the provider") },
+            cancelRecordingStartReservation: { _ in canceledReservations += 1 },
+            primaryStartDebounceInterval: 0.05,
+            primaryDuplicateChordInterval: 0.005
+        )
+        await handler.handleKeyDown(action: .primaryRecording, eventTime: 90, mode: .toggle)
+        await handler.handleKeyUp(action: .primaryRecording, eventTime: 90.001, mode: .toggle)
+        if replaceResult { current = UUID() } // If the first result finishes, the gesture must not silently select another card.
+        await handler.handleKeyDown(action: .primaryRecording, eventTime: 90.03, mode: .toggle)
+        await handler.handleKeyUp(action: .primaryRecording, eventTime: 90.031, mode: .toggle)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        #expect(selected == [original])
+        #expect(session.completionDisposition == (replaceResult ? .normalDelivery : .clipboardOnly))
+        #expect(canceledReservations == 1)
+        #expect(state.toggleDestinations.isEmpty)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test func pendingTranscriptionClipboardSelectionFreezesBeforeModeEffects() {
+        let session = RecordingSession(phase: .transcribing)
+        #expect(session.selectPendingClipboardOnlyCompletion())
+        #expect(session.completionDisposition == .clipboardOnly)
+        #expect(!session.shouldCancel)
+        #expect(session.freezeCompletionDisposition() == .clipboardOnly)
+        #expect(!session.selectPendingClipboardOnlyCompletion())
+
+        let completedProvider = RecordingSession(phase: .delivering)
+        #expect(completedProvider.freezeCompletionDisposition() == .normalDelivery)
+        #expect(!completedProvider.selectPendingClipboardOnlyCompletion())
+        #expect(completedProvider.completionDisposition == .normalDelivery)
+
+        let canceled = RecordingSession(phase: .transcribing)
+        canceled.shouldCancel = true
+        #expect(!canceled.selectPendingClipboardOnlyCompletion())
+        #expect(!RecordingSession().selectPendingClipboardOnlyCompletion())
+    }
+
+    @Test func transcriptionCompletionPolicyResolvesAfterProviderSuccessOrFailure() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"), encoding: .utf8)
+        let wait = try #require(source.range(of: "text = try await session.transcribe(audioURL: audioURL)"))
+        let freeze = try #require(source.range(of: "completionDispositionNow = completionDisposition()"))
+        let formatting = try #require(source.range(of: "let formattingConfiguration = resolveFormattingConfiguration()"))
+        #expect(wait.lowerBound < freeze.lowerBound)
+        #expect(freeze.lowerBound < formatting.lowerBound)
+        let failure = try #require(source.range(of: "completionDispositionNow = completionDisposition()", range: freeze.upperBound..<source.endIndex))
+        let suppression = try #require(source.range(of: "shouldSuppressFailureNotification: shouldCancel()"))
+        #expect(failure.lowerBound < suppression.lowerBound)
+        #expect(source.contains("transcription.preservesOriginalAudioForRecovery || completionDispositionNow == .clipboardOnly"))
+    }
+
+    @MainActor
+    @Test(arguments: [false, true]) func idlePrimarySinglePressReservesImmediatelyThenStartsAfterWindow(hasPendingTranscription: Bool) async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .idle,
-            isRecorderVisible: false
+            isRecorderVisible: hasPendingTranscription
         )
         let requestID = UUID()
         var reserved: [UUID] = []
@@ -2040,6 +2110,11 @@ struct VoiceInkTests {
             recordingState: { state.recordingState },
             toggleRecorderPanel: { _, destination in
                 state.toggle(destination: destination)
+            },
+            pendingClipboardOnlySessionID: { hasPendingTranscription ? UUID() : nil },
+            selectPendingClipboardOnlyCompletion: { _ in
+                Issue.record("A single press must leave the pending transcription's delivery unchanged")
+                return false
             },
             cancelRecording: {},
             reserveRecordingStart: {

@@ -103,6 +103,14 @@ the ordinary empty canceled record and does not overwrite the clipboard. These r
 excluded from automatic audio/transcription cleanup; permanent deletion requires the separate
 confirmed History action.
 
+After a normal stop, Primary double-click also selects **Won’t paste** while that result is still
+transcribing and no newer recording owns the microphone. Click one identifies the newest pending
+result; click two cancels the prospective new recording and changes only that result to clipboard-only.
+A single click still starts a new dictation after the existing debounce. If the identified result has
+already finished transcription, do not select an older card or claim that an issued paste can be undone.
+The policy freezes before post-processing/Mode effects. Provider errors remain quiet for this deliberate
+no-paste route, and no extra playback command is sent because the earlier stop already restored owned media.
+
 The normal single-stop decision still uses the shorter of the macOS double-click interval and 0.45
 seconds, so ordinary dictation stays responsive. After click two has already canceled that pending
 stop, its clipboard finish waits for click three through the full macOS multi-click interval (verified

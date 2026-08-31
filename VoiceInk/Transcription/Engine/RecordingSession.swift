@@ -222,13 +222,31 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // re-renders its on/off (subdued vs amber) state the instant it flips.
     @Published var skipPostProcessing: Bool = false
 
-    // A genuine Primary double-click sets this one-shot value before the session
-    // leaves `.recording`. It must travel with this exact session because another
+    // A genuine Primary double-click sets this one-shot value during capture or
+    // pending transcription. It must travel with this exact session because another
     // recording may already exist while this one finishes in the FIFO pipeline.
     // Unlike the separate raw/skip toggle, clipboard-only completion still applies
     // the session's normal formatting/enhancement; it changes only the final side
     // effect so no destination app is touched.
     @Published var completionDisposition: RecordingCompletionDisposition = .normalDelivery
+
+    private(set) var acceptsCompletionDispositionChanges = true
+
+    /// Changes a pending transcription to clipboard-only without canceling its provider.
+    @discardableResult
+    func selectPendingClipboardOnlyCompletion() -> Bool {
+        guard acceptsCompletionDispositionChanges,
+              phase == .transcribing || phase == .delivering,
+              !shouldCancel else { return false }
+        completionDisposition = .clipboardOnly
+        return true
+    }
+
+    /// Freezes no-paste intent after transcription, before Mode effects can begin.
+    func freezeCompletionDisposition() -> RecordingCompletionDisposition {
+        acceptsCompletionDispositionChanges = false // A late click must not claim Won't paste after a Mode response or delivery has already begun. (Codex task: 01a039f7-873c-7c30-b3dc-af8a6724ace5)
+        return completionDisposition
+    }
 
     // Realtime partials normally exist only in the recorder HUD and are cleared when
     // capture stops. Keep one private per-session snapshot so an explicit cancel while

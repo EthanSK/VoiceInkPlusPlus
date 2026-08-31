@@ -312,6 +312,23 @@ class VoiceInkEngine: NSObject, ObservableObject {
         sessions.last { $0.phase == .transcribing || $0.phase == .delivering }
     }
 
+    /// Identifies only the newest pending result when Primary begins an idle gesture.
+    var pendingClipboardOnlySessionID: UUID? {
+        guard activeRecordingSession == nil,
+              let session = topInFlightSession,
+              session.acceptsCompletionDispositionChanges,
+              !session.shouldCancel else { return nil }
+        return session.id
+    }
+
+    /// Applies Won't paste to the first click's result, never an older replacement.
+    @discardableResult
+    func selectPendingClipboardOnlyCompletion(sessionID: UUID) -> Bool {
+        guard pendingClipboardOnlySessionID == sessionID,
+              let session = topInFlightSession else { return false }
+        return session.selectPendingClipboardOnlyCompletion() // Capture already stopped and restored its owned playback; do not send another media/YouTube toggle here.
+    }
+
     func retargetMostRecentPendingTranscriptionToFocusedInput() -> PendingPasteRetargetResult {
         guard let session = sessions.last(where: {
             ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteRetargeting
@@ -1486,7 +1503,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 session?.skipPostProcessing == true
             },
             completionDisposition: { [weak session] in
-                session?.completionDisposition ?? .normalDelivery
+                session?.freezeCompletionDisposition() ?? .normalDelivery
             },
             recoverablePartialTranscript: { [weak session] in
                 session?.recoverablePartialTranscript ?? ""
