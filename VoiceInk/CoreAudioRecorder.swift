@@ -113,8 +113,7 @@ private let preparedInputStreamFormatListener: AudioUnitPropertyListenerProc = {
     in
     guard propertyID == kAudioUnitProperty_StreamFormat,
           scope == kAudioUnitScope_Input,
-          element == 1,
-          let userData else {
+          element == 1 else {
         return
     }
     let recorder = Unmanaged<CoreAudioRecorder>.fromOpaque(userData).takeUnretainedValue()
