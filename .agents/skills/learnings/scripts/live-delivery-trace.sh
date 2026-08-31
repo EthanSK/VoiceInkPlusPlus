@@ -233,9 +233,13 @@ run_trace() {
   mkfifo "$FIFO_PATH"
 
   cleanup_runner() {
-    if [ -n "$stream_pid" ] && pid_is_live "$stream_pid" && stream_is_ours "$stream_pid"; then
-      kill -TERM "$stream_pid" 2>/dev/null || true
-      wait "$stream_pid" 2>/dev/null || true
+    # A foreground diagnostic can interrupt while Bash is unwinding `run_trace`'s
+    # local scope. Copy the dynamically scoped value defensively so `set -u` cannot
+    # abort cleanup and strand the exact managed log-stream child.
+    local managed_stream_pid="${stream_pid-}"
+    if [ -n "$managed_stream_pid" ] && pid_is_live "$managed_stream_pid" && stream_is_ours "$managed_stream_pid"; then
+      kill -TERM "$managed_stream_pid" 2>/dev/null || true
+      wait "$managed_stream_pid" 2>/dev/null || true
     fi
     rm -f "$STREAM_PID_FILE" "$FIFO_PATH"
     if [ "$(read_pid "$RUNNER_PID_FILE" || true)" = "$$" ]; then
