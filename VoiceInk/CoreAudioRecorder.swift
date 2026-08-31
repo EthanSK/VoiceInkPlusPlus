@@ -63,6 +63,64 @@ struct AudioInputMonoMixdown {
     }
 }
 
+/// Immutable evidence that a prepared AUHAL still describes the selected device.
+///
+/// Core Audio can keep the same AudioDeviceID while another client changes the device's nominal
+/// sample rate. Comparing only device identity then reuses a callback format configured for the old
+/// rate and can yield a header-only WAV. Keep both the AUHAL input stream and the device's nominal
+/// rate in the reuse boundary; this type never writes either value back to the device.
+struct PreparedAudioInputFormat: Equatable {
+    let streamSampleRate: Double
+    let nominalSampleRate: Double
+    let formatID: AudioFormatID
+    let formatFlags: AudioFormatFlags
+    let bytesPerPacket: UInt32
+    let framesPerPacket: UInt32
+    let bytesPerFrame: UInt32
+    let channelsPerFrame: UInt32
+    let bitsPerChannel: UInt32
+
+    init(
+        streamFormat: AudioStreamBasicDescription,
+        nominalSampleRate: Double
+    ) {
+        self.streamSampleRate = streamFormat.mSampleRate
+        self.nominalSampleRate = nominalSampleRate
+        self.formatID = streamFormat.mFormatID
+        self.formatFlags = streamFormat.mFormatFlags
+        self.bytesPerPacket = streamFormat.mBytesPerPacket
+        self.framesPerPacket = streamFormat.mFramesPerPacket
+        self.bytesPerFrame = streamFormat.mBytesPerFrame
+        self.channelsPerFrame = streamFormat.mChannelsPerFrame
+        self.bitsPerChannel = streamFormat.mBitsPerChannel
+    }
+
+    static func canReuse(
+        prepared: PreparedAudioInputFormat?,
+        current: PreparedAudioInputFormat?
+    ) -> Bool {
+        guard let prepared, let current else { return false }
+        return prepared == current
+    }
+}
+
+private let preparedInputStreamFormatListener: AudioUnitPropertyListenerProc = {
+    userData,
+    _,
+    propertyID,
+    scope,
+    element
+    in
+    guard propertyID == kAudioUnitProperty_StreamFormat,
+          scope == kAudioUnitScope_Input,
+          element == 1,
+          let userData else {
+        return
+    }
+    let recorder = Unmanaged<CoreAudioRecorder>.fromOpaque(userData).takeUnretainedValue()
+    recorder.notePreparedInputFormatMayHaveChanged()
+}
+
 // MARK: - Core Audio Recorder (AUHAL-based, does not change system default device)
 final class CoreAudioRecorder: @unchecked Sendable {
 
@@ -82,6 +140,10 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private var isAudioUnitInitialized = false
     private var currentDeviceID: AudioDeviceID = 0
     private var recordingURL: URL?
+    private var preparedInputFormat: PreparedAudioInputFormat?
+    private let preparedInputFormatInvalidated = ManagedAtomic(false)
+    private var observesInputStreamFormat = false
+    private let onPreparedInputFormatChanged: @Sendable () -> Void
 
     // Device format (what the hardware provides)
     private var deviceFormat = AudioStreamBasicDescription()
@@ -133,7 +195,9 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
     // MARK: - Initialization
 
-    init() {}
+    init(onPreparedInputFormatChanged: @escaping @Sendable () -> Void = {}) {
+        self.onPreparedInputFormatChanged = onPreparedInputFormatChanged
+    }
 
     deinit {
         teardown()
@@ -168,6 +232,13 @@ final class CoreAudioRecorder: @unchecked Sendable {
             try setupInputCallback()
 
             try initializeAudioUnit()
+
+            preparedInputFormat = currentInputFormat(for: deviceID)
+            guard preparedInputFormat != nil else {
+                throw CoreAudioRecorderError.failedToGetDeviceFormat(status: kAudio_ParamError)
+            }
+            preparedInputFormatInvalidated.store(false, ordering: .releasing)
+            setupPreparedInputFormatListener()
         } catch {
             teardownPreparedAudioUnit()
             throw error
@@ -392,6 +463,13 @@ final class CoreAudioRecorder: @unchecked Sendable {
             throw CoreAudioRecorderError.failedToInitialize(status: status)
         }
         isAudioUnitInitialized = true
+
+        preparedInputFormat = PreparedAudioInputFormat(
+            streamFormat: newDeviceFormat,
+            nominalSampleRate: getNominalSampleRate(deviceID: newDeviceID)
+                ?? newDeviceFormat.mSampleRate
+        )
+        preparedInputFormatInvalidated.store(false, ordering: .releasing)
 
         if !wasPaused {
             status = AudioOutputUnitStart(unit)
@@ -748,7 +826,88 @@ final class CoreAudioRecorder: @unchecked Sendable {
     }
 
     private func isPrepared(for deviceID: AudioDeviceID) -> Bool {
-        audioUnit != nil && isAudioUnitInitialized && currentDeviceID == deviceID && isDeviceAvailable(deviceID)
+        guard audioUnit != nil,
+              isAudioUnitInitialized,
+              currentDeviceID == deviceID,
+              isDeviceAvailable(deviceID) else {
+            return false
+        }
+
+        // Listener delivery is asynchronous and not guaranteed to precede Start. Always re-read
+        // the live values at the irreversible reuse boundary as well. A mismatch rebuilds AUHAL;
+        // an advisory notification whose values remained identical safely clears the dirty bit.
+        let currentFormat = currentInputFormat(for: deviceID)
+        guard PreparedAudioInputFormat.canReuse(
+            prepared: preparedInputFormat,
+            current: currentFormat
+        ) else {
+            preparedInputFormatInvalidated.store(true, ordering: .releasing)
+            logger.notice(
+                "Prepared input format is stale; rebuilding AUHAL deviceID=\(deviceID, privacy: .public) preparedStreamRate=\(self.preparedInputFormat?.streamSampleRate ?? -1, privacy: .public) currentStreamRate=\(currentFormat?.streamSampleRate ?? -1, privacy: .public) preparedNominalRate=\(self.preparedInputFormat?.nominalSampleRate ?? -1, privacy: .public) currentNominalRate=\(currentFormat?.nominalSampleRate ?? -1, privacy: .public)"
+            )
+            return false
+        }
+
+        if preparedInputFormatInvalidated.exchange(false, ordering: .acquiringAndReleasing) {
+            logger.info("Prepared input format notification revalidated without a material change deviceID=\(deviceID, privacy: .public)")
+        }
+        return true
+    }
+
+    var hasInvalidatedPreparedInputFormat: Bool {
+        preparedInputFormatInvalidated.load(ordering: .acquiring)
+    }
+
+    fileprivate func notePreparedInputFormatMayHaveChanged() {
+        // Property callbacks may arrive on a Core Audio thread. Do no hardware work here. The
+        // atomic invalidation makes the next serial prepare fail closed; Recorder may also warm the
+        // replacement while idle. During capture, the current unit is deliberately left untouched.
+        if !preparedInputFormatInvalidated.exchange(true, ordering: .acquiringAndReleasing) {
+            logger.notice("AUHAL reported a selected-device input stream-format change; prepared capture marked stale")
+            onPreparedInputFormatChanged()
+        }
+    }
+
+    private func currentInputFormat(for deviceID: AudioDeviceID) -> PreparedAudioInputFormat? {
+        guard let audioUnit else { return nil }
+
+        var currentStreamFormat = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let status = AudioUnitGetProperty(
+            audioUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            1,
+            &currentStreamFormat,
+            &formatSize
+        )
+        guard status == noErr else {
+            logger.warning("Could not revalidate AUHAL input stream format status=\(status, privacy: .public)")
+            return nil
+        }
+
+        return PreparedAudioInputFormat(
+            streamFormat: currentStreamFormat,
+            nominalSampleRate: getNominalSampleRate(deviceID: deviceID)
+                ?? currentStreamFormat.mSampleRate
+        )
+    }
+
+    private func setupPreparedInputFormatListener() {
+        guard let audioUnit, !observesInputStreamFormat else { return }
+        let status = AudioUnitAddPropertyListener(
+            audioUnit,
+            kAudioUnitProperty_StreamFormat,
+            preparedInputStreamFormatListener,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        if status == noErr {
+            observesInputStreamFormat = true
+        } else {
+            // The start-boundary live comparison remains authoritative if a device does not expose
+            // property notifications. Listener failure may cost warm reconfiguration, not safety.
+            logger.warning("Could not observe AUHAL input stream-format changes status=\(status, privacy: .public)")
+        }
     }
 
     private func validateDevice(_ deviceID: AudioDeviceID) throws {
@@ -772,6 +931,18 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
     private func teardownPreparedAudioUnit() {
         if let unit = audioUnit {
+            if observesInputStreamFormat {
+                let status = AudioUnitRemovePropertyListenerWithUserData(
+                    unit,
+                    kAudioUnitProperty_StreamFormat,
+                    preparedInputStreamFormatListener,
+                    Unmanaged.passUnretained(self).toOpaque()
+                )
+                if status != noErr {
+                    logger.warning("Could not remove AUHAL input stream-format listener status=\(status, privacy: .public)")
+                }
+            }
+            observesInputStreamFormat = false
             AudioOutputUnitStop(unit)
             if isAudioUnitInitialized {
                 AudioUnitUninitialize(unit)
@@ -780,6 +951,8 @@ final class CoreAudioRecorder: @unchecked Sendable {
             audioUnit = nil
         }
         isAudioUnitInitialized = false
+        preparedInputFormat = nil
+        preparedInputFormatInvalidated.store(false, ordering: .releasing)
         freeBuffers()
     }
 
@@ -1125,6 +1298,26 @@ final class CoreAudioRecorder: @unchecked Sendable {
         )
 
         return status == noErr ? bufferSize : nil
+    }
+
+    private func getNominalSampleRate(deviceID: AudioDeviceID) -> Double? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var sampleRate: Float64 = 0
+        var propertySize = UInt32(MemoryLayout<Float64>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &propertySize,
+            &sampleRate
+        )
+        guard status == noErr, sampleRate > 0 else { return nil }
+        return sampleRate
     }
 
     private func getPreferredInputChannels(deviceID: AudioDeviceID) -> [UInt32]? {

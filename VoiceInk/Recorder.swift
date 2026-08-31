@@ -129,6 +129,22 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
+    private func makeCoreAudioRecorder() -> CoreAudioRecorder {
+        CoreAudioRecorder { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard !self.deviceManager.isRecordingActive else {
+                    // A format notification is advisory during capture. Tearing down AUHAL here
+                    // would truncate the open WAV and realtime stream; stopRecording performs the
+                    // deferred rebuild immediately after it closes that recording's input gate.
+                    self.logger.notice("Selected-device input format changed during capture; reprepare deferred until stop")
+                    return
+                }
+                self.schedulePrepareForCurrentDevice(reason: "input-format-changed")
+            }
+        }
+    }
+
     private func handleDeviceSwitchRequired(_ notification: Notification) async {
         guard !isReconfiguring else { return }
         guard let recorder = recorder else { return }
@@ -200,7 +216,7 @@ class Recorder: NSObject, ObservableObject {
         audioMeterUpdateTimer?.cancel()
         muteSystemAudio()
 
-        let coreAudioRecorder = recorder ?? CoreAudioRecorder()
+        let coreAudioRecorder = recorder ?? makeCoreAudioRecorder()
         let callbackForThisStart = onAudioChunk
         recorder = coreAudioRecorder
 
@@ -393,12 +409,26 @@ class Recorder: NSObject, ObservableObject {
 
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
+        let hardwareLogger = logger
         let callbackGenerationAtStop = audioChunkGeneration
         activeHardwareStopCount += 1
 
         await withCheckedContinuation { continuation in
             audioSetupQueue.async {
                 currentRecorder?.stopRecording()
+                if let currentRecorder,
+                   currentRecorder.hasInvalidatedPreparedInputFormat,
+                   currentRecorder.currentDevice != 0 {
+                    // The active recording is fully closed before rebuilding. Keeping this on the
+                    // serial hardware queue also prevents a rapid successor start from overtaking
+                    // the refresh and inheriting the stale same-device format.
+                    do {
+                        try currentRecorder.prepare(deviceID: currentRecorder.currentDevice)
+                        hardwareLogger.notice("Reprepared selected input after deferred format change deviceID=\(currentRecorder.currentDevice, privacy: .public)")
+                    } catch {
+                        hardwareLogger.warning("Deferred selected-input format reprepare failed deviceID=\(currentRecorder.currentDevice, privacy: .public) error=\(error, privacy: .public)")
+                    }
+                }
                 currentRecorder?.onAudioChunk = nil
                 continuation.resume()
             }
@@ -531,7 +561,7 @@ class Recorder: NSObject, ObservableObject {
             return
         }
 
-        let coreAudioRecorder = recorder ?? CoreAudioRecorder()
+        let coreAudioRecorder = recorder ?? makeCoreAudioRecorder()
         coreAudioRecorder.onAudioChunk = onAudioChunk
         recorder = coreAudioRecorder
 

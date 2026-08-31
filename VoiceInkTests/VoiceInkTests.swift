@@ -2442,6 +2442,76 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func sameDeviceSampleRateChangeInvalidatesPreparedAUHAL() {
+        let fortyEightKilohertz = AudioStreamBasicDescription(
+            mSampleRate: 48_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 8,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 8,
+            mChannelsPerFrame: 2,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        var fortyFourPointOneKilohertz = fortyEightKilohertz
+        fortyFourPointOneKilohertz.mSampleRate = 44_100
+
+        let prepared = PreparedAudioInputFormat(
+            streamFormat: fortyEightKilohertz,
+            nominalSampleRate: 48_000
+        )
+        let unchanged = PreparedAudioInputFormat(
+            streamFormat: fortyEightKilohertz,
+            nominalSampleRate: 48_000
+        )
+        let changedStream = PreparedAudioInputFormat(
+            streamFormat: fortyFourPointOneKilohertz,
+            nominalSampleRate: 44_100
+        )
+        let changedNominalRate = PreparedAudioInputFormat(
+            streamFormat: fortyEightKilohertz,
+            nominalSampleRate: 44_100
+        )
+
+        #expect(PreparedAudioInputFormat.canReuse(prepared: prepared, current: unchanged))
+        #expect(!PreparedAudioInputFormat.canReuse(prepared: prepared, current: changedStream))
+        #expect(!PreparedAudioInputFormat.canReuse(prepared: prepared, current: changedNominalRate))
+        #expect(!PreparedAudioInputFormat.canReuse(prepared: prepared, current: nil))
+    }
+
+    @Test func formatChangeObserverNeverWritesDeviceRateOrRebuildsActiveCapture() throws {
+        let recorderSource = try repositorySource("VoiceInk/Recorder.swift")
+        let coreAudioSource = try repositorySource("VoiceInk/CoreAudioRecorder.swift")
+
+        #expect(coreAudioSource.contains("AudioUnitAddPropertyListener("))
+        #expect(coreAudioSource.contains("kAudioUnitProperty_StreamFormat"))
+        #expect(coreAudioSource.contains("kAudioDevicePropertyNominalSampleRate"))
+        #expect(!coreAudioSource.contains("AudioObjectSetPropertyData("))
+
+        let callbackStart = try #require(recorderSource.range(
+            of: "    private func makeCoreAudioRecorder() -> CoreAudioRecorder {"
+        ))
+        let callbackEnd = try #require(recorderSource.range(
+            of: "    private func handleDeviceSwitchRequired(",
+            range: callbackStart.upperBound..<recorderSource.endIndex
+        ))
+        let callbackBody = recorderSource[callbackStart.lowerBound..<callbackEnd.lowerBound]
+        #expect(callbackBody.contains("guard !self.deviceManager.isRecordingActive else"))
+        #expect(callbackBody.contains("reprepare deferred until stop"))
+        #expect(!callbackBody.contains("teardown()"))
+        #expect(!callbackBody.contains("stopRecording()"))
+
+        let hardwareStop = try #require(recorderSource.range(
+            of: "                currentRecorder?.stopRecording()"
+        ))
+        let deferredRefresh = try #require(recorderSource.range(
+            of: "currentRecorder.hasInvalidatedPreparedInputFormat",
+            range: hardwareStop.upperBound..<recorderSource.endIndex
+        ))
+        #expect(hardwareStop.lowerBound < deferredRefresh.lowerBound)
+    }
+
     @Test func capturePauseResumeNeverControlsPlaybackOrYouTubeHelper() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
