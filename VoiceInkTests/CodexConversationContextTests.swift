@@ -101,6 +101,39 @@ struct CodexConversationContextTests {
         #expect(prompt.count <= OpenAITranscriptionConfiguration.promptCharacterLimit)
     }
 
+    @Test func fourBoundedCodexMessagesFitTheGPTLivePromptLimit() throws {
+        let messages = (0..<CodexConversationContextPolicy.maximumMessages).map { index in
+            CodexConversationContextMessage(
+                role: index.isMultiple(of: 2) ? .user : .assistant,
+                text: String(repeating: Character(String(index)), count: 400)
+            )
+        }
+
+        let prompt = try #require(
+            CodexConversationContextPolicy.composedPrompt(
+                staticPrompt: nil,
+                messages: messages
+            )
+        )
+        let update = OpenAITranscriptionConfiguration.realtimeSessionUpdate(
+            language: "en",
+            prompt: prompt,
+            customVocabulary: ["REEEthan"]
+        )
+        let session = try #require(update["session"] as? [String: Any])
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let transcription = try #require(input["transcription"] as? [String: Any])
+        let providerPrompt = try #require(transcription["prompt"] as? String)
+
+        #expect(prompt.contains("\"messages\":"))
+        #expect(prompt.components(separatedBy: "\"role\":").count - 1 == 4)
+        #expect(prompt.contains(String(repeating: "0", count: 160)))
+        #expect(!prompt.contains(String(repeating: "0", count: 161)))
+        #expect(providerPrompt == prompt)
+        #expect(providerPrompt.count <= OpenAITranscriptionConfiguration.promptCharacterLimit)
+    }
+
     @Test @MainActor func exactCodexMessagesSupersedeSameModeHistoryWithoutLoadingIt() throws {
         let modeID = UUID()
         var historyLoads = 0

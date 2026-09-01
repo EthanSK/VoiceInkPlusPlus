@@ -6,7 +6,7 @@ struct TranscriptionRequestContext {
     /// the OpenAI transcription models receives exactly these legacy bytes.
     let prompt: String?
     /// Opt-in composed prompt (static prompt first, then exact active-Codex messages when
-    /// proven, otherwise recent same-Mode dictation context, inside the same 4,096-character
+    /// proven, otherwise recent same-Mode dictation context, inside GPT Live's 1,024-character
     /// cap). `nil` means "nothing eligible was appended", which keeps legacy bytes intact.
     let promptWithRecentContext: String?
     /// Vocabulary keywords frozen with this recording. `nil` means no snapshot was taken

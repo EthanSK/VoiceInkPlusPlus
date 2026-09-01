@@ -99,27 +99,28 @@ struct RecentTranscriptContextTests {
         )
     }
 
-    // MARK: - 4,096 cap and bounded excerpts
+    // MARK: - 1,024 cap and bounded excerpts
 
     @Test func composedPromptNeverExceedsTheOpenAIPromptCap() throws {
         let limit = OpenAITranscriptionConfiguration.promptCharacterLimit
-        #expect(limit == 4_096)
+        let staticPromptLength = 200
+        #expect(limit == 1_024)
         #expect(RecentTranscriptContextPolicy.maximumEntries == 3)
-        #expect(RecentTranscriptContextPolicy.maximumSuffixCharacters == 1_200)
+        #expect(RecentTranscriptContextPolicy.maximumSuffixCharacters == limit)
 
         let entries = (0..<RecentTranscriptContextPolicy.maximumEntries).map {
             entry(String($0), length: RecentTranscriptContextPolicy.maximumEntryCharacters)
         }
         let composed = try #require(
             RecentTranscriptContextPolicy.composedPrompt(
-                staticPrompt: String(repeating: "s", count: 900),
+                staticPrompt: String(repeating: "s", count: staticPromptLength),
                 entries: entries
             )
         )
 
         #expect(composed.count <= limit)
-        let suffix = String(composed.dropFirst(900 + 2))
-        #expect(suffix.count <= 1_200)
+        let suffix = String(composed.dropFirst(staticPromptLength + 2))
+        #expect(suffix.count <= limit)
         // Already inside the cap, so the provider builder's prefix() is a no-op and can
         // never slice an entry in half.
         #expect(OpenAITranscriptionConfiguration.normalizedPrompt(composed) == composed)

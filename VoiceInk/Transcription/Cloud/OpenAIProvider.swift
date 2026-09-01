@@ -63,12 +63,14 @@ enum OpenAITranscriptionConfiguration {
     static let accuracyDelay = "xhigh"
     static let realtimeSampleRate = 24_000
 
-    // VoiceInk++'s own conservative request caps, not proven absolute provider maxima.
-    // `RecentTranscriptContextPolicy` composes against `promptCharacterLimit` so the
-    // appended context block is already inside the cap and `normalizedPrompt`'s prefix
-    // never has to cut an entry in half.
+    // GPT Live rejects `session.audio.input.transcription.prompt` above 1,024
+    // characters before streaming starts. Keep one shared cap for realtime and the
+    // completed-audio fallback so both halves of a recording receive identical frozen
+    // context and a context-heavy request can never silently lose its live HUD partials.
+    // The context policies compose against this limit so `normalizedPrompt` only needs
+    // to bound a legacy static prompt, never slice a structured context block.
     static let keywordLimit = 100
-    static let promptCharacterLimit = 4_096
+    static let promptCharacterLimit = 1_024
 
     static var realtimeWebSocketURL: URL {
         var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!

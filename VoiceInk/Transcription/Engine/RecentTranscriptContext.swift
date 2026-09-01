@@ -65,9 +65,9 @@ struct RecentTranscriptContextCandidate: Equatable {
 enum RecentTranscriptContextPolicy {
     /// At most three recent excerpts. This is a recognition hint, not a conversation log.
     static let maximumEntries = 3
-    /// Independent suffix budget. The existing static prompt keeps the remainder of the
-    /// app's total OpenAI cap and is never shortened to make room for recent context.
-    static let maximumSuffixCharacters = 1_200
+    /// Independent suffix budget. The existing static prompt keeps the remainder of GPT
+    /// Live's total prompt cap and is never shortened to make room for recent context.
+    static let maximumSuffixCharacters = OpenAITranscriptionConfiguration.promptCharacterLimit
     /// Each completed History item contributes at most this much of its newest useful
     /// speech. Long dictations are excerpted at a sentence boundary (or, for one long
     /// sentence, a word boundary) instead of disappearing from context altogether.
@@ -223,8 +223,8 @@ enum RecentTranscriptContextPolicy {
     ///
     /// Returns `nil` whenever nothing may be appended, which is the signal for callers to
     /// send the untouched legacy `prompt` value. The existing static prompt always stays
-    /// intact and first. The JSON suffix has its own 1,200-character budget inside the same
-    /// total cap; if the chronological set does not fit, the oldest complete entry is
+    /// intact and first. The JSON suffix shares GPT Live's 1,024-character total cap; if
+    /// the chronological set does not fit, the oldest complete entry is
     /// removed. No entry is ever sliced or allowed to impersonate the wrapper structure.
     static func composedPrompt(
         staticPrompt: String?,
