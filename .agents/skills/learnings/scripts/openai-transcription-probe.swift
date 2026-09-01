@@ -25,6 +25,15 @@ private let defaultsDomain = "com.ethansk.VoiceInkPlusPlus"
 private let keyName = "LocalKeychain_openAIAPIKey"
 private let liveModel = "gpt-live-transcribe"
 private let completedModel = "gpt-transcribe"
+private let providerPromptCharacterLimit = 1_024
+private let probePrompt: String = {
+    let seed = "Synthetic VoiceInk provider verification context. "
+    let repeated = String(
+        repeating: seed,
+        count: (providerPromptCharacterLimit / seed.count) + 1
+    )
+    return String(repeated.prefix(providerPromptCharacterLimit))
+}()
 
 private func storedAPIKey() throws -> String {
     guard let data = UserDefaults(suiteName: defaultsDomain)?.data(forKey: keyName),
@@ -114,7 +123,7 @@ private func probeLive(apiKey: String, pcmURL: URL) async throws -> String {
                     "transcription": [
                         "model": liveModel,
                         "delay": "xhigh",
-                        "prompt": "Synthetic VoiceInk provider verification.",
+                        "prompt": probePrompt,
                         "languages": ["en"],
                         "keywords": ["VoiceInk", "transcription"],
                     ],
@@ -169,7 +178,7 @@ private func probeLive(apiKey: String, pcmURL: URL) async throws -> String {
             guard deltaCount > 0 else {
                 throw ProbeFailure.server("live completion arrived without any delta")
             }
-            print("LIVE_OK session_updated=true deltas=\(deltaCount) delay=xhigh language=en keywords=2")
+            print("LIVE_OK session_updated=true deltas=\(deltaCount) delay=xhigh language=en keywords=2 prompt_characters=\(probePrompt.count)")
             return final
         case "conversation.item.input_audio_transcription.failed", "error":
             throw ProbeFailure.server("live transcription rejected: \(serverMessage(json))")
@@ -201,7 +210,7 @@ private func probeCompleted(apiKey: String, wavURL: URL) async throws -> String 
     body.append(Data("\r\n".utf8))
     appendField("model", completedModel, boundary: boundary, to: &body)
     appendField("response_format", "json", boundary: boundary, to: &body)
-    appendField("prompt", "Synthetic VoiceInk provider verification.", boundary: boundary, to: &body)
+    appendField("prompt", probePrompt, boundary: boundary, to: &body)
     appendField("languages[]", "en", boundary: boundary, to: &body)
     appendField("keywords[]", "VoiceInk", boundary: boundary, to: &body)
     appendField("keywords[]", "transcription", boundary: boundary, to: &body)
@@ -226,7 +235,7 @@ private func probeCompleted(apiKey: String, wavURL: URL) async throws -> String 
           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         throw ProbeFailure.server("completed-audio transcript was empty")
     }
-    print("COMPLETED_OK model=gpt-transcribe language_array=true keywords=2")
+    print("COMPLETED_OK model=gpt-transcribe language_array=true keywords=2 prompt_characters=\(probePrompt.count)")
     return text
 }
 

@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-01T23:39:47Z
+**Trigger:** Ethan reported that VoiceInk++ was again not transcribing his voice in realtime.
+**Symptom:** With Codex frontmost, build 315 showed no realtime HUD words; stop still produced and pasted a completed batch transcript, so the failure looked intermittent and app-specific.
+**Root cause:** Privacy-safe live logs proved the active Codex context expanded session.audio.input.transcription.prompt to 1,484-1,524 characters. GPT Live rejects any prompt above 1,024 before streaming connects, then the existing completed-audio fallback masked the startup failure.
+**Fix:** Commit 4b59919 shares the provider 1,024-character cap across realtime and completed-audio composition, bounds each of four Codex messages to 160 characters, keeps whole structured entries only, and adds a provider-visible four-message regression. The OpenAI probe now exercises exactly the same 1,024-character prompt on both paths.
+**Commit:** 4b59919fa972364d7c5d0cb6665ead4c7789764c
+**Guard:** The canonical Mini focused action named and passed 42 tests across the complete Codex/recent-context suites plus realtime-HUD, Primary, second-chance, and Next ownership guards. The exact build-316 commit then named and passed all 276 tests in 9 suites. The separately built candidate contains no XCTest payload and is installed with CDHash 917642d072ce5b7e133d8c99b6dc48b5a656de79, deep/strict validity, Automation and microphone entitlements; a post-install Codex recording must still prove promptChars <= 1024, Streaming connected, and Streaming first partial event.
+---
+
+
+---
 **Date:** 2026-09-01T00:20:00Z
 **Trigger:** Ethan asked why VoiceInk++ was not using the last few Codex task messages to resolve dictated references and spelling.
 **Symptom:** The opt-in recent-context feature sent only recent VoiceInk History dictations from the same Mode, so a phrase such as "spell it the way this Codex task just used it" had no exact task conversation context.

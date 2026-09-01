@@ -41,6 +41,13 @@ For a recorder stuck on **Transcribing**, diagnose the resolved provider before 
 
 For OpenAI GPT Live Transcribe work, use `scripts/openai-transcription-probe.swift` with synthetic PCM16 mono 24 kHz plus its WAV equivalent before building, installing, or changing active Modes. Require `session.updated`, at least one real delta, a non-empty completion, and a successful `gpt-transcribe` completed-audio fallback. The WebSocket connection is `wss://api.openai.com/v1/realtime?intent=transcription`; `gpt-live-transcribe` belongs only in `audio.input.transcription.model`. Never revive either rejected `?model=gpt-live-transcribe` or `?model=gpt-realtime-*` connection form. The probe reads the VoiceInk++ key from local secure preferences and must not print transcript contents or credentials.
 
+Keep every OpenAI realtime and completed-audio prompt within the provider's 1,024-character
+maximum. The probe must exercise exactly that boundary with the same prompt on both paths; a short
+probe prompt cannot detect a context-composition regression that makes GPT Live reject
+`session.audio.input.transcription.prompt` before the first partial. For context-bearing installed
+tests, require the counts-only trace to prove `promptChars <= 1024`, `Streaming connected`, and
+`Streaming first partial event`; a later batch-fallback paste does not prove realtime worked.
+
 Treat OpenAI transcription `prompt` as contextual guidance, never as a guaranteed output formatter.
 The API exposes no numeral-normalization switch: a physical `gpt-live-transcribe` test ignored an
 explicit number-word-to-digit example. Preserve live preferences until a documented dedicated
