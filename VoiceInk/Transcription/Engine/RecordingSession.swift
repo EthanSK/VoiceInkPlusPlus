@@ -38,6 +38,39 @@ enum RecordingCompletionDisposition: Equatable {
     case clipboardOnly
 }
 
+/// One recording's configured auto-send override.
+///
+/// This is a separate axis from `RecordingCompletionDisposition`: a Primary
+/// quadruple-click still performs the ordinary base-current-input paste, but
+/// deliberately suppresses the configured Return/Enter for this session only.
+/// Keeping the value on `RecordingSession` makes it survive asynchronous provider
+/// completion without becoming a global setting that can leak into the next capture.
+enum RecordingAutoSendDisposition: Equatable {
+    case configured
+    case suppressOnce
+}
+
+struct RecordingCompletionPolicy: Equatable {
+    let completionDisposition: RecordingCompletionDisposition
+    let autoSendDisposition: RecordingAutoSendDisposition
+
+    static let normal = RecordingCompletionPolicy(
+        completionDisposition: .normalDelivery,
+        autoSendDisposition: .configured
+    )
+}
+
+/// Updates made by the idle Primary classifier while it is bound to the newest
+/// eligible pending transcription. An idle gesture with no such session keeps the
+/// existing one-click-start/two-click-cancel contract and never invents a new route.
+enum PendingPrimaryCompletionGestureAction: Equatable {
+    case begin(decisionInterval: TimeInterval)
+    case selectClipboardOnly(continuationInterval: TimeInterval)
+    case continueTowardNoAutoSend(continuationInterval: TimeInterval)
+    case deliverWithoutAutoSend
+    case endUnchanged
+}
+
 /// One user-confirmation pulse in the recorder bar. The token belongs to the
 /// recording session so every mirrored monitor panel sees the same action, and
 /// the icon is derived from the destination route at the moment it is chosen.
@@ -230,7 +263,11 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
     // effect so no destination app is touched.
     @Published var completionDisposition: RecordingCompletionDisposition = .normalDelivery
 
+    @Published var autoSendDisposition: RecordingAutoSendDisposition = .configured
+
     private(set) var acceptsCompletionDispositionChanges = true
+    private var pendingPrimaryCompletionDecisionGeneration = 0
+    private var pendingPrimaryCompletionDecisionTask: Task<Void, Never>?
 
     /// Changes a pending transcription to clipboard-only without canceling its provider.
     @discardableResult
@@ -239,11 +276,89 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
               phase == .transcribing || phase == .delivering,
               !shouldCancel else { return false }
         completionDisposition = .clipboardOnly
+        autoSendDisposition = .configured
         return true
+    }
+
+    /// Applies one stage of a pending-transcription Primary gesture. The first click
+    /// temporarily holds the completion-policy freeze; click two selects Won't paste,
+    /// click three only extends the same bounded gesture, and click four atomically
+    /// restores normal paste while suppressing auto-send once. Each stage replaces the
+    /// prior timeout, so provider completion can never freeze the intermediate double
+    /// before a still-valid fourth click arrives.
+    @discardableResult
+    func applyPendingPrimaryCompletionGesture(
+        _ action: PendingPrimaryCompletionGestureAction
+    ) -> Bool {
+        guard acceptsCompletionDispositionChanges,
+              phase == .transcribing || phase == .delivering,
+              !shouldCancel else {
+            endPendingPrimaryCompletionGesture()
+            return false
+        }
+
+        switch action {
+        case .begin(let decisionInterval):
+            extendPendingPrimaryCompletionGesture(by: decisionInterval)
+        case .selectClipboardOnly(let continuationInterval):
+            completionDisposition = .clipboardOnly
+            autoSendDisposition = .configured
+            extendPendingPrimaryCompletionGesture(by: continuationInterval)
+        case .continueTowardNoAutoSend(let continuationInterval):
+            extendPendingPrimaryCompletionGesture(by: continuationInterval)
+        case .deliverWithoutAutoSend:
+            completionDisposition = .normalDelivery
+            autoSendDisposition = .suppressOnce
+            endPendingPrimaryCompletionGesture()
+        case .endUnchanged:
+            endPendingPrimaryCompletionGesture()
+        }
+        return true
+    }
+
+    private func extendPendingPrimaryCompletionGesture(by interval: TimeInterval) {
+        pendingPrimaryCompletionDecisionGeneration += 1
+        let generation = pendingPrimaryCompletionDecisionGeneration
+        pendingPrimaryCompletionDecisionTask?.cancel()
+        pendingPrimaryCompletionDecisionTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(max(0, interval) * 1_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.pendingPrimaryCompletionDecisionGeneration == generation else {
+                return
+            }
+            self.pendingPrimaryCompletionDecisionTask = nil
+        }
+    }
+
+    func endPendingPrimaryCompletionGesture() {
+        pendingPrimaryCompletionDecisionGeneration += 1
+        pendingPrimaryCompletionDecisionTask?.cancel()
+        pendingPrimaryCompletionDecisionTask = nil
+    }
+
+    /// Waits only for an explicitly active pending-transcription click sequence, then
+    /// freezes both delivery axes together before formatting, enhancement, response,
+    /// paste, or Return can begin.
+    func freezeCompletionPolicy() async -> RecordingCompletionPolicy {
+        while let task = pendingPrimaryCompletionDecisionTask {
+            await task.value
+        }
+        acceptsCompletionDispositionChanges = false
+        return RecordingCompletionPolicy(
+            completionDisposition: completionDisposition,
+            autoSendDisposition: autoSendDisposition
+        )
     }
 
     /// Freezes no-paste intent after transcription, before Mode effects can begin.
     func freezeCompletionDisposition() -> RecordingCompletionDisposition {
+        endPendingPrimaryCompletionGesture()
         acceptsCompletionDispositionChanges = false // A late click must not claim Won't paste after a Mode response or delivery has already begun. (Codex task: 01a039f7-873c-7c30-b3dc-af8a6724ace5)
         return completionDisposition
     }
@@ -514,6 +629,7 @@ final class RecordingSession: ObservableObject, Identifiable, RecorderStateProvi
 
     // Cancel + tear down this session's background context capture. Safe to call multiple times.
     func clearContext() {
+        endPendingPrimaryCompletionGesture()
         discardPasteTargetEnrichment()
         contextTasks.forEach { $0.cancel() }
         contextTasks.removeAll()

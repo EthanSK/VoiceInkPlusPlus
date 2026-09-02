@@ -213,6 +213,7 @@ private final class PrimaryShortcutHandlerTestState {
     var isRecorderVisible: Bool
     var toggleDestinations: [RecordingPasteDestination] = []
     var completionDispositions: [RecordingCompletionDisposition] = []
+    var autoSendDispositions: [RecordingAutoSendDisposition] = []
     var pauseCallCount = 0
 
     init(
@@ -243,6 +244,10 @@ private final class PrimaryShortcutHandlerTestState {
 
     func setCompletionDisposition(_ disposition: RecordingCompletionDisposition) {
         completionDispositions.append(disposition)
+    }
+
+    func setAutoSendDisposition(_ disposition: RecordingAutoSendDisposition) {
+        autoSendDispositions.append(disposition)
     }
 }
 
@@ -1275,6 +1280,46 @@ struct VoiceInkTests {
         ) == .performOverdueStart)
     }
 
+    @Test func pendingTranscriptionQuadrupleContinuesOnlyAfterBoundDouble() {
+        var coordinator = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: 0.45,
+            multiPressContinuationInterval: 0.8
+        )
+        #expect(coordinator.registerPress(
+            eventTime: 40
+        ) == .deferStart(generation: 1))
+        let pendingSecond = coordinator.registerPress(eventTime: 40.2)
+        #expect(pendingSecond == .cancelPendingStart)
+        let didArmPending = coordinator.armPendingCompletionContinuation()
+        #expect(didArmPending)
+        #expect(coordinator.registerPress(
+            eventTime: 40.5
+        ) == .continuePendingCompletionGesture(generation: 1))
+        #expect(coordinator.registerPress(
+            eventTime: 40.8
+        ) == .finishPendingCompletionWithoutAutoSend(generation: 1))
+        #expect(coordinator.registerPress(
+            eventTime: 40.9
+        ) == .ignoreCompletedQuadruplePress)
+
+        // No pending transcription means the same idle pair keeps its historical
+        // meaning; click three is only a consumed bounce, never a new idle gesture.
+        var ordinaryIdle = PrimaryIdleStartPressCoordinator(
+            startDecisionInterval: 0.45,
+            multiPressContinuationInterval: 0.8
+        )
+        #expect(ordinaryIdle.registerPress(
+            eventTime: 50
+        ) == .deferStart(generation: 1))
+        let ordinarySecond = ordinaryIdle.registerPress(eventTime: 50.2)
+        #expect(ordinarySecond == .cancelPendingStart)
+        // The handler deliberately does not arm this continuation when it did not
+        // capture an eligible pending session at click one.
+        #expect(ordinaryIdle.registerPress(
+            eventTime: 50.3
+        ) == .ignoreCompletedDoublePress)
+    }
+
     @Test func genuinePrimaryTriplePressPauses() {
         var coordinator = PrimaryRecordingPressCoordinator(
             doublePressInterval: 0.5
@@ -1293,14 +1338,43 @@ struct VoiceInkTests {
             eventTime: 10.4
         ) == .togglePause)
 
-        // Once Pause has actually settled, the next press begins a fresh paused
-        // gesture even when it follows the triple quickly. It becomes Resume only
-        // after the short window proves there was no second click.
+        // Click three pauses immediately, but retains one full-system continuation
+        // window so click four can finish this exact session without auto-send.
         #expect(coordinator.registerPress(
             recordingState: .paused,
             eventTime: 10.45
+        ) == .finishWithoutAutoSend)
+        #expect(!coordinator.hasPendingPausedResume)
+
+        // A fifth press in the same consumed burst cannot start/resume anything.
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 10.5
+        ) == .ignoreCompletedGesture)
+    }
+
+    @Test func primaryTripleWithoutFourthRemainsPausedAndLaterPressIsFresh() {
+        var coordinator = PrimaryRecordingPressCoordinator(
+            normalStopDecisionInterval: 0.45,
+            triplePressContinuationInterval: 0.8
+        )
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 20
+        ) == .deferNormalStop(generation: 1))
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 20.2
+        ) == .deferClipboardFinish(generation: 2))
+        #expect(coordinator.registerPress(
+            recordingState: .recording,
+            eventTime: 20.4
+        ) == .togglePause)
+        #expect(coordinator.hasPendingNoAutoSendFinish)
+        #expect(coordinator.registerPress(
+            recordingState: .paused,
+            eventTime: 21.21
         ) == .deferPausedResume(generation: 3))
-        #expect(coordinator.hasPendingPausedResume)
     }
 
     @Test func separatePrimaryDoublePressesNeverBecomePause() {
@@ -1510,6 +1584,33 @@ struct VoiceInkTests {
         let engineFinishBody = engineSource[toggleStart.lowerBound..<engineFinishEnd.lowerBound]
         #expect(engineFinishBody.contains("stopPlaybackDisposition: .restoreOwnedPlayback"))
         #expect(!engineFinishBody.contains("stopPlaybackDisposition: .preserveCurrentPlayback"))
+
+        let noAutoFinishStart = try #require(engineSource.range(
+            of: "    func finishActiveRecordingWithoutAutoSend(modeId: UUID? = nil) async -> Bool {"
+        ))
+        let noAutoToggleStart = try #require(engineSource.range(
+            of: "        await toggleRecord(",
+            range: noAutoFinishStart.upperBound..<engineSource.endIndex
+        ))
+        let noAutoFinishEnd = try #require(engineSource.range(
+            of: "        return true",
+            range: noAutoToggleStart.upperBound..<engineSource.endIndex
+        ))
+        let noAutoFinishBody = engineSource[
+            noAutoToggleStart.lowerBound..<noAutoFinishEnd.lowerBound
+        ]
+        #expect(noAutoFinishBody.contains(
+            "stopPasteDestination: .primaryCurrentInput"
+        ))
+        #expect(noAutoFinishBody.contains(
+            "completionDisposition: .normalDelivery"
+        ))
+        #expect(noAutoFinishBody.contains(
+            "autoSendDisposition: .suppressOnce"
+        ))
+        #expect(noAutoFinishBody.contains(
+            "stopPlaybackDisposition: .restoreOwnedPlayback"
+        ))
 
         let recorderSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent("VoiceInk/Recorder.swift"),
@@ -2123,6 +2224,63 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func transcribingPrimaryQuadruplePastesWithoutAutoSendAndConsumesFifth() async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .idle,
+            isRecorderVisible: true
+        )
+        let session = RecordingSession(phase: .transcribing)
+        var canceledReservations = 0
+        var startedRecordings = 0
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in
+                startedRecordings += 1
+                state.toggle(destination: destination)
+            },
+            pendingClipboardOnlySessionID: { session.id },
+            applyPendingPrimaryCompletionGesture: { id, action in
+                id == session.id && session.applyPendingPrimaryCompletionGesture(action)
+            },
+            cancelRecording: {
+                Issue.record("Pending quadruple must not cancel the provider")
+            },
+            cancelRecordingStartReservation: { _ in
+                canceledReservations += 1
+            },
+            primaryDoublePressInterval: 0.05,
+            primaryStartDebounceInterval: 0.05,
+            primaryTriplePressInterval: 0.1,
+            primaryDuplicateChordInterval: 0.005
+        )
+
+        for eventTime in [110.0, 110.02, 110.04, 110.06, 110.07] {
+            await handler.handleKeyDown(
+                action: .primaryRecording,
+                eventTime: eventTime,
+                mode: .toggle
+            )
+            await handler.handleKeyUp(
+                action: .primaryRecording,
+                eventTime: eventTime + 0.001,
+                mode: .toggle
+            )
+        }
+
+        let frozen = await session.freezeCompletionPolicy()
+        #expect(frozen == RecordingCompletionPolicy(
+            completionDisposition: .normalDelivery,
+            autoSendDisposition: .suppressOnce
+        ))
+        #expect(canceledReservations == 1)
+        #expect(startedRecordings == 0)
+        #expect(state.recordingState == .idle)
+        handler.reset()
+    }
+
+    @MainActor
     @Test func pendingTranscriptionClipboardSelectionFreezesBeforeModeEffects() {
         let session = RecordingSession(phase: .transcribing)
         #expect(session.selectPendingClipboardOnlyCompletion())
@@ -2142,18 +2300,102 @@ struct VoiceInkTests {
         #expect(!RecordingSession().selectPendingClipboardOnlyCompletion())
     }
 
+    @MainActor
+    @Test func pendingTranscriptionQuadrupleAtomicallyPastesWithoutAutoSend() async {
+        let session = RecordingSession(phase: .transcribing)
+        #expect(session.applyPendingPrimaryCompletionGesture(
+            .begin(decisionInterval: 1)
+        ))
+        #expect(session.applyPendingPrimaryCompletionGesture(
+            .selectClipboardOnly(continuationInterval: 1)
+        ))
+        #expect(session.completionDisposition == .clipboardOnly)
+        #expect(session.autoSendDisposition == .configured)
+        #expect(session.applyPendingPrimaryCompletionGesture(
+            .continueTowardNoAutoSend(continuationInterval: 1)
+        ))
+        #expect(session.applyPendingPrimaryCompletionGesture(
+            .deliverWithoutAutoSend
+        ))
+
+        let frozen = await session.freezeCompletionPolicy()
+        #expect(frozen == RecordingCompletionPolicy(
+            completionDisposition: .normalDelivery,
+            autoSendDisposition: .suppressOnce
+        ))
+        #expect(!session.selectPendingClipboardOnlyCompletion())
+
+        // A fresh session starts from configured auto-send; suppression is never global.
+        let nextSession = RecordingSession(phase: .transcribing)
+        let nextPolicy = await nextSession.freezeCompletionPolicy()
+        #expect(nextPolicy == .normal)
+    }
+
+    @MainActor
+    @Test func pendingTranscriptionDoubleFreezesClipboardOnlyAfterBoundedHold() async {
+        let session = RecordingSession(phase: .transcribing)
+        #expect(session.applyPendingPrimaryCompletionGesture(
+            .begin(decisionInterval: 0.01)
+        ))
+        #expect(session.applyPendingPrimaryCompletionGesture(
+            .selectClipboardOnly(continuationInterval: 0.01)
+        ))
+        let frozen = await session.freezeCompletionPolicy()
+        #expect(frozen == RecordingCompletionPolicy(
+            completionDisposition: .clipboardOnly,
+            autoSendDisposition: .configured
+        ))
+    }
+
+    @MainActor
+    @Test func pendingCompletionGestureGateEndsOnTeardownOrCancel() async {
+        let tornDown = RecordingSession(phase: .transcribing)
+        #expect(tornDown.applyPendingPrimaryCompletionGesture(
+            .begin(decisionInterval: 10)
+        ))
+        tornDown.clearContext()
+        let tornDownPolicy = await tornDown.freezeCompletionPolicy()
+        #expect(tornDownPolicy == .normal)
+
+        let canceled = RecordingSession(phase: .transcribing)
+        #expect(canceled.applyPendingPrimaryCompletionGesture(
+            .begin(decisionInterval: 10)
+        ))
+        canceled.shouldCancel = true
+        #expect(!canceled.applyPendingPrimaryCompletionGesture(
+            .deliverWithoutAutoSend
+        ))
+        let canceledPolicy = await canceled.freezeCompletionPolicy()
+        #expect(canceledPolicy == .normal)
+    }
+
     @Test func transcriptionCompletionPolicyResolvesAfterProviderSuccessOrFailure() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("VoiceInk/Transcription/Engine/TranscriptionPipeline.swift"), encoding: .utf8)
         let wait = try #require(source.range(of: "text = try await session.transcribe(audioURL: audioURL)"))
-        let freeze = try #require(source.range(of: "completionDispositionNow = completionDisposition()"))
+        let freeze = try #require(source.range(of: "let completionPolicyNow = await completionPolicy()"))
         let formatting = try #require(source.range(of: "let formattingConfiguration = resolveFormattingConfiguration()"))
         #expect(wait.lowerBound < freeze.lowerBound)
         #expect(freeze.lowerBound < formatting.lowerBound)
-        let failure = try #require(source.range(of: "completionDispositionNow = completionDisposition()", range: freeze.upperBound..<source.endIndex))
+        let failure = try #require(source.range(of: "let completionPolicyNow = await completionPolicy()", range: freeze.upperBound..<source.endIndex))
         let suppression = try #require(source.range(of: "shouldSuppressFailureNotification: shouldCancel()"))
         #expect(failure.lowerBound < suppression.lowerBound)
         #expect(source.contains("transcription.preservesOriginalAudioForRecovery || completionDispositionNow == .clipboardOnly"))
+        #expect(source.contains("autoSendDispositionNow = completionPolicyNow.autoSendDisposition"))
+        let failureSuppression = try #require(source.range(
+            of: "shouldSuppressFailureNotification: shouldCancel()"
+        ))
+        let failureCandidates = try #require(source.range(
+            of: "textCandidates:",
+            range: failureSuppression.upperBound..<source.endIndex
+        ))
+        let failurePolicyBody = source[
+            failureSuppression.lowerBound..<failureCandidates.lowerBound
+        ]
+        #expect(failurePolicyBody.contains(
+            "completionDispositionNow == .clipboardOnly"
+        ))
+        #expect(!failurePolicyBody.contains("autoSendDispositionNow"))
     }
 
     @MainActor
@@ -2368,12 +2610,13 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func primaryTripleClickPausesAndOnePausedClickResumesAfterDecisionWindow() async {
+    @Test func primaryQuadrupleClickPausesThenFinishesWithoutAutoSend() async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .recording,
             isRecorderVisible: true
         )
         var finishCallCount = 0
+        var noAutoSendFinishCallCount = 0
         let handler = RecordingShortcutModeHandler(
             canHandleShortcutAction: { true },
             isRecorderVisible: { state.isRecorderVisible },
@@ -2389,8 +2632,16 @@ struct VoiceInkTests {
             setActiveRecordingCompletionDisposition: { disposition in
                 state.setCompletionDisposition(disposition)
             },
+            setActiveRecordingAutoSendDisposition: { disposition in
+                state.setAutoSendDisposition(disposition)
+            },
             finishRecordingToClipboard: { _ in
                 finishCallCount += 1
+                return true
+            },
+            finishRecordingWithoutAutoSend: { _ in
+                noAutoSendFinishCallCount += 1
+                state.recordingState = .idle
                 return true
             },
             cancelRecording: {},
@@ -2417,22 +2668,34 @@ struct VoiceInkTests {
         #expect(state.recordingState == .paused)
         #expect(state.completionDispositions == [.clipboardOnly, .normalDelivery])
 
-        await handler.handleKeyDown(
-            action: .primaryRecording,
-            eventTime: 90.03,
-            mode: .toggle
-        )
-        await handler.handleKeyUp(
-            action: .primaryRecording,
-            eventTime: 90.031,
-            mode: .toggle
-        )
+        for eventTime in [90.03, 90.04] {
+            await handler.handleKeyDown(
+                action: .primaryRecording,
+                eventTime: eventTime,
+                mode: .toggle
+            )
+            await handler.handleKeyUp(
+                action: .primaryRecording,
+                eventTime: eventTime + 0.001,
+                mode: .toggle
+            )
+        }
 
         #expect(state.pauseCallCount == 1)
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        #expect(state.pauseCallCount == 2)
         #expect(finishCallCount == 0)
-        #expect(state.recordingState == .recording)
+        #expect(noAutoSendFinishCallCount == 1)
+        #expect(state.recordingState == .idle)
+        #expect(state.completionDispositions == [
+            .clipboardOnly,
+            .normalDelivery,
+            .normalDelivery,
+        ])
+        #expect(state.autoSendDispositions == [
+            .configured,
+            .configured,
+            .configured,
+            .suppressOnce,
+        ])
         handler.reset()
     }
 

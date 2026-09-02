@@ -329,6 +329,26 @@ class VoiceInkEngine: NSObject, ObservableObject {
         return session.selectPendingClipboardOnlyCompletion() // Capture already stopped and restored its owned playback; do not send another media/YouTube toggle here.
     }
 
+    /// Keeps every pending-transcription Primary click bound to the result that was
+    /// newest at click one. The session owns the bounded freeze hold, so an async
+    /// provider result cannot commit the intermediate Won't paste state before a
+    /// still-valid fourth click changes it to paste-without-auto-send.
+    @discardableResult
+    func applyPendingPrimaryCompletionGesture(
+        sessionID: UUID,
+        action: PendingPrimaryCompletionGestureAction
+    ) -> Bool {
+        guard let session = sessions.first(where: { $0.id == sessionID }) else {
+            return false
+        }
+        if action != .endUnchanged,
+           pendingClipboardOnlySessionID != sessionID {
+            session.endPendingPrimaryCompletionGesture()
+            return false
+        }
+        return session.applyPendingPrimaryCompletionGesture(action)
+    }
+
     func retargetMostRecentPendingTranscriptionToFocusedInput() -> PendingPasteRetargetResult {
         guard let session = sessions.last(where: {
             ($0.phase == .transcribing || $0.phase == .delivering) && $0.acceptsPasteRetargeting
@@ -486,6 +506,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
         return true
     }
 
+    @discardableResult
+    func setActiveRecordingAutoSendDisposition(
+        _ disposition: RecordingAutoSendDisposition
+    ) -> Bool {
+        guard let active = activeRecordingSession,
+              active.liveRecordingState.isRecordingOrPaused,
+              !active.shouldCancel else {
+            return false
+        }
+        active.autoSendDisposition = disposition
+        return true
+    }
+
     /// Finalizes the active recording as a one-shot clipboard result. This is the
     /// genuine Primary double-click route: it is neither cancel/discard nor any of
     /// the three paste destinations. The session still transcribes normally, while
@@ -505,6 +538,28 @@ class VoiceInkEngine: NSObject, ObservableObject {
             modeId: modeId,
             stopPasteDestination: .primaryCurrentInput,
             completionDisposition: .clipboardOnly,
+            stopPlaybackDisposition: .restoreOwnedPlayback
+        )
+        return true
+    }
+
+    /// Genuine Primary quadruple-click: finish the same capture through ordinary
+    /// Primary base-current-input delivery, but suppress this session's configured
+    /// Return/Enter exactly once. It is not an exact-input destination or raw-mode path.
+    @discardableResult
+    func finishActiveRecordingWithoutAutoSend(modeId: UUID? = nil) async -> Bool {
+        guard let active = activeRecordingSession,
+              active.liveRecordingState.isRecordingOrPaused,
+              !active.shouldCancel else {
+            vippLog.info("no-auto-send finish ignored because no active recording owns the mic")
+            return false
+        }
+
+        await toggleRecord(
+            modeId: modeId,
+            stopPasteDestination: .primaryCurrentInput,
+            completionDisposition: .normalDelivery,
+            autoSendDisposition: .suppressOnce,
             stopPlaybackDisposition: .restoreOwnedPlayback
         )
         return true
@@ -568,6 +623,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         isAssistantFollowUp: Bool = false,
         stopPasteDestination: RecordingPasteDestination = .primaryCurrentInput,
         completionDisposition: RecordingCompletionDisposition = .normalDelivery,
+        autoSendDisposition: RecordingAutoSendDisposition = .configured,
         stopPlaybackDisposition: RecordingStopPlaybackDisposition = .restoreOwnedPlayback,
         reservedStartRequestID: UUID? = nil
     ) async {
@@ -606,6 +662,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // The function returns as soon as the mic is free, so a record press right after
             // can immediately START a new session.
             active.completionDisposition = completionDisposition
+            active.autoSendDisposition = autoSendDisposition
             switch stopPasteDestination {
             case .recordingStart:
                 let focusedInput = active.recordingStartFocusedInput
@@ -638,7 +695,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 active.signalDestinationAction(stopPasteDestination)
             }
 
-            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) deliveryPolicy=\(stopPasteDestination.usesBaseCurrentInputDelivery ? "baseCurrentInput" : "exactNextLatch", privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
+            vippLog.info("toggleRecord: STOP session \(active.id.uuidString, privacy: .public) → .transcribing destination=\(String(describing: stopPasteDestination), privacy: .public) targetCaptured=\(active.pasteTarget.focusedInput != nil, privacy: .public) deliveryPolicy=\(stopPasteDestination.usesBaseCurrentInputDelivery ? "baseCurrentInput" : "exactNextLatch", privacy: .public) autoSendDisposition=\(String(describing: autoSendDisposition), privacy: .public) shouldCancel=\(active.shouldCancel, privacy: .public)")
 
             active.phase = .transcribing
             active.liveRecordingState = .transcribing
@@ -1502,8 +1559,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             skipPostProcessing: { [weak session] in
                 session?.skipPostProcessing == true
             },
-            completionDisposition: { [weak session] in
-                session?.freezeCompletionDisposition() ?? .normalDelivery
+            completionPolicy: { [weak session] in
+                await session?.freezeCompletionPolicy() ?? .normal
             },
             recoverablePartialTranscript: { [weak session] in
                 session?.recoverablePartialTranscript ?? ""
@@ -1677,6 +1734,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         vippLog.info("cancelSession: \(session.id.uuidString, privacy: .public) phase=\(String(describing: session.phase), privacy: .public) liveState=\(String(describing: session.liveRecordingState), privacy: .public)")
 
         session.shouldCancel = true
+        session.endPendingPrimaryCompletionGesture()
         session.transcriptionSession?.cancel()
         // A pipeline waiting behind another active recording must wake immediately
         // to observe this session-local cancellation instead of lingering until the

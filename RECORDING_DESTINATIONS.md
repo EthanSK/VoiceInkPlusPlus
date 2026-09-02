@@ -66,6 +66,14 @@ paste” route used by a recording-time double-click. VoiceInk++ may unmute syst
 capture is paused and restore its optional output mute when capture resumes, but only recording
 start and final stop/cancel send the normal media/YouTube-helper pause and resume lifecycle.
 
+Click three also keeps one full macOS multi-click continuation open. A fourth press in that same
+continuous recording-time gesture finalizes the paused session through ordinary Primary
+`primaryCurrentInput` delivery, restores playback owned by that recording, and forces only that
+session's auto-send key to `.none`. Normal formatting/enhancement and paste remain intact; the
+override does not become a new destination, exact-input route, raw/skip mode, or global setting. A
+fifth press inside the already consumed gesture is ignored. Once the continuation expires, the
+triple remains Pause and a later press starts the normal paused-state single/double classifier.
+
 A single Primary press while recording retains normal base-VoiceInk stop behavior after the short
 double-click decision window expires. The delay is necessary because the first press
 cannot be known to be single until the second-press window closes. Pause/resume never finalizes,
@@ -78,7 +86,7 @@ Karabiner. Releasing both Razer DPI buttons together may emit two complete ident
 VoiceInk++ filters only a second chord less than 90 ms after the last accepted one. The filter runs
 before `.starting` can reinterpret that duplicate as cancellation and before a recording-time
 duplicate can reinterpret it as the double-click finish. It never extends its own window or alters the
-0.45-second double-click or full-system-interval triple-click classifiers. A 500 ms Primary cooldown
+0.45-second double-click or full-system-interval triple/quadruple classifiers. A 500 ms Primary cooldown
 is deliberately not used because it would make the accepted pause and clipboard gestures
 impossible.
 
@@ -111,11 +119,20 @@ already finished transcription, do not select an older card or claim that an iss
 The policy freezes before post-processing/Mode effects. Provider errors remain quiet for this deliberate
 no-paste route, and no extra playback command is sent because the earlier stop already restored owned media.
 
+If clicks three and four continue inside the full macOS multi-click interval, keep the whole sequence
+bound to the click-one session and never start another recording. Click three is an intermediate no-op;
+click four atomically restores normal completion and suppresses only that session's configured
+auto-send. The pipeline waits for this bounded decision before freezing completion policy, so a provider
+result cannot commit the intermediate clipboard-only choice while a valid fourth press is still
+possible. With no eligible pending transcription, idle click behavior remains exactly one-click Start
+and two-click cancel; do not invent an idle quadruple action.
+
 The normal single-stop decision still uses the shorter of the macOS double-click interval and 0.45
 seconds, so ordinary dictation stays responsive. After click two has already canceled that pending
 stop, its clipboard finish waits for click three through the full macOS multi-click interval (verified
-as 0.8 seconds on 2026-08-02). A click inside that interval pauses; a later click cannot inherit the
-finished double-click.
+as 0.8 seconds on 2026-08-02). Click three pauses and opens the same full interval for click four;
+click four finishes with normal paste and no auto-send. A later click cannot inherit the finished
+double, triple, or quadruple sequence.
 
 ## Delivery engine switch
 

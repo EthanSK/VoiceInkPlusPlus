@@ -581,6 +581,19 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting, Notification
         return await engine.finishActiveRecordingToClipboard(modeId: modeId)
     }
 
+    /// Genuine Primary quadruple-click: finish through normal Primary paste while
+    /// suppressing only this result's configured Return/Enter.
+    @discardableResult
+    func finishRecordingWithoutAutoSend(modeId: UUID? = nil) async -> Bool {
+        guard let engine,
+              isRecorderPanelVisible,
+              engine.recordingState.isRecordingOrPaused else {
+            return false
+        }
+        vippLog.info("finishRecordingWithoutAutoSend: genuine Primary quadruple-click")
+        return await engine.finishActiveRecordingWithoutAutoSend(modeId: modeId)
+    }
+
     func dismissRecorderPanel() async {
         guard let engine = engine else { return }
 

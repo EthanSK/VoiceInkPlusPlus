@@ -78,7 +78,7 @@ For a realtime stop that pastes nothing or appears to skip Return, separate tran
 
 ## Normalize the two mouse controls before reasoning
 
-- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording, one press performs a base VoiceInk normal stop after the shorter of the macOS double-click interval and 0.45 seconds into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`). Two presses cancel that pending stop and, if no third press arrives through the full macOS multi-click interval, finish the session to a recoverable local audio/HUD draft plus final clipboard text without paste, auto-send, Mode command/response, or playback mutation. A third press inside that interval cancels the clipboard finish and pauses capture. While paused, one press resumes after the short second-press decision window; two presses inside it immediately finish through that same clipboard-only/no-paste route. Primary owns no exact input or destination Mode.
+- **Primary button** is the preferred name for Ethan's normal recording control. **Normal button**, **thumb button**, **toggle button**, **recording button**, **same button**, and historical **G5** are aliases. First press starts. While recording, one press performs a base VoiceInk normal stop after the shorter of the macOS double-click interval and 0.45 seconds into whichever system keyboard input is focused at final delivery (`primaryCurrentInput`). Two presses cancel that pending stop and, if no third press arrives through the full macOS multi-click interval, finish the session to a recoverable local audio/HUD draft plus final clipboard text without paste, auto-send, Mode command/response, or playback mutation. A third press inside that interval cancels the clipboard finish and pauses capture; a fourth press inside one more full-system continuation finalizes normal Primary paste with only that session's configured auto-send suppressed. Ignore a fifth press inside the consumed gesture. While paused, one fresh press resumes after the short second-press decision window; two fresh presses inside it immediately finish through the same clipboard-only/no-paste route. Primary owns no exact input or destination Mode.
 - **Next button** is the preferred name for the separate forward/secondary control. **Forward button**, macOS **Next Track**, **Next Track media key/action/event**, **secondary mouse button**, **latch button**, and **retarget button** are aliases.
 - Unqualified **toggle** means the primary button's start/stop lifecycle and corresponding shortcut mode. Never reinterpret it as a Next-button destination toggle. Commit `671b4c7` tried that and was deliberately reverted by `bed22b7`.
 - **Second chance** names only the post-primary-stop, still-transcribing retarget route. **Latch** means preserve/replace one session's destination; it never means toggle the destination off.
@@ -94,10 +94,10 @@ such as `0xe00002c5` means VoiceInk++ cannot recover F19/F21/F22 identity after 
 it. Use event-tap-sampled monotonic time at the final VoiceInk++ handler instead: suppress only the
 second complete chord in a mechanically near-simultaneous burst, anchor the window on the last
 accepted chord rather than the rejected duplicate, and reset it across Next and monitor-reset
-boundaries. Keep that window far below the existing Primary double/triple gesture intervals; never
+boundaries. Keep that window far below the existing Primary double/triple/quadruple gesture intervals; never
 restore the legacy 500 ms cooldown. Require reducer and handler tests proving the duplicate cannot
 cancel `.starting` or become a clipboard-only finish, plus physical single-control, paired-release, double-click,
-triple-click, and lock-screen checks.
+triple-click, quadruple-click, fifth-click, and lock-screen checks.
 
 For modifier-only Primary regressions, inspect the complete `flagsChanged` sequence. VoiceInk++ owns and suppresses only the event that completes the configured Shift-Control-Option chord plus any full-chord repeats; partial modifiers and every release must remain downstream-balanced. Require the pure reducer test and a physical check with a context menu already open. Never swallow the entire modifier sequence to hide a menu-dismissal symptom, because that can leave the foreground app with stuck logical modifiers.
 
@@ -118,6 +118,7 @@ Keep these three routes distinct:
 | Primary button once while recording | After the double-click decision window, base VoiceInk normal stop into the system keyboard input focused at final delivery (`primaryCurrentInput`); never capture, reuse, or fall back to `recordingStart` |
 | Primary button twice while recording | If no third press arrives through the full macOS multi-click interval, persist original WAV plus last realtime HUD text in History, then finish/transcribe the same session to the clipboard only; never paste, auto-send, run a Mode command/response, cancel/discard, or alter playback |
 | Primary button three times in one continuous gesture | Pause capture inside the same session; no finalization or destination decision |
+| Primary button four times in one continuous recording-time gesture | Finish the same paused session through normal `primaryCurrentInput` paste, restore owned playback, and suppress only this session's configured auto-send |
 | Primary button once while paused | Resume capture after the short second-press decision window |
 | Primary button twice while paused | Immediately finish through the same clipboard-only/no-paste route |
 | Next button while recording | Input captured at recording start (`recordingStart`) |
@@ -146,9 +147,17 @@ himself during that interval. VoiceInk++ may lift and restore its optional syste
 pause/resume; only recording start and final stop/cancel own the media/YouTube-helper lifecycle.
 Next while paused still stops through `recordingStart`.
 
-Treat a recording-time double/triple-click as one platform-bounded sequence. Keep first-to-second capped so a
+The third press also arms one full-system continuation for click four. That fourth press is a
+completion policy on the same session, not another destination: preserve normal processing and
+Primary current-input paste, force only its auto-send key to `.none`, restore owned playback once,
+and consume a fifth press. Store the override on the recording session and freeze it with
+clipboard-only intent after the provider returns, before Mode effects. For a pending transcription,
+bind all four clicks to the click-one session and hold that same bounded freeze; with no eligible
+pending result, retain ordinary idle one-click Start/two-click cancel and define no idle quadruple.
+
+Treat a recording-time double/triple/quadruple-click as one platform-bounded sequence. Keep first-to-second capped so a
 normal stop stays responsive, but after click two has canceled that deferred stop, honor the full
-system multi-click interval for click three. If click three arrives, cancel the pending clipboard finish and pause capture. If it does not, finalize once
+system multi-click interval for click three. If click three arrives, cancel the pending clipboard finish and pause capture, then keep one full-system interval for click four. If click four arrives, finalize normal paste with per-session auto-send suppression and consume a fifth press. If click three does not arrive, finalize once
 with a per-session clipboard-only completion policy. Before asynchronous finalization is enqueued,
 save a History record that references the finalized WAV and stores the last realtime HUD text. Mark
 double-click clipboard finishes and explicit no-delivery exits as recovery-pinned so automatic audio and zero-retention

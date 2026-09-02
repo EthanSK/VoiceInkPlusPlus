@@ -111,10 +111,10 @@ The compact recorder panel appears on every connected monitor and keeps its info
 - Cancel a recording with the recorder's red X or an explicitly configured shortcut. Bare Escape
   always remains available to the foreground app and never controls VoiceInk++.
 - Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
-- Double-press the Primary button to pause and resume the same recording without including paused audio.
+- Triple-press the Primary button to pause the same recording without including paused audio; press once while paused to resume.
 - Pause and resume supported media without blindly toggling playback state.
 - Keep the recording waveform visible across every connected display.
-- Show a red **Won’t paste** status immediately when a recording-time Primary double-click selects clipboard-only completion; a third press replaces it with Pause.
+- Show a red **Won’t paste** status immediately when a recording-time Primary double-click selects clipboard-only completion; a third press replaces it with Pause, and a fourth finishes with normal paste but no auto-Return.
 
 ## Build it
 

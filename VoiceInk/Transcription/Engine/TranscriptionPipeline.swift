@@ -118,8 +118,8 @@ class TranscriptionPipeline {
         // short-circuit in TranscriptionDelivery.deliver and the resolve site in
         // VoiceInkEngine.runPipeline.
         skipPostProcessing: @escaping () -> Bool = { false },
-        completionDisposition: @escaping () -> RecordingCompletionDisposition = {
-            .normalDelivery
+        completionPolicy: @escaping () async -> RecordingCompletionPolicy = {
+            .normal
         },
         recoverablePartialTranscript: @escaping () -> String = { "" },
         onStateChange: @escaping (RecordingState) -> Void,
@@ -171,6 +171,7 @@ class TranscriptionPipeline {
         // raw-paste branch at delivery.
         let skipPostProcessingNow = skipPostProcessing()
         var completionDispositionNow = RecordingCompletionDisposition.normalDelivery
+        var autoSendDispositionNow = RecordingAutoSendDisposition.configured
         let recoverablePartialTranscriptNow = recoverablePartialTranscript()
         if transcription.recoverableRealtimeDraftText == nil,
            !recoverablePartialTranscriptNow
@@ -277,7 +278,9 @@ class TranscriptionPipeline {
                     context: transcriptionConfiguration.requestContext
                 )
             }
-            completionDispositionNow = completionDisposition() // A transcription-time double-click was ignored when this value froze before awaiting the provider. Freeze it now, before any Mode response or delivery. (Codex task: 01a039f7-873c-7c30-b3dc-af8a6724ace5)
+            let completionPolicyNow = await completionPolicy() // A pending Primary sequence may still become double-click Won't paste or quadruple-click paste-without-Return. Freeze both axes together after the provider, before any Mode effect or delivery.
+            completionDispositionNow = completionPolicyNow.completionDisposition
+            autoSendDispositionNow = completionPolicyNow.autoSendDisposition
             transcription.preservesOriginalAudioForRecovery = transcription.preservesOriginalAudioForRecovery || completionDispositionNow == .clipboardOnly
             text = TranscriptionOutputFilter.filter(text)
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
@@ -460,7 +463,9 @@ class TranscriptionPipeline {
 
             transcription.transcriptionStatus = TranscriptionStatus.completed.rawValue
         } catch {
-            completionDispositionNow = completionDisposition() // Provider errors must honor Won't paste selected while that request was in flight, too.
+            let completionPolicyNow = await completionPolicy() // Provider errors must honor the same bounded pending gesture before choosing feedback/recovery behavior.
+            completionDispositionNow = completionPolicyNow.completionDisposition
+            autoSendDispositionNow = completionPolicyNow.autoSendDisposition
             transcription.preservesOriginalAudioForRecovery = transcription.preservesOriginalAudioForRecovery || completionDispositionNow == .clipboardOnly
             let errorDescription = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             // VIPPDebug: transcription threw. A URLError(.cancelled) here means the
@@ -631,9 +636,11 @@ class TranscriptionPipeline {
             routeResolvedOutput = OutputRuntimeConfiguration(
                 mode: pipelineOutput.mode,
                 outputMode: pipelineOutput.outputMode,
-                autoSendKey: pasteTargetForDelivery.resolvedAutoSendKey(
-                    currentInputKey: pipelineOutput.autoSendKey
-                ),
+                autoSendKey: autoSendDispositionNow == .suppressOnce
+                    ? .none
+                    : pasteTargetForDelivery.resolvedAutoSendKey(
+                        currentInputKey: pipelineOutput.autoSendKey
+                    ),
                 customCommand: pipelineOutput.customCommand
             )
         }
@@ -673,7 +680,7 @@ class TranscriptionPipeline {
             return
         }
 
-        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) queuedPrimaryDecision=deferredUntilReturnBoundary leasePolicy=\(String(describing: deliveryLeasePolicy), privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
+        vippLog.info("pipeline: about to DELIVER finalChars=\(finalText?.count ?? -1, privacy: .public) finalDigest=\(TranscriptionLineageDigest.make(finalText ?? ""), privacy: .public) outputMode=\(String(describing: outputForPasteTarget.outputMode), privacy: .public) targetAutoSend=\(outputForPasteTarget.autoSendKey.rawValue, privacy: .public) autoSendDisposition=\(String(describing: autoSendDispositionNow), privacy: .public) queuedPrimaryDecision=deferredUntilReturnBoundary leasePolicy=\(String(describing: deliveryLeasePolicy), privacy: .public) destination=\(String(describing: pasteTargetForDelivery.destination), privacy: .public) skip=\(skipPostProcessingNow, privacy: .public) \(jobIdentity.logDescription, privacy: .public)")
         await delivery.deliver(
             TranscriptionDelivery.Request(
                 transcription: transcription,
