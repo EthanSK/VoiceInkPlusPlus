@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-02T00:07:00Z
+**Trigger:** Ethan asked to trim GPT Live prompts below the provider character limit with a small safety net.
+**Symptom:** Build 316 enforced GPT Live's exact 1,024-character rejection boundary as its production limit. Although tested at the documented maximum, that left no reserve for a provider-side counting or envelope change.
+**Root cause:** The provider hard maximum and VoiceInk++'s safer production cap were represented by the same constant, so callers and tests could not prove that every realtime and completed-audio request stayed deliberately below the rejection boundary.
+**Fix:** Commit a796137 separates GPT Live's 1,024-character hard maximum from VoiceInk++'s 992-character production cap, leaving a 32-character reserve shared by realtime and completed-audio fallback. Structured Codex and History context still drops the oldest whole entry when the frozen prompt does not fit; it is never sliced into invalid JSON.
+**Commit:** a796137
+**Guard:** The canonical Mini focused action named and passed 42 tests, including the new hard-maximum/reserve checks and the complete Codex/recent-context suites plus mandatory Primary, second-chance, Next, and realtime-HUD guards. The exact build-317 commit named and passed all 276 tests in 9 suites. The separate artifact contains no XCTest payload or references and is installed as PID 14396 with CDHash 3658068fb01054336b7129026b1b64a1fb9b129c, deep/strict validity, Automation and microphone entitlements. A physical Codex-frontmost recording must still prove `codexMessages > 0`, `promptChars <= 992`, GPT Live connection, first partial, final delivery, and cleanup.
+---
+
+---
 **Date:** 2026-09-01T23:39:47Z
 **Trigger:** Ethan reported that VoiceInk++ was again not transcribing his voice in realtime.
 **Symptom:** With Codex frontmost, build 315 showed no realtime HUD words; stop still produced and pasted a completed batch transcript, so the failure looked intermittent and app-specific.
