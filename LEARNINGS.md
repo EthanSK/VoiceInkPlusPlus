@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-02T11:47:57Z
+**Trigger:** Ethan asked that Escape never cancel a voice recording or otherwise interact with VoiceInk++, because he normally presses Escape for the foreground app.
+**Symptom:** While any recorder panel was visible, bare Escape was registered by VoiceInk++'s global recorder-panel monitor, swallowed before the foreground app could receive it, and used to cancel the active recording.
+**Root cause:** A missing Cancel Recording preference was interpreted as an implicit `defaultRecorderCancel`, and `RecorderPanelShortcutManager` injected the internal `recorderPanelEscape` action. Legacy stored/imported Escape values could also revive the same ownership. This supersedes the 2026-07-11 single-Escape cancellation contract and the build-275 default-Escape persistence contract.
+**Fix:** Commit 0dd7874 removes the implicit/default and internal Escape routes. One pure `RecorderPanelShortcutPolicy` now registers only an explicitly configured non-Escape cancel shortcut plus eligible Option-number Mode shortcuts; legacy stored Escape is runtime-unbound without rewriting user bytes, imported Escape is cleared, and Settings exposes the red X or an explicit non-Escape shortcut instead of a default Escape binding.
+**Commit:** 0dd7874
+**Guard:** The canonical Mac Mini focused action named and passed 16 tests covering bare-Escape exclusion, explicit non-Escape cancellation, legacy storage/import, shortcut-capture restoration, Primary modifier forwarding, and mandatory Primary/Next/realtime-HUD routes. The exact build-318 commit then named and passed all 279 tests in 9 suites. The separate Release artifact contains no XCTest payload and is installed as PID 73948 with CDHash 53240e0d396feb71232735c20e7ee191f6e54354, deep/strict validity, and Automation/microphone entitlements; `/Applications/VoiceInk.app` remains byte-identical. A physical recording-time Escape pass-through check remains pending and must not be inferred from source or automated tests.
+---
+
+---
 **Date:** 2026-09-02T00:07:00Z
 **Trigger:** Ethan asked to trim GPT Live prompts below the provider character limit with a small safety net.
 **Symptom:** Build 316 enforced GPT Live's exact 1,024-character rejection boundary as its production limit. Although tested at the documented maximum, that left no reserve for a provider-side counting or envelope change.
