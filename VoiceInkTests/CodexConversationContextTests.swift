@@ -101,7 +101,7 @@ struct CodexConversationContextTests {
         #expect(prompt.count <= OpenAITranscriptionConfiguration.promptCharacterLimit)
     }
 
-    @Test func fourBoundedCodexMessagesFitTheGPTLivePromptLimit() throws {
+    @Test func fourBoundedCodexMessagesFitTheVoiceInkPromptSafetyCap() throws {
         let messages = (0..<CodexConversationContextPolicy.maximumMessages).map { index in
             CodexConversationContextMessage(
                 role: index.isMultiple(of: 2) ? .user : .assistant,
@@ -132,6 +132,12 @@ struct CodexConversationContextTests {
         #expect(!prompt.contains(String(repeating: "0", count: 161)))
         #expect(providerPrompt == prompt)
         #expect(providerPrompt.count <= OpenAITranscriptionConfiguration.promptCharacterLimit)
+        #expect(providerPrompt.count < OpenAITranscriptionConfiguration.providerPromptHardMaximum)
+        #expect(
+            OpenAITranscriptionConfiguration.promptCharacterLimit
+                == OpenAITranscriptionConfiguration.providerPromptHardMaximum
+                    - OpenAITranscriptionConfiguration.promptSafetyMargin
+        )
     }
 
     @Test @MainActor func exactCodexMessagesSupersedeSameModeHistoryWithoutLoadingIt() throws {

@@ -99,14 +99,30 @@ struct RecentTranscriptContextTests {
         )
     }
 
-    // MARK: - 1,024 cap and bounded excerpts
+    // MARK: - 992 safety cap and bounded excerpts
 
     @Test func composedPromptNeverExceedsTheOpenAIPromptCap() throws {
         let limit = OpenAITranscriptionConfiguration.promptCharacterLimit
         let staticPromptLength = 200
-        #expect(limit == 1_024)
+        #expect(OpenAITranscriptionConfiguration.providerPromptHardMaximum == 1_024)
+        #expect(OpenAITranscriptionConfiguration.promptSafetyMargin == 32)
+        #expect(limit == 992)
         #expect(RecentTranscriptContextPolicy.maximumEntries == 3)
         #expect(RecentTranscriptContextPolicy.maximumSuffixCharacters == limit)
+
+        let hardMaximumPrompt = String(
+            repeating: "x",
+            count: OpenAITranscriptionConfiguration.providerPromptHardMaximum
+        )
+        let normalizedHardMaximum = try #require(
+            OpenAITranscriptionConfiguration.normalizedPrompt(hardMaximumPrompt)
+        )
+        #expect(normalizedHardMaximum.count == limit)
+        #expect(
+            OpenAITranscriptionConfiguration.providerPromptHardMaximum
+                - normalizedHardMaximum.count
+                == OpenAITranscriptionConfiguration.promptSafetyMargin
+        )
 
         let entries = (0..<RecentTranscriptContextPolicy.maximumEntries).map {
             entry(String($0), length: RecentTranscriptContextPolicy.maximumEntryCharacters)
