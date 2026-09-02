@@ -211,11 +211,14 @@ enum BackupImporter {
         }
 
         if let shortcut {
-            return .stored(shortcut.shortcut)
+            // Older backups can contain the former implicit/default Escape as an explicit value.
+            // Preserve the current invariant by importing that value as unbound instead.
+            return shortcut.shortcut.isUnmodifiedEscape ? .cleared : .stored(shortcut.shortcut)
         }
 
         // Older backups omitted a missing shortcut, so absence must keep the receiving Mac's
-        // existing value. New backups write usesDefault=true when Escape is the intended default.
+        // existing value. New backups write usesDefault=true for the deliberately unbound state;
+        // the field name remains unchanged so the JSON schema stays backward compatible.
         return nil
     }
 

@@ -159,8 +159,8 @@ class ImportExportService {
             pasteLastEnhancementShortcut: ShortcutStore.shortcut(for: .pasteLastEnhancement).map(ShortcutBackup.init),
             retryLastTranscriptionShortcut: ShortcutStore.shortcut(for: .retryLastTranscription).map(ShortcutBackup.init),
             cancelRecorderShortcut: ShortcutStore.shortcut(for: .cancelRecorder).map(ShortcutBackup.init),
-            // A missing shortcut means default Escape at runtime. Export that intent explicitly so
-            // importing over a custom binding resets it; old backups still omit this optional field.
+            // The historical field name is retained for backup compatibility. A missing cancel
+            // shortcut now means deliberately unbound, so importing over a custom binding clears it.
             cancelRecorderShortcutUsesDefault: ShortcutStore.shortcut(for: .cancelRecorder) == nil,
             openHistoryWindowShortcut: ShortcutStore.shortcut(for: .openHistoryWindow).map(ShortcutBackup.init),
             quickAddToDictionaryShortcut: ShortcutStore.shortcut(for: .quickAddToDictionary).map(ShortcutBackup.init),

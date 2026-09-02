@@ -349,10 +349,14 @@ struct VoiceInkTests {
         #expect(ShortcutStore.shortcut(for: action) == originalShortcut)
     }
 
-    @Test func cancelShortcutBackupDistinguishesDefaultFromLegacyAbsence() throws {
+    @Test func cancelShortcutBackupDistinguishesUnboundFromLegacyAbsence() throws {
         let customShortcut = Shortcut.key(
             keyCode: UInt16(kVK_ANSI_X),
             modifierFlags: [.control, .option]
+        )
+        let legacyEscapeShortcut = Shortcut.key(
+            keyCode: UInt16(kVK_Escape),
+            modifierFlags: []
         )
         let decodedDefault = try JSONDecoder().decode(
             GeneralBackup.self,
@@ -373,10 +377,67 @@ struct VoiceInkTests {
         )
         #expect(
             BackupImporter.cancelRecorderShortcutPersistenceState(
+                usesDefault: false,
+                shortcut: ShortcutBackup(legacyEscapeShortcut)
+            ) == .cleared
+        )
+        #expect(
+            BackupImporter.cancelRecorderShortcutPersistenceState(
                 usesDefault: nil,
                 shortcut: nil
             ) == nil
         )
+    }
+
+    @Test func bareEscapeNeverBecomesARecorderPanelShortcut() {
+        let bareEscape = Shortcut.key(
+            keyCode: UInt16(kVK_Escape),
+            modifierFlags: []
+        )
+
+        let unboundShortcuts = RecorderPanelShortcutPolicy.shortcuts(
+            explicitCancelShortcut: nil,
+            canUseModeShortcuts: false
+        )
+        #expect(unboundShortcuts.isEmpty)
+
+        let legacyEscapeShortcuts = RecorderPanelShortcutPolicy.shortcuts(
+            explicitCancelShortcut: bareEscape,
+            canUseModeShortcuts: true
+        )
+        #expect(legacyEscapeShortcuts[.cancelRecorder] == nil)
+        #expect(!legacyEscapeShortcuts.values.contains { $0.isUnmodifiedEscape })
+        #expect(legacyEscapeShortcuts.count == 10)
+    }
+
+    @Test func explicitNonEscapeCancelShortcutRemainsAvailable() {
+        let customShortcut = Shortcut.key(
+            keyCode: UInt16(kVK_ANSI_X),
+            modifierFlags: [.control, .option]
+        )
+        let shortcuts = RecorderPanelShortcutPolicy.shortcuts(
+            explicitCancelShortcut: customShortcut,
+            canUseModeShortcuts: false
+        )
+
+        #expect(shortcuts == [.cancelRecorder: customShortcut])
+    }
+
+    @Test func legacyStoredEscapeCancelBindingIsRuntimeUnbound() {
+        let action = ShortcutAction.cancelRecorder
+        let originalState = ShortcutStore.persistenceState(for: action)
+        let legacyEscape = Shortcut.key(
+            keyCode: UInt16(kVK_Escape),
+            modifierFlags: []
+        )
+        defer {
+            ShortcutStore.restorePersistenceState(originalState, for: action)
+        }
+
+        ShortcutStore.restorePersistenceState(.stored(legacyEscape), for: action)
+
+        #expect(ShortcutStore.rawShortcut(for: action) == legacyEscape)
+        #expect(ShortcutStore.shortcut(for: action) == nil)
     }
 
     @Test func recorderWindowsReuseStableDisplaySetAndRebuildOnChange() {

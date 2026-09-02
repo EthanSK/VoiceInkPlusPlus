@@ -91,29 +91,26 @@ struct SettingsView: View {
 
                 LabeledContent("Cancel Recording") {
                     HStack(spacing: 8) {
-                        ShortcutRecorder(
-                            action: .cancelRecorder,
-                            defaultShortcut: .defaultRecorderCancel
-                        ) {
+                        ShortcutRecorder(action: .cancelRecorder) {
                             hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
                         }
                             .controlSize(.small)
 
-                        // Default Escape needs no reset action, so hiding the no-op slot keeps the
-                        // shortcut capsule aligned with the rows above it.
+                        // A missing binding is deliberately unbound: bare Escape always belongs to
+                        // the foreground app. Show a clear action only for an explicit shortcut.
                         if hasCancelRecordingShortcut {
                             Button {
                                 ShortcutStore.setShortcut(nil, for: .cancelRecorder)
                                 hasCancelRecordingShortcut = false
                             } label: {
-                                Image(systemName: "arrow.counterclockwise")
+                                Image(systemName: "xmark")
                                     .font(.system(size: 12, weight: .medium))
                                     .frame(width: 26, height: 26)
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Reset Cancel Recording shortcut to default Escape")
-                            .help("Reset to default")
+                            .accessibilityLabel("Clear Cancel Recording shortcut")
+                            .help("Clear shortcut")
                         }
                     }
                 }

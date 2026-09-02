@@ -10,7 +10,6 @@ enum ShortcutAction: Hashable {
     case openHistoryWindow
     case quickAddToDictionary
     case mode(UUID)
-    case recorderPanelEscape
     case recorderPanelMode(Int)
 
     var userDefaultsKey: String {
@@ -19,7 +18,7 @@ enum ShortcutAction: Hashable {
 
     var isStored: Bool {
         switch self {
-        case .recorderPanelEscape, .recorderPanelMode:
+        case .recorderPanelMode:
             return false
         default:
             return true
@@ -46,8 +45,6 @@ enum ShortcutAction: Hashable {
             return "quickAddToDictionary"
         case .mode(let id):
             return "mode_\(id.uuidString)"
-        case .recorderPanelEscape:
-            return "recorderPanelEscape"
         case .recorderPanelMode(let index):
             return "recorderPanelMode_\(index)"
         }
@@ -81,8 +78,6 @@ enum ShortcutAction: Hashable {
             }
 
             return String(localized: "Mode")
-        case .recorderPanelEscape:
-            return String(localized: "Recorder Cancel")
         case .recorderPanelMode(let index):
             return String(format: String(localized: "Select Mode %@"), Self.displayNumber(forRecorderPanelIndex: index))
         }
@@ -94,10 +89,6 @@ enum ShortcutAction: Hashable {
         .retryLastTranscription,
         .openHistoryWindow,
         .quickAddToDictionary
-    ]
-
-    static let recorderPanelStoredActions: [Self] = [
-        .cancelRecorder
     ]
 
     static let legacyKeyboardShortcutActions: [Self] = [

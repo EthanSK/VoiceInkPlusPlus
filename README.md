@@ -108,7 +108,8 @@ The compact recorder panel appears on every connected monitor and keeps its info
 - Keep each recording's Mode, input, auto-send key, and delivery state isolated.
 - Type and auto-send into a verified exact background input without interrupting the workspace you moved to.
 - Use the verified foreground route only when the exact saved input already owns keyboard focus or a foreground-only target can be safely promoted.
-- Cancel a recording instantly with Escape or the recorder's cancel control.
+- Cancel a recording with the recorder's red X or an explicitly configured shortcut. Bare Escape
+  always remains available to the foreground app and never controls VoiceInk++.
 - Use one-shot raw/skip mode when you want untouched transcription with no auto-send.
 - Double-press the Primary button to pause and resume the same recording without including paused audio.
 - Pause and resume supported media without blindly toggling playback state.

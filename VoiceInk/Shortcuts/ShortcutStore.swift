@@ -23,7 +23,18 @@ enum ShortcutStore {
             return nil
         }
 
-        return rawShortcut(for: action)
+        guard let shortcut = rawShortcut(for: action) else {
+            return nil
+        }
+
+        // Bare Escape belongs exclusively to the foreground app, even while the recorder HUD is
+        // visible. Treat a legacy/imported Escape cancel binding as unbound without rewriting the
+        // user's stored bytes; only an explicitly chosen non-Escape shortcut may cancel globally.
+        if action == .cancelRecorder, shortcut.isUnmodifiedEscape {
+            return nil
+        }
+
+        return shortcut
     }
 
     static func setShortcut(_ shortcut: Shortcut?, for action: ShortcutAction) {
