@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-02T18:38:30Z
+**Trigger:** Ethan asked for a four-click Primary gesture that finishes normal paste without the configured Return/Enter, including while the newest result is still transcribing.
+**Symptom:** Primary already distinguished single-stop, double-click **Won't paste**, and triple-click Pause, but there was no same-gesture way to keep normal paste and suppress only auto-send. A pending transcription could also finish the provider between clicks and freeze the intermediate clipboard-only choice before click four arrived.
+**Root cause:** Completion owned only the normal-versus-clipboard-only axis. It had no per-session auto-send disposition and no bounded decision gate spanning an eligible pending result's click sequence, so a one-shot no-auto-send finish could not survive asynchronous provider completion without becoming a global setting or a new destination route.
+**Fix:** Commit c8d85a6 adds a separate session-local `RecordingAutoSendDisposition`, freezes both completion axes together after the provider and before Mode effects, and binds pending clicks to the click-one session through one replaceable bounded gate. Recording click three still pauses; click four inside the same continuous gesture finishes through ordinary `primaryCurrentInput` paste with auto-send suppressed once. A pending-result quadruple preserves that session's existing destination, and a fifth press is consumed. Fresh paused single/double behavior, idle start debounce, the sub-90 ms hardware duplicate coalescer, media ownership, and Primary's structural exclusion from exact delivery remain unchanged.
+**Commit:** c8d85a6
+**Guard:** The canonical Mac Mini focused action named and passed all 17 selected tests, including teardown/cancel release of the pending decision gate, active and pending quadruples, fifth-click suppression, paused behavior, duplicate-source coalescing, media restoration, queue policy, Primary isolation, second-chance delivery, and realtime HUD-only behavior. Exact release commit 4cf59e5/build 319 then named and passed all 285 tests in 9 suites. The separate signed Release artifact contains no XCTest payload and is installed as PID 65485 with CDHash fae5f79158ae57d4ef0a94f6abd0ae3c3461da17, executable SHA-256 bf9e99b59bd4ceddc24cf86aa14a13ece062d2d1bb5d2836cea4c3626d451b3b, deep/strict validity, and Automation/audio entitlements. Build 318/CDHash 53240e0d396feb71232735c20e7ee191f6e54354 is preserved as rollback, and `/Applications/VoiceInk.app` remains unchanged. Physical quadruple, fifth-click, and recording-time Escape pass-through checks remain pending and must not be inferred from automated tests.
+---
+
+---
 **Date:** 2026-09-02T11:47:57Z
 **Trigger:** Ethan asked that Escape never cancel a voice recording or otherwise interact with VoiceInk++, because he normally presses Escape for the foreground app.
 **Symptom:** While any recorder panel was visible, bare Escape was registered by VoiceInk++'s global recorder-panel monitor, swallowed before the foreground app could receive it, and used to cancel the active recording.
