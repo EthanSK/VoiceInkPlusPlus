@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-04T21:19:00Z
+**Trigger:** Ethan reported intermittent slow recording starts and asked for a safe speed improvement without breaking recording.
+**Symptom:** Three bounded build-319 examples took 670-960 ms from the handled Primary press to captured microphone input. The deliberate idle double-click decision accounted for 450 ms; microphone startup after commit accounted for 154-261 ms. GPT Live connected later, after local audio capture had already started.
+**Root cause:** `handlePrimaryIdleStartPress` awaited reservation and passive Next-only input capture before `schedulePrimaryStart` began a fresh full debounce sleep. Reservation work and MainActor task scheduling therefore extended the intended decision window. A read-only idle sample showed the main thread waiting normally in AppKit, and VoiceInk CPU returned to zero; this investigation did not establish a System Events stall or a memory leak as the startup cause.
+**Fix:** Commit 22c2cf9 captures an absolute `ContinuousClock` deadline before reservation, then sleeps only until that original deadline. Reservation and task-queue time count inside the existing 450 ms decision window. The same generation, reservation, cancellation and ownership checks remain mandatory, and no microphone, media or recorder UI starts early. This does not eliminate the intentional double-click window or promise a fixed OS microphone-start latency.
+**Commit:** 22c2cf95a1645b24004a284149d5602c8f9686cc
+**Guard:** The deterministic `idlePrimaryReservationUsesOriginalStartDeadline` regression advances an injected clock through 0, 250 and 800 ms of reservation work and proves the deadline stays fixed, no early UI/audio commit occurs, and exactly one start follows decision release. The canonical Mac Mini focused action named and passed 11 tests, including duplicate-source suppression, cancellation while reservation awaits, Primary/Next ownership, and realtime HUD isolation. The exact build-320 commit named and passed all 286 tests in 9 suites. Its separately built Release app contains no XCTest payload/references and is installed with CDHash 63ab397c38a60555206b9f19176249a1aca96266, executable SHA-256 c77f62b4d6cda037ca572a3837b08433f28937c87c53997de83a8ab38cfef460, deep/strict validity and Automation/audio-input entitlements. The five-second heads-up preceded a cooperative quit and one replacement; build 319 is retained for rollback and official VoiceInk remained byte-identical. Physical startup-speed and idle-double-click acceptance on build 320 remain pending and must not be inferred from unit tests or signing.
+---
+
+---
 **Date:** 2026-09-04T20:25:00Z
 **Trigger:** Ethan asked whether recent chat context can displace his realtime dictionary when the request is too long.
 **Symptom:** The shared phrase "prompt limit" obscured whether Vocabulary and recent messages compete for the same budget.
