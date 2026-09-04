@@ -97,10 +97,38 @@ struct PreparedAudioInputFormat: Equatable {
 
     static func canReuse(
         prepared: PreparedAudioInputFormat?,
-        current: PreparedAudioInputFormat?
+        current: PreparedAudioInputFormat?,
+        preparedGeneration: UInt64 = 0,
+        currentGeneration: UInt64 = 0
     ) -> Bool {
         guard let prepared, let current else { return false }
-        return prepared == current
+        return prepared == current && preparedGeneration == currentGeneration
+    }
+}
+
+/// AUHAL start success is not proof that the device is delivering samples. Confirm actual PCM,
+/// including digital silence, without imposing a timer on healthy recording starts. Reset only
+/// with the input gate closed; the audio callback signals once and never waits on the setup queue.
+final class AudioCaptureStartConfirmation: @unchecked Sendable {
+    private let receivedAudio = ManagedAtomic(false)
+    private let signal = DispatchSemaphore(value: 0)
+
+    func reset() {
+        receivedAudio.store(false, ordering: .releasing)
+        while signal.wait(timeout: .now()) == .success {}
+    }
+
+    func noteAudio(frameCount: UInt32) {
+        guard frameCount > 0 else { return }
+        if !receivedAudio.exchange(true, ordering: .acquiringAndReleasing) {
+            signal.signal()
+        }
+    }
+
+    func waitForAudio(timeout: DispatchTime = .now() + 2) -> Bool {
+        if receivedAudio.load(ordering: .acquiring) { return true }
+        _ = signal.wait(timeout: timeout)
+        return receivedAudio.load(ordering: .acquiring)
     }
 }
 
@@ -141,6 +169,12 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private var recordingURL: URL?
     private var preparedInputFormat: PreparedAudioInputFormat?
     private let preparedInputFormatInvalidated = ManagedAtomic(false)
+    // A route can leave and return with identical device IDs/rates while the old AUHAL is dead.
+    // Preserve every invalidation, including one arriving during setup; a matching ASBD alone
+    // cannot acknowledge a hardware topology generation that this unit never prepared against.
+    private let captureConfigurationGeneration = ManagedAtomic<UInt64>(0)
+    private var preparedConfigurationGeneration: UInt64 = 0
+    private let captureStartConfirmation = AudioCaptureStartConfirmation()
     private var observesInputStreamFormat = false
     private let onPreparedInputFormatChanged: @Sendable () -> Void
 
@@ -216,6 +250,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
             return
         }
 
+        let configurationGeneration = captureConfigurationGeneration.load(ordering: .acquiring)
         teardownPreparedAudioUnit()
         currentDeviceID = deviceID
 
@@ -236,7 +271,11 @@ final class CoreAudioRecorder: @unchecked Sendable {
             guard preparedInputFormat != nil else {
                 throw CoreAudioRecorderError.failedToGetDeviceFormat(status: kAudio_ParamError)
             }
-            preparedInputFormatInvalidated.store(false, ordering: .releasing)
+            preparedConfigurationGeneration = configurationGeneration
+            preparedInputFormatInvalidated.store(
+                configurationGeneration != captureConfigurationGeneration.load(ordering: .acquiring),
+                ordering: .releasing
+            )
             setupPreparedInputFormatListener()
         } catch {
             teardownPreparedAudioUnit()
@@ -257,13 +296,20 @@ final class CoreAudioRecorder: @unchecked Sendable {
             // The output file is per recording; the AUHAL setup above is reused.
             try createOutputFile(at: url)
 
+            captureStartConfirmation.reset()
             try startAudioUnit()
+            // This wait runs only on Recorder's serial hardware queue and ends on the first
+            // real PCM buffer, not on speech energy. A dead device must fail locally rather than
+            // looking like a recording and later submitting an empty WAV as an API request.
+            guard captureStartConfirmation.waitForAudio() else {
+                logger.error("Capture start received no PCM within 2 seconds; discarding unusable AUHAL")
+                throw CoreAudioRecorderError.noAudioReceived
+            }
+            logger.notice("Capture start confirmed first PCM buffer")
         } catch {
-            isRecording = false
-            isPaused = false
-            acceptsInputBuffers.store(false, ordering: .releasing)
-            closeOutputFile()
-            recordingURL = nil
+            // Close the callback gate and stop AUHAL before closing the WAV. A late callback
+            // after the confirmation deadline must never write into a disposed file.
+            stopRecording()
             teardownPreparedAudioUnit()
             throw error
         }
@@ -833,12 +879,15 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
 
         // Listener delivery is asynchronous and not guaranteed to precede Start. Always re-read
-        // the live values at the irreversible reuse boundary as well. A mismatch rebuilds AUHAL;
-        // an advisory notification whose values remained identical safely clears the dirty bit.
+        // the live values at the irreversible reuse boundary as well. A mismatch rebuilds AUHAL.
+        // A route/format notification also requires a fresh unit even if its values came back
+        // unchanged: Bluetooth output round trips can invalidate an otherwise identical input.
         let currentFormat = currentInputFormat(for: deviceID)
         guard PreparedAudioInputFormat.canReuse(
             prepared: preparedInputFormat,
-            current: currentFormat
+            current: currentFormat,
+            preparedGeneration: preparedConfigurationGeneration,
+            currentGeneration: captureConfigurationGeneration.load(ordering: .acquiring)
         ) else {
             preparedInputFormatInvalidated.store(true, ordering: .releasing)
             logger.notice(
@@ -854,17 +903,23 @@ final class CoreAudioRecorder: @unchecked Sendable {
     }
 
     var hasInvalidatedPreparedInputFormat: Bool {
-        preparedInputFormatInvalidated.load(ordering: .acquiring)
+        preparedInputFormatInvalidated.load(ordering: .acquiring) ||
+            preparedConfigurationGeneration != captureConfigurationGeneration.load(ordering: .acquiring)
+    }
+
+    /// Thread-safe invalidation only. Recorder owns the serial, idle-only hardware refresh.
+    func invalidatePreparedCapture() {
+        captureConfigurationGeneration.wrappingIncrement(ordering: .acquiringAndReleasing)
+        preparedInputFormatInvalidated.store(true, ordering: .releasing)
     }
 
     fileprivate func notePreparedInputFormatMayHaveChanged() {
         // Property callbacks may arrive on a Core Audio thread. Do no hardware work here. The
         // atomic invalidation makes the next serial prepare fail closed; Recorder may also warm the
         // replacement while idle. During capture, the current unit is deliberately left untouched.
-        if !preparedInputFormatInvalidated.exchange(true, ordering: .acquiringAndReleasing) {
-            logger.notice("AUHAL reported a selected-device input stream-format change; prepared capture marked stale")
-            onPreparedInputFormatChanged()
-        }
+        invalidatePreparedCapture()
+        logger.notice("AUHAL reported a selected-device input stream-format change; prepared capture marked stale")
+        onPreparedInputFormatChanged()
     }
 
     private func currentInputFormat(for deviceID: AudioDeviceID) -> PreparedAudioInputFormat? {
@@ -1172,6 +1227,9 @@ final class CoreAudioRecorder: @unchecked Sendable {
             let data = Data(bytes: outputBuffer, count: byteCount)
             audioChunk(data)
         }
+        if writeStatus == noErr {
+            captureStartConfirmation.noteAudio(frameCount: outputFrameCount)
+        }
     }
 
     // MARK: - Device Info Logging
@@ -1373,6 +1431,7 @@ enum CoreAudioRecorderError: LocalizedError {
     case audioUnitNotFound
     case audioUnitNotInitialized
     case deviceNotAvailable
+    case noAudioReceived
     case failedToCreateAudioUnit(status: OSStatus)
     case failedToEnableInput(status: OSStatus)
     case failedToDisableOutput(status: OSStatus)
@@ -1394,6 +1453,8 @@ enum CoreAudioRecorderError: LocalizedError {
             return String(localized: "AudioUnit not initialized")
         case .deviceNotAvailable:
             return String(localized: "Audio device is no longer available")
+        case .noAudioReceived:
+            return String(localized: "The microphone did not provide audio. Try recording again to rebuild the capture connection.")
         case .failedToCreateAudioUnit(let status):
             return String(format: String(localized: "Failed to create AudioUnit: %lld"), Int64(status))
         case .failedToEnableInput(let status):

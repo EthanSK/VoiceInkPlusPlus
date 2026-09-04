@@ -9,6 +9,56 @@ struct DefaultOutputDeviceSnapshot: Equatable {
     let transportType: AudioDevicePropertyID
 }
 
+/// Observe route changes even when the selected microphone's ID and format stay unchanged.
+/// In particular, a Bluetooth output round trip can invalidate an input-only AUHAL. This class
+/// only reports topology changes; it never changes a system device or touches capture hardware.
+final class AudioHardwareRouteObserver {
+    static let selectors: [AudioObjectPropertySelector] = [
+        kAudioHardwarePropertyDefaultInputDevice,
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioHardwarePropertyDefaultSystemOutputDevice,
+        kAudioHardwarePropertyDevices
+    ]
+
+    private let listener: AudioObjectPropertyListenerBlock
+    private var registeredSelectors: [AudioObjectPropertySelector] = []
+
+    init(onChange: @escaping @Sendable () -> Void) {
+        listener = { _, _ in onChange() }
+        for selector in Self.selectors {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            let status = AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, .main, listener
+            )
+            if status == noErr {
+                registeredSelectors.append(selector)
+            } else {
+                Logger(subsystem: "com.prakashjoshipax.voiceink", category: "Recorder")
+                    .error("Audio route listener registration failed selector=\(selector, privacy: .public) status=\(status, privacy: .public)")
+            }
+        }
+    }
+
+    deinit {
+        // Remove the exact registered block/queue/address tuple; a newly constructed closure
+        // does not unregister a listener and can leave callbacks targeting a dead owner.
+        for selector in registeredSelectors {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, .main, listener
+            )
+        }
+    }
+}
+
 /// Audio device configuration queries (does NOT modify system default device)
 class AudioDeviceConfiguration {
     private static let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AudioDeviceConfiguration")

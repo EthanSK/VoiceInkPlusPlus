@@ -2858,6 +2858,107 @@ struct VoiceInkTests {
         ))
     }
 
+    @Test func audioRouteRoundTripInvalidatesIdenticalPreparedFormat() {
+        var streamFormat = AudioStreamBasicDescription()
+        streamFormat.mSampleRate = 48_000
+        let format = PreparedAudioInputFormat(
+            streamFormat: streamFormat,
+            nominalSampleRate: 48_000
+        )
+        #expect(PreparedAudioInputFormat.canReuse(
+            prepared: format, current: format, preparedGeneration: 3, currentGeneration: 3
+        ))
+        // Output left and returned; the input ID/rate comparison alone still matches.
+        #expect(!PreparedAudioInputFormat.canReuse(
+            prepared: format, current: format, preparedGeneration: 3, currentGeneration: 5
+        ))
+        // A change that arrives during setup must survive that setup's completion.
+        #expect(!PreparedAudioInputFormat.canReuse(
+            prepared: format, current: format, preparedGeneration: 5, currentGeneration: 6
+        ))
+    }
+
+    @Test func captureConfirmationRequiresPCMNotAUHALStartSuccess() {
+        let confirmation = AudioCaptureStartConfirmation()
+        #expect(!confirmation.waitForAudio(timeout: .now()))
+        confirmation.noteAudio(frameCount: 0)
+        #expect(!confirmation.waitForAudio(timeout: .now()))
+        // Silent PCM still counts: there is deliberately no speech/volume threshold.
+        confirmation.noteAudio(frameCount: 160)
+        #expect(confirmation.waitForAudio(timeout: .now()))
+    }
+
+    @Test func captureConfirmationDoesNotReusePreviousRecordingSignal() {
+        let confirmation = AudioCaptureStartConfirmation()
+        confirmation.noteAudio(frameCount: 160)
+        confirmation.noteAudio(frameCount: 160)
+        confirmation.reset()
+        #expect(!confirmation.waitForAudio(timeout: .now()))
+        confirmation.noteAudio(frameCount: 160)
+        #expect(confirmation.waitForAudio(timeout: .now()))
+        confirmation.reset()
+        #expect(!confirmation.waitForAudio(timeout: .now()))
+    }
+
+    @Test func captureConfirmationWakesOnFirstAudioCallback() {
+        let confirmation = AudioCaptureStartConfirmation()
+        DispatchQueue.global().async { confirmation.noteAudio(frameCount: 160) }
+        #expect(confirmation.waitForAudio(timeout: .now() + 1))
+    }
+
+    @Test func audioRouteObserverCoversDefaultsAndBalancesExactListener() throws {
+        #expect(Set(AudioHardwareRouteObserver.selectors) == Set([
+            kAudioHardwarePropertyDefaultInputDevice,
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioHardwarePropertyDefaultSystemOutputDevice,
+            kAudioHardwarePropertyDevices
+        ]))
+        let source = try repositorySource("VoiceInk/Services/AudioDeviceConfiguration.swift")
+        #expect(source.contains("AudioObjectAddPropertyListenerBlock("))
+        #expect(source.contains("AudioObjectRemovePropertyListenerBlock("))
+        #expect(source.components(separatedBy: "&address, .main, listener").count == 3)
+        #expect(!source.contains("AudioObjectSetPropertyData("))
+    }
+
+    @Test func routeRefreshIsStickyIdleOnlyAndDoesNotDelayStart() throws {
+        let source = try repositorySource("VoiceInk/Recorder.swift")
+        let refreshStart = try #require(source.range(of: "    private func scheduleCaptureRefresh("))
+        let refreshEnd = try #require(source.range(
+            of: "    private func schedulePrepareForCurrentDevice(",
+            range: refreshStart.upperBound..<source.endIndex
+        ))
+        let body = String(source[refreshStart.lowerBound..<refreshEnd.lowerBound])
+        let invalidate = try #require(body.range(of: "recorder?.invalidatePreparedCapture()"))
+        let wait = try #require(body.range(of: "Task.sleep("))
+        let activeGuard = try #require(body.range(of: "guard !self.deviceManager.isRecordingActive else"))
+        let prepare = try #require(body.range(of: "self.schedulePrepareForCurrentDevice(reason: reason)"))
+        #expect(invalidate.lowerBound < wait.lowerBound)
+        #expect(activeGuard.lowerBound < prepare.lowerBound)
+        #expect(!body.contains("stopRecording()"))
+        #expect(!body.contains("teardown()"))
+        let start = try #require(source.range(of: "    func startRecording(toOutputFile"))
+        let active = try #require(source.range(
+            of: "deviceManager.isRecordingActive = true", range: start.upperBound..<source.endIndex
+        ))
+        #expect(source[start.lowerBound..<active.lowerBound].contains("captureRefreshTask?.cancel()"))
+    }
+
+    @Test func emptyCaptureFailsLocallyBeforeReportingSuccessfulStart() throws {
+        let source = try repositorySource("VoiceInk/CoreAudioRecorder.swift")
+        let start = try #require(source.range(of: "    func startRecording(toOutputFile"))
+        let end = try #require(source.range(of: "    func pauseRecording()", range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        #expect(body.contains("captureStartConfirmation.reset()"))
+        #expect(body.contains("guard captureStartConfirmation.waitForAudio() else"))
+        #expect(body.contains("throw CoreAudioRecorderError.noAudioReceived"))
+        let cleanup = try #require(body.range(of: "} catch {"))
+        let catchBody = String(body[cleanup.upperBound...])
+        let stop = try #require(catchBody.range(of: "stopRecording()"))
+        let dispose = try #require(catchBody.range(of: "teardownPreparedAudioUnit()"))
+        #expect(stop.lowerBound < dispose.lowerBound)
+        #expect(CoreAudioRecorderError.noAudioReceived.errorDescription?.contains("microphone") == true)
+    }
+
     @Test func sameDeviceSampleRateChangeInvalidatesPreparedAUHAL() {
         let fortyEightKilohertz = AudioStreamBasicDescription(
             mSampleRate: 48_000,

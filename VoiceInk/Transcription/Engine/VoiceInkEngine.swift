@@ -1237,7 +1237,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 retiringOwnerIsCurrent: true,
                 reason: "recording failed to start"
             )
-            NotificationManager.shared.showNotification(title: String(localized: "Recording failed to start"), type: .error)
+            // An accepted AUHAL start with no PCM is a local microphone failure, not an API
+            // rejection. Tell Ethan that the next start rebuilds capture without changing his
+            // shared audio device or asking him to restart the whole application.
+            let failureTitle: String
+            if let captureError = error as? CoreAudioRecorderError,
+               case .noAudioReceived = captureError {
+                failureTitle = captureError.localizedDescription
+            } else {
+                failureTitle = String(localized: "Recording failed to start")
+            }
+            NotificationManager.shared.showNotification(title: failureTitle, type: .error)
             await self.recorderUIManager?.dismissRecorderPanel()
         }
     }

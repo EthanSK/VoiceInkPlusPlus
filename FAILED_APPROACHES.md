@@ -980,6 +980,19 @@ No row may be promoted merely because a later build reused part of it.
 
 ## Recording and transcription concurrency failures
 
+### Accepting matching input format after an output-device round trip
+
+- **State:** REJECTED as sufficient prepared-capture validity or startup acceptance.
+- **Observed result:** During the build-321 incident, the Bose output disconnected immediately
+  before a fresh Scarlett 48 kHz setup. Repeated recordings then connected GPT Live but delivered
+  zero PCM; retained WAV metadata proved zero audio bytes. Restarting only VoiceInk++ restored
+  real partials and non-zero chunks. The output-switch script changes output, not microphone input.
+- **Rule:** Observe default input/output/system-output and device-list changes, force a fresh
+  capture generation after route changes, and require actual PCM after AUHAL start. Defer hardware
+  refresh during active/paused capture; never reset the shared audio system as an app workaround.
+  Reconsider format equality alone only with a documented lifecycle guarantee and a passing real
+  route-round-trip reproduction. A preparation log or unit-suite pass is not that evidence.
+
 ### Treating AudioDeviceID plus availability as prepared-AUHAL validity
 
 - **State:** REJECTED for reusable capture preparation.

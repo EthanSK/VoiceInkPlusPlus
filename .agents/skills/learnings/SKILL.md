@@ -44,6 +44,12 @@ commercial symbol or file names.
 
 For a recorder stuck on **Transcribing**, diagnose the resolved provider before touching delivery code or downgrading the app. Read the active fork domain `com.ethansk.VoiceInkPlusPlus`, decode every `modeConfigurationsV2` entry, and inspect `selectedTranscriptionModelName`, `isRealtimeTranscriptionEnabled`, and `selectedLanguage`; Mode overrides are authoritative over top-level model/language values and are frozen per recording by `ModeRuntimeResolver`. Do not inspect only the legacy `com.prakashjoshipax.VoiceInk` domain. Correlate the resolved provider with `StreamingTranscriptionService` lines such as `Streaming start requested model=` and the first server/socket error. Before switching providers, run a direct end-to-end transcription against the proposed endpoint using synthetic, non-private speech and require a successful response within the normal latency range. Preserve the installed delivery binary when provider/account evidence explains the failure.
 
+For zero-audio recordings, empty-buffer/HTTP 400 failures, or problems after Bluetooth/default audio
+route changes, read [references/audio-capture-recovery.md](references/audio-capture-recovery.md).
+An output-only change can invalidate input capture without changing its ID or sample rate; require
+actual PCM evidence, preserve active/paused recordings, and never reset shared hardware to test it
+while OBS or another protected audio session is active without Ethan's approval.
+
 For OpenAI GPT Live Transcribe work, use `scripts/openai-transcription-probe.swift` with synthetic PCM16 mono 24 kHz plus its WAV equivalent before building, installing, or changing active Modes. Require `session.updated`, at least one real delta, a non-empty completion, and a successful `gpt-transcribe` completed-audio fallback. The WebSocket connection is `wss://api.openai.com/v1/realtime?intent=transcription`; `gpt-live-transcribe` belongs only in `audio.input.transcription.model`. Never revive either rejected `?model=gpt-live-transcribe` or `?model=gpt-realtime-*` connection form. The probe reads the VoiceInk++ key from local secure preferences and must not print transcript contents or credentials.
 
 Keep every OpenAI realtime and completed-audio prompt within VoiceInk++'s 992-character production

@@ -32,6 +32,8 @@ class Recorder: NSObject, ObservableObject {
     private let deviceManager = AudioDeviceManager.shared
     private var deviceSwitchObserver: NSObjectProtocol?
     private var audioDeviceChangedObserver: NSObjectProtocol?
+    private var audioHardwareRouteObserver: AudioHardwareRouteObserver?
+    private var captureRefreshTask: Task<Void, Never>?
     // Re-prepares the AUHAL after a system wake. See setupWakeObserver for the why.
     private var wakeObserver: NSObjectProtocol?
     private var isReconfiguring = false
@@ -75,6 +77,11 @@ class Recorder: NSObject, ObservableObject {
         super.init()
         setupDeviceSwitchObserver()
         setupAudioDeviceChangedObserver()
+        audioHardwareRouteObserver = AudioHardwareRouteObserver { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleCaptureRefresh(reason: "system-audio-route-changed")
+            }
+        }
         setupWakeObserver()
         schedulePrepareForCurrentDevice(reason: "init")
     }
@@ -97,9 +104,8 @@ class Recorder: NSObject, ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // Don't disturb an in-progress recording; prepare() also early-returns if
-                // recording, but skipping here avoids needless setup churn on the audio queue.
-                guard !self.deviceManager.isRecordingActive else { return }
-                self.schedulePrepareForCurrentDevice(reason: "wake")
+                // recording, and scheduleCaptureRefresh defers hardware work until capture stops.
+                self.scheduleCaptureRefresh(reason: "wake")
             }
         }
     }
@@ -123,8 +129,8 @@ class Recorder: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.deviceManager.isRecordingActive else { return }
-                self.schedulePrepareForCurrentDevice(reason: "device-changed")
+                guard let self else { return }
+                self.scheduleCaptureRefresh(reason: "device-changed")
             }
         }
     }
@@ -133,6 +139,7 @@ class Recorder: NSObject, ObservableObject {
         CoreAudioRecorder { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.scheduleCaptureRefresh(reason: "input-format-changed", invalidate: false)
                 guard !self.deviceManager.isRecordingActive else {
                     // A format notification is advisory during capture. Tearing down AUHAL here
                     // would truncate the open WAV and realtime stream; stopRecording performs the
@@ -140,7 +147,6 @@ class Recorder: NSObject, ObservableObject {
                     self.logger.notice("Selected-device input format changed during capture; reprepare deferred until stop")
                     return
                 }
-                self.schedulePrepareForCurrentDevice(reason: "input-format-changed")
             }
         }
     }
@@ -192,6 +198,11 @@ class Recorder: NSObject, ObservableObject {
     }
 
     func startRecording(toOutputFile url: URL) async throws -> RecordingInputDeviceSnapshot? {
+        // The idle refresh delay coalesces hardware notifications, never a user's Start press.
+        // Invalidation already reached CoreAudioRecorder, so prepare() below rebuilds immediately
+        // if Start beats the warm-refresh timer.
+        captureRefreshTask?.cancel()
+        captureRefreshTask = nil
         deviceManager.isRecordingActive = true
 
         let currentDeviceID = deviceManager.getCurrentDevice()
@@ -287,7 +298,7 @@ class Recorder: NSObject, ObservableObject {
         } catch {
             logger.error("Failed to start recording deviceID=\(deviceID, privacy: .public) file=\(url.lastPathComponent, privacy: .public) error=\(error, privacy: .public)")
             await stopRecording()
-            throw RecorderError.couldNotStartRecording
+            throw error
         }
     }
 
@@ -486,6 +497,9 @@ class Recorder: NSObject, ObservableObject {
         }
 
         deviceManager.isRecordingActive = false
+        if captureRefreshTask != nil {
+            scheduleCaptureRefresh(reason: "deferred-audio-route-change", invalidate: false)
+        }
     }
 
     private func muteSystemAudio() {
@@ -550,6 +564,27 @@ class Recorder: NSObject, ObservableObject {
         audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
     }
 
+    private func scheduleCaptureRefresh(reason: String, invalidate: Bool = true) {
+        if invalidate {
+            recorder?.invalidatePreparedCapture()
+        }
+        captureRefreshTask?.cancel()
+        captureRefreshTask = Task { @MainActor [weak self] in
+            // Device removal, output fallback and stream-format callbacks arrive in a burst.
+            // Prepare only after that burst settles, but keep invalidation immediate and sticky.
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            guard !self.deviceManager.isRecordingActive else {
+                // Keep the task marker until stop reschedules it. Never stop/rebuild a healthy
+                // active or paused capture just because the output route changed.
+                self.logger.notice("Audio route refresh deferred until capture stops reason=\(reason, privacy: .public)")
+                return
+            }
+            self.captureRefreshTask = nil
+            self.schedulePrepareForCurrentDevice(reason: reason)
+        }
+    }
+
     private func schedulePrepareForCurrentDevice(reason: String) {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             return
@@ -557,7 +592,11 @@ class Recorder: NSObject, ObservableObject {
 
         let deviceID = deviceManager.getCurrentDevice()
         guard deviceID != 0 else {
-            recorder?.teardown()
+            let currentRecorder = recorder
+            audioSetupQueue.async {
+                guard currentRecorder?.isCurrentlyRecording != true else { return }
+                currentRecorder?.teardown()
+            }
             return
         }
 
@@ -568,6 +607,7 @@ class Recorder: NSObject, ObservableObject {
         audioSetupQueue.async { [logger] in
             do {
                 try coreAudioRecorder.prepare(deviceID: deviceID)
+                logger.notice("Recorder capture prepared reason=\(reason, privacy: .public) deviceID=\(deviceID, privacy: .public)")
             } catch {
                 logger.warning("Recorder prepare failed reason=\(reason, privacy: .public) deviceID=\(deviceID, privacy: .public) error=\(error, privacy: .public)")
             }
@@ -620,6 +660,7 @@ class Recorder: NSObject, ObservableObject {
     // MARK: - Cleanup
 
     deinit {
+        captureRefreshTask?.cancel()
         audioMuteTask?.cancel()
         mediaPauseTask?.cancel()
         audioMeterUpdateTimer?.cancel()

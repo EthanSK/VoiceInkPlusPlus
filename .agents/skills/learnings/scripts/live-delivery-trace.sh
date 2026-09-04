@@ -15,7 +15,7 @@ LOCK_PID_FILE="$LOCK_DIR/pid"
 LAUNCHD_LABEL="com.ethansk.voiceink.live-delivery-trace.$(id -u)"
 LAUNCHD_SERVICE="gui/$(id -u)/$LAUNCHD_LABEL"
 
-PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock" || category == "CodexConversationContext" || category == "TranscriptionRequestContext")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService" || category == "OpenAIStreamingProvider")))'
+PREDICATE='process == "VoiceInkPlusPlus" && ((subsystem == "com.ethansk.VoiceInkPlusPlus" && (category == "VIPPDebug" || category == "FocusLock" || category == "CodexConversationContext" || category == "TranscriptionRequestContext")) || (subsystem == "com.prakashjoshipax.voiceink" && (category == "ShortcutMonitor" || category == "RecordingShortcutManager" || category == "CursorPaster" || category == "StreamingTranscriptionSession" || category == "StreamingTranscriptionService" || category == "OpenAIStreamingProvider" || category == "Recorder" || category == "CoreAudioRecorder")))'
 
 usage() {
   printf 'usage: %s start|status|stop|show [line-count]\n' "$0" >&2
@@ -323,6 +323,11 @@ run_trace() {
       *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Recording shortcut'*|\
       *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Next Track'*|\
       *'[com.prakashjoshipax.voiceink:RecordingShortcutManager]'*'Event-tap'*|\
+      *'[com.prakashjoshipax.voiceink:CoreAudioRecorder]'*'Capture start confirmed first PCM buffer'*|\
+      *'[com.prakashjoshipax.voiceink:CoreAudioRecorder]'*'Capture start received no PCM within 2 seconds'*|\
+      *'[com.prakashjoshipax.voiceink:CoreAudioRecorder]'*'AUHAL reported a selected-device input stream-format change'*|\
+      *'[com.prakashjoshipax.voiceink:Recorder]'*'Recorder capture prepared reason='*|\
+      *'[com.prakashjoshipax.voiceink:Recorder]'*'Audio route refresh deferred until capture stops reason='*|\
       *'[com.prakashjoshipax.voiceink:StreamingTranscriptionSession]'*'Streaming session prepare'*|\
       *'[com.prakashjoshipax.voiceink:StreamingTranscriptionSession]'*'Streaming session connected'*|\
       *'[com.prakashjoshipax.voiceink:StreamingTranscriptionSession]'*'Streaming finalization started'*|\
