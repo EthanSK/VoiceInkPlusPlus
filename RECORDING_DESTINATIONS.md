@@ -114,7 +114,8 @@ confirmed History action.
 After a normal stop, Primary double-click also selects **Won’t paste** while that result is still
 transcribing and no newer recording owns the microphone. Click one identifies the newest pending
 result; click two cancels the prospective new recording and changes only that result to clipboard-only.
-A single click still starts a new dictation after the existing debounce. If the identified result has
+A single click still starts a new dictation after that pending-result decision window. Fully idle
+starts have no such wait. If the identified result has
 already finished transcription, do not select an older card or claim that an issued paste can be undone.
 The policy freezes before post-processing/Mode effects. Provider errors remain quiet for this deliberate
 no-paste route, and no extra playback command is sent because the earlier stop already restored owned media.
@@ -124,8 +125,8 @@ bound to the click-one session and never start another recording. Click three is
 click four atomically restores normal completion and suppresses only that session's configured
 auto-send. The pipeline waits for this bounded decision before freezing completion policy, so a provider
 result cannot commit the intermediate clipboard-only choice while a valid fourth press is still
-possible. With no eligible pending transcription, idle click behavior remains exactly one-click Start
-and two-click cancel; do not invent an idle quadruple action.
+possible. With no eligible pending transcription, one idle click starts immediately after reservation;
+do not invent an idle quadruple action or restore the superseded startup debounce.
 
 The normal single-stop decision still uses the shorter of the macOS double-click interval and 0.45
 seconds, so ordinary dictation stays responsive. After click two has already canceled that pending
@@ -156,7 +157,7 @@ engine switch, not a fourth destination route: never merge or reinterpret the th
 
 ## Terminology
 
-The **primary button** is Ethan's normal/thumb/toggle recording button: while idle, one press starts after a 0.45-second debounce, while two accepted presses inside that window cancel the pending start before UI/audio/media work. Once recording begins, pressing that same button again performs the existing normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
+The **primary button** is Ethan's normal/thumb/toggle recording button: while fully idle, one press starts immediately after reservation, without a startup debounce. Only a real pending transcription retains a short decision window so double-click can select Won't paste for that existing result. Once recording begins, pressing that same button again performs the existing normal stop. **Next button** is the preferred name for the separate forward/secondary/latch/retarget button. It emits the standard macOS **Next Track** media event, which is why implementation code and system configuration use “Next Track.” These aliases do not name extra modes. “Second chance” refers only to a Next-button retarget after a primary-button normal stop while transcription is still loading.
 
 Read [VoiceInk++ terminology](TERMINOLOGY.md) for the complete alias map, timing table, and history of the deliberately reverted Next-toggle experiment.
 Before changing capture, paste, focus, Return, semantic Send, or verification, also read
@@ -273,8 +274,8 @@ event through its existing vendor software, such as Logitech G HUB. No VoiceInk-
 macro and no Karabiner configuration are required.
 
 Keep the ordinary mouse button assigned to the existing VoiceInk++ recording shortcut. A normal
-single idle press begins recording after VoiceInk++'s 0.45-second start-debounce window, while an
-idle double press cancels before recording UI/audio/media lifecycle begins. A normal single stop
+single fully idle press begins recording immediately after reservation, with no start-debounce
+window. A still-transcribing result keeps its short new-recording versus Won't paste decision. A normal single stop
 still resolves after the separate at-most-0.45-second multi-click decision window; a recording-time
 double press finishes to clipboard if no third press arrives, and a triple press pauses. While
 paused, one press resumes after the short decision window and two presses finish immediately to the

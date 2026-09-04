@@ -11,6 +11,11 @@ Compound verified project knowledge for Codex and Claude Code. Treat `LEARNINGS.
 
 Improve this skill as part of using it. Whenever use, debugging, feature work, deployment, investigation, or user feedback produces a durable verified finding, update `LEARNINGS.md` during the same task without waiting for a separate request. When real evidence rejects a plausible mechanism or exposes a repeated regression trap, also update `FAILED_APPROACHES.md` with the observed result and the narrow condition required before reconsideration. When a finding changes how future agents should gather, interpret, validate, or preserve evidence, update this skill's instructions, scripts, tests, or references too. Retest affected behavior and validate the skill before finishing. Preserve reusable evidence; never record guesses, duplicate guidance, secrets, credentials, or transient runtime state.
 
+## Skill usage announcement
+
+Tell Ethan when this skill causes an action or pause, and briefly explain which project safety or
+validation contract applies.
+
 ## Start with prior evidence
 
 1. Resolve the repository root and read its `AGENTS.md`.
@@ -153,7 +158,10 @@ Primary current-input paste, force only its auto-send key to `.none`, restore ow
 and consume a fifth press. Store the override on the recording session and freeze it with
 clipboard-only intent after the provider returns, before Mode effects. For a pending transcription,
 bind all four clicks to the click-one session and hold that same bounded freeze; with no eligible
-pending result, retain ordinary idle one-click Start/two-click cancel and define no idle quadruple.
+pending result, start on the first idle press immediately after reservation, without a click-decision
+timer or idle quadruple. Keep the sub-90 ms duplicate coalescer and asynchronous reservation guards;
+neither may delay the first accepted press. Only a real pending transcription retains the short
+new-recording versus Won't paste decision, with reservation work counted inside its original deadline.
 
 Treat a recording-time double/triple/quadruple-click as one platform-bounded sequence. Keep first-to-second capped so a
 normal stop stays responsive, but after click two has canceled that deferred stop, honor the full

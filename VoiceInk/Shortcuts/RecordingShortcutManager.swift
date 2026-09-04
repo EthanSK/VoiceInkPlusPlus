@@ -523,11 +523,11 @@ private final class RecordingShortcutModeSource {
 
 /// Pure timing state for Primary presses while no recording owns the microphone.
 ///
-/// Starting capture immediately makes an accidental double-click briefly create a
-/// session, pause media, and enter the cancellation path. Delay only the idle start:
-/// click one reserves the forthcoming capture, click two inside the same bounded
-/// window cancels that reservation, and extra clicks in the consumed burst are
-/// ignored. Recording-time stop/clipboard/pause classification remains entirely in
+/// A pending transcription needs a bounded click decision so click two can select
+/// Won't paste for that result instead of starting another recording. Fully idle
+/// starts consume their reservation immediately, without scheduling this delay.
+/// The generation also prevents a canceled asynchronous reservation from reviving
+/// a start. Recording-time stop/clipboard/pause classification remains entirely in
 /// `PrimaryRecordingPressCoordinator` below.
 struct PrimaryIdleStartPressCoordinator {
     enum Decision: Equatable {
@@ -1543,17 +1543,18 @@ final class RecordingShortcutModeHandler {
     ) async {
         switch primaryIdleStartCoordinator.registerPress(eventTime: eventTime) {
         case .deferStart(let generation):
+            // Only an existing pending transcription needs a click decision: its
+            // double-click means Won't paste. Fully idle Start has no debounce.
             // Reservation includes passive Next-only input capture and can itself
-            // take time or yield during cleanup. Count that work inside the existing
-            // idle decision window instead of adding a fresh full delay afterward.
-            // No UI/audio/media starts early, and the same generation still lets
-            // click two cancel a reservation that has not returned yet.
+            // take time or yield during cleanup. When a decision is needed, count
+            // that work inside its original deadline, never add a fresh full delay.
             let deadline = primaryStartDecisionClock().advanced(
                 by: .seconds(primaryIdleStartCoordinator.startDecisionInterval)
             )
             pendingPrimaryCompletionTarget = pendingClipboardOnlySessionID().map {
                 (generation: generation, sessionID: $0)
             } // Bind click two to the result present at click one, not an older card revealed if that result finishes meanwhile.
+            let needsPendingCompletionDecision = pendingPrimaryCompletionTarget != nil
             if let target = pendingPrimaryCompletionTarget {
                 _ = applyPendingPrimaryCompletionGesture(
                     target.sessionID,
@@ -1582,12 +1583,27 @@ final class RecordingShortcutModeHandler {
                 cancelRecordingStartReservation(requestID)
                 return
             }
-            pendingPrimaryStartReservation = (
+            let pending = (
                 generation: generation,
                 requestID: requestID,
                 modeId: modeId
             )
-            schedulePrimaryStart(generation: generation, deadline: deadline)
+            if needsPendingCompletionDecision {
+                pendingPrimaryStartReservation = pending
+                schedulePrimaryStart(generation: generation, deadline: deadline)
+            } else {
+                // Reserve FIFO continuation and the tentative Next input first,
+                // then start in this same handler turn. Do not arm a sleep or keep
+                // the start click as click one of the recording-time gestures.
+                guard primaryIdleStartCoordinator.consumeDeferredStart(
+                    generation: generation
+                ) else {
+                    cancelRecordingStartReservation(requestID)
+                    return
+                }
+                vippLog.info("shortcut: Primary idle single press starts immediately; no click-decision wait")
+                await commitPrimaryStart(pending)
+            }
 
         case .cancelPendingStart:
             primaryStartDecisionTask?.cancel()
@@ -1660,7 +1676,7 @@ final class RecordingShortcutModeHandler {
     private func schedulePrimaryStart(generation: Int, deadline: ContinuousClock.Instant) {
         primaryStartDecisionTask?.cancel()
         let waitForDecision = waitForPrimaryStartDecision
-        vippLog.info("shortcut: Primary idle press awaiting original decision deadline; reservation time included")
+        vippLog.info("shortcut: Primary pending-transcription press awaiting original decision deadline; reservation time included")
         primaryStartDecisionTask = Task { @MainActor [weak self] in
             do {
                 // Sleeping to an absolute monotonic deadline also counts time this
@@ -1698,7 +1714,7 @@ final class RecordingShortcutModeHandler {
             return
         }
 
-        vippLog.info("shortcut: Primary idle single-press window expired → recording start")
+        vippLog.info("shortcut: Primary start committed → recording start")
         if let startReservedRecording {
             await startReservedRecording(pending.requestID, pending.modeId)
         } else {

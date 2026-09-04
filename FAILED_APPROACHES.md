@@ -85,6 +85,18 @@ These are the highest-cost mistakes from the audited session.
 
 ## Equivalent Primary source failures
 
+### Waiting for an accidental second click before a fully idle start
+
+- **State:** SUPERSEDED by Ethan's 2026-09-04 correction, not a broken timer implementation.
+- **Earlier contract:** Build 305 intentionally delayed idle Start by 450 ms so an accidental second
+  click could prevent all recorder/audio/media startup. Build 320 overlapped reservation work with
+  that deadline, but the intentional wait still delayed the HUD Ethan wanted immediately.
+- **Use instead:** With no eligible pending transcription, reserve continuation and the tentative
+  Next input, then start without a click-decision timer. Preserve the separate recording/paused
+  gestures and the pending-transcription Won't paste decision; do not count Start as a stop click.
+- **Reconsider only if:** Ethan explicitly asks again for accidental idle double-click prevention
+  and accepts the resulting startup delay. Hardware duplicate coalescing is not such a request.
+
 ### Restoring the legacy 500 ms Primary shortcut cooldown
 
 - **State:** REJECTED for the Primary toggle route.

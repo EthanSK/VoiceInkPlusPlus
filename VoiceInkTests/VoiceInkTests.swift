@@ -2054,7 +2054,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func duplicatePrimaryChordCannotCancelDebouncedHandlerStart() async {
+    @Test func duplicatePrimaryChordCannotCancelImmediateHandlerStart() async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .idle,
             isRecorderVisible: false
@@ -2123,7 +2123,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func idlePrimaryDoublePressReleasesReservationWithoutStarting() async {
+    @Test func pendingPrimaryDoublePressReleasesReservationWithoutStarting() async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .idle,
             isRecorderVisible: false
@@ -2139,6 +2139,7 @@ struct VoiceInkTests {
             toggleRecorderPanel: { _, destination in
                 state.toggle(destination: destination)
             },
+            pendingClipboardOnlySessionID: { requestID },
             cancelRecording: {},
             reserveRecordingStart: {
                 reserved.append(requestID)
@@ -2400,7 +2401,7 @@ struct VoiceInkTests {
 
     @MainActor
     @Test(arguments: [0.0, 0.25, 0.8])
-    func idlePrimaryReservationUsesOriginalStartDeadline(reservationSeconds: Double) async throws {
+    func pendingPrimaryReservationUsesOriginalStartDeadline(reservationSeconds: Double) async throws {
         let state = PrimaryShortcutHandlerTestState(recordingState: .idle, isRecorderVisible: false)
         let requestID = UUID()
         let pressTime = ContinuousClock.now
@@ -2413,6 +2414,7 @@ struct VoiceInkTests {
             isRecorderVisible: { state.isRecorderVisible },
             recordingState: { state.recordingState },
             toggleRecorderPanel: { _, destination in state.toggle(destination: destination) },
+            pendingClipboardOnlySessionID: { requestID },
             cancelRecording: {},
             reserveRecordingStart: {
                 // Advance the injected clock without a flaky wall-clock assertion.
@@ -2449,7 +2451,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test(arguments: [false, true]) func idlePrimarySinglePressReservesImmediatelyThenStartsAfterWindow(hasPendingTranscription: Bool) async {
+    @Test(arguments: [false, true]) func primaryStartWaitsOnlyForPendingTranscriptionDecision(hasPendingTranscription: Bool) async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .idle,
             isRecorderVisible: hasPendingTranscription
@@ -2495,10 +2497,50 @@ struct VoiceInkTests {
             mode: .toggle
         )
         #expect(reserved == [requestID])
-        #expect(committed.isEmpty)
-        #expect(state.recordingState == .idle)
+        #expect(committed == (hasPendingTranscription ? [] : [requestID]))
+        #expect(state.recordingState == (hasPendingTranscription ? .idle : .starting))
 
         try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(committed == [requestID])
+        #expect(state.recordingState == .starting)
+        #expect(state.isRecorderVisible)
+        handler.reset()
+    }
+
+    @MainActor
+    @Test(arguments: [false, true])
+    func idlePrimaryStartsWithoutSchedulingDecisionSleep(isRecorderVisible: Bool) async {
+        let state = PrimaryShortcutHandlerTestState(
+            recordingState: .idle,
+            isRecorderVisible: isRecorderVisible
+        )
+        let requestID = UUID()
+        var reserved = false
+        var committed: [UUID] = []
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in state.toggle(destination: destination) },
+            pendingClipboardOnlySessionID: { nil },
+            cancelRecording: {},
+            reserveRecordingStart: {
+                reserved = true
+                return requestID
+            },
+            startReservedRecording: { id, _ in
+                #expect(reserved)
+                committed.append(id)
+                state.toggle(destination: .primaryCurrentInput)
+            },
+            waitForPrimaryStartDecision: { _ in
+                Issue.record("No pending result means no start-decision timer, even if a stale HUD is visible")
+            }
+        )
+
+        await handler.handleKeyDown(action: .primaryRecording, eventTime: 105, mode: .toggle)
+        // No sleep/yield is needed: the first accepted press commits synchronously
+        // after reservation, without becoming a recording-time stop click.
         #expect(committed == [requestID])
         #expect(state.recordingState == .starting)
         #expect(state.isRecorderVisible)
