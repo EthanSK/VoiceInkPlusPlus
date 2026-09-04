@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-04T20:25:00Z
+**Trigger:** Ethan asked whether recent chat context can displace his realtime dictionary when the request is too long.
+**Symptom:** The shared phrase "prompt limit" obscured whether Vocabulary and recent messages compete for the same budget.
+**Root cause:** They are separate request fields: `OpenAITranscriptionConfiguration.realtimeSessionUpdate` sends the frozen Vocabulary as `keywords`, while static guidance plus optional Codex/History messages use `prompt`. The completed-audio fallback reuses the same snapshot as separate `keywords[]` and `prompt` fields. Chat composition drops oldest whole entries and cannot remove keywords. Vocabulary has its own 100-term normalization cap; excess terms are currently omitted without a visible warning, so never promise unlimited dictionary delivery.
+**Fix:** Investigation only; retained the signed build-319 binary. All seven live Modes still select English GPT Live, recent context is enabled, and the 82 stored Vocabulary terms were unique and passed keyword validation. New dictionary edits take effect on the next recording-owned snapshot, not an already-open realtime session.
+**Commit:** 4cf59e5 (audited installed build 319); a796137 (prompt reserve)
+**Guard:** Existing `realtimeAndCompletedAudioFallbackReceiveTheIdenticalFrozenPrompt` and `recentHistoryNeverPromotesTermsIntoVocabulary` pin field separation and snapshot parity. The preserved 2026-09-02 23:46:19 recording trace proves `codexMessages=4 promptChars=959 keywords=82`, GPT Live connection in 0.912 seconds, a first partial, and non-empty finalization in 0.670 seconds after stop. This proves bounded Codex-context streaming, not guaranteed recognition of a particular dictated name. No transcript, prompt, dictionary list, or task identity was copied into this evidence.
+---
+
+---
 **Date:** 2026-09-02T18:38:30Z
 **Trigger:** Ethan asked for a four-click Primary gesture that finishes normal paste without the configured Return/Enter, including while the newest result is still transcribing.
 **Symptom:** Primary already distinguished single-stop, double-click **Won't paste**, and triple-click Pause, but there was no same-gesture way to keep normal paste and suppress only auto-send. A pending transcription could also finish the provider between clicks and freeze the intermediate clipboard-only choice before click four arrived.
