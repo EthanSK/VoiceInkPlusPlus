@@ -2399,6 +2399,56 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test(arguments: [0.0, 0.25, 0.8])
+    func idlePrimaryReservationUsesOriginalStartDeadline(reservationSeconds: Double) async throws {
+        let state = PrimaryShortcutHandlerTestState(recordingState: .idle, isRecorderVisible: false)
+        let requestID = UUID()
+        let pressTime = ContinuousClock.now
+        var clockTime = pressTime
+        var observedDeadline: ContinuousClock.Instant?
+        var decisionContinuation: CheckedContinuation<Void, Never>?
+        var committed: [UUID] = []
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { state.isRecorderVisible },
+            recordingState: { state.recordingState },
+            toggleRecorderPanel: { _, destination in state.toggle(destination: destination) },
+            cancelRecording: {},
+            reserveRecordingStart: {
+                // Advance the injected clock without a flaky wall-clock assertion.
+                // Even work longer than the debounce must not create a new window.
+                clockTime = clockTime.advanced(by: .seconds(reservationSeconds))
+                return requestID
+            },
+            startReservedRecording: { id, _ in
+                committed.append(id)
+                state.toggle(destination: .primaryCurrentInput)
+            },
+            primaryStartDebounceInterval: 0.45,
+            primaryStartDecisionClock: { clockTime },
+            waitForPrimaryStartDecision: { deadline in
+                observedDeadline = deadline
+                await withCheckedContinuation { decisionContinuation = $0 }
+            }
+        )
+
+        await handler.handleKeyDown(action: .primaryRecording, eventTime: 100, mode: .toggle)
+        for _ in 0..<100 where decisionContinuation == nil { await Task.yield() }
+        let continuation = try #require(decisionContinuation)
+
+        #expect(observedDeadline == pressTime.advanced(by: .seconds(0.45)))
+        #expect(committed.isEmpty)
+        #expect(state.recordingState == .idle)
+        #expect(!state.isRecorderVisible)
+
+        continuation.resume()
+        for _ in 0..<100 where committed.isEmpty { await Task.yield() }
+        #expect(committed == [requestID])
+        #expect(state.recordingState == .starting)
+        handler.reset()
+    }
+
+    @MainActor
     @Test(arguments: [false, true]) func idlePrimarySinglePressReservesImmediatelyThenStartsAfterWindow(hasPendingTranscription: Bool) async {
         let state = PrimaryShortcutHandlerTestState(
             recordingState: .idle,

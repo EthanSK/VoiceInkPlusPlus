@@ -984,6 +984,8 @@ final class RecordingShortcutModeHandler {
     private let reserveRecordingStart: @MainActor () async -> UUID?
     private let cancelRecordingStartReservation: @MainActor (UUID) -> Void
     private let startReservedRecording: (@MainActor (UUID, UUID?) async -> Void)?
+    private let primaryStartDecisionClock: @MainActor () -> ContinuousClock.Instant
+    private let waitForPrimaryStartDecision: @MainActor (ContinuousClock.Instant) async throws -> Void
     // Feature A (2026-06-21): resolve the active Shortcut for an action so we can read
     // whether it's modifier-only + its required modifier mask. See the STOP-hold logic.
     private let shortcutForAction: @MainActor (ShortcutAction) -> Shortcut?
@@ -1100,7 +1102,11 @@ final class RecordingShortcutModeHandler {
         primaryTriplePressInterval: TimeInterval = PrimaryRecordingPressCoordinator.triplePressContinuationInterval(
             systemDoubleClickInterval: NSEvent.doubleClickInterval
         ),
-        primaryDuplicateChordInterval: TimeInterval? = nil
+        primaryDuplicateChordInterval: TimeInterval? = nil,
+        primaryStartDecisionClock: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+        waitForPrimaryStartDecision: @escaping @MainActor (ContinuousClock.Instant) async throws -> Void = { deadline in
+            try await Task.sleep(until: deadline, clock: .continuous)
+        }
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
         self.isRecorderVisible = isRecorderVisible
@@ -1118,6 +1124,8 @@ final class RecordingShortcutModeHandler {
         self.reserveRecordingStart = reserveRecordingStart
         self.cancelRecordingStartReservation = cancelRecordingStartReservation
         self.startReservedRecording = startReservedRecording
+        self.primaryStartDecisionClock = primaryStartDecisionClock
+        self.waitForPrimaryStartDecision = waitForPrimaryStartDecision
         self.shortcutForAction = shortcutForAction
         self.primaryIdleStartCoordinator = PrimaryIdleStartPressCoordinator(
             startDecisionInterval: primaryStartDebounceInterval ?? primaryDoublePressInterval,
@@ -1535,6 +1543,14 @@ final class RecordingShortcutModeHandler {
     ) async {
         switch primaryIdleStartCoordinator.registerPress(eventTime: eventTime) {
         case .deferStart(let generation):
+            // Reservation includes passive Next-only input capture and can itself
+            // take time or yield during cleanup. Count that work inside the existing
+            // idle decision window instead of adding a fresh full delay afterward.
+            // No UI/audio/media starts early, and the same generation still lets
+            // click two cancel a reservation that has not returned yet.
+            let deadline = primaryStartDecisionClock().advanced(
+                by: .seconds(primaryIdleStartCoordinator.startDecisionInterval)
+            )
             pendingPrimaryCompletionTarget = pendingClipboardOnlySessionID().map {
                 (generation: generation, sessionID: $0)
             } // Bind click two to the result present at click one, not an older card revealed if that result finishes meanwhile.
@@ -1571,7 +1587,7 @@ final class RecordingShortcutModeHandler {
                 requestID: requestID,
                 modeId: modeId
             )
-            schedulePrimaryStart(generation: generation)
+            schedulePrimaryStart(generation: generation, deadline: deadline)
 
         case .cancelPendingStart:
             primaryStartDecisionTask?.cancel()
@@ -1641,14 +1657,16 @@ final class RecordingShortcutModeHandler {
         }
     }
 
-    private func schedulePrimaryStart(generation: Int) {
+    private func schedulePrimaryStart(generation: Int, deadline: ContinuousClock.Instant) {
         primaryStartDecisionTask?.cancel()
-        let delay = primaryIdleStartCoordinator.startDecisionInterval
-        vippLog.info("shortcut: Primary idle press deferred for \(delay, privacy: .public)s awaiting accidental second click")
+        let waitForDecision = waitForPrimaryStartDecision
+        vippLog.info("shortcut: Primary idle press awaiting original decision deadline; reservation time included")
         primaryStartDecisionTask = Task { @MainActor [weak self] in
-            let nanoseconds = UInt64(delay * 1_000_000_000)
             do {
-                try await Task.sleep(nanoseconds: nanoseconds)
+                // Sleeping to an absolute monotonic deadline also counts time this
+                // task spent queued on MainActor. An overdue reservation gets no
+                // extra sleep, but all cancellation/ownership guards still run.
+                try await waitForDecision(deadline)
             } catch {
                 return
             }
