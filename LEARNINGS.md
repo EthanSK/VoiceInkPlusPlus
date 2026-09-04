@@ -25,6 +25,26 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-04T22:32:31Z
+**Trigger:** Ethan confirmed a VoiceInk++ restart restored capture after his Bose output auto-switch round trip and asked for an automatic capture refresh and release.
+**Symptom:** The output watcher logged Scarlett-to-Bose at 22:35 and Bose disconnect at 22:58, matching the failed process's input-format event. Subsequent GPT Live requests connected but captured zero PCM and header-only WAVs, then failed with empty-buffer/HTTP 400 errors. The user-restarted build 321 produced real partials and non-zero streaming chunks again.
+**Root cause:** Device-list observation and matching input ID/ASBD/nominal rate were insufficient capture-validity boundaries: default input/output/system-output changes were not observed, an unchanged format could acknowledge a stale unit, and successful AudioOutputUnitStart was accepted without a single audio buffer. The exact internal HAL failure was not independently reproduced; the route/acceptance gaps are verified from source and incident evidence.
+**Fix:** Build 322 observes all system audio-route/device-list edges, invalidates capture with a generation that survives changes during setup, coalesces idle refresh work, and refreshes immediately when Start beats that idle timer. Active/paused capture keeps its WAV and stream until normal stop. A serial-queue first-PCM confirmation accepts silence immediately and fails locally after two seconds without audio, closing the callback gate/unit before file disposal and leaving the next start able to rebuild. No system device/rate, playback rule, provider request, dictionary or switching script is changed. The learnings skill routes audio incidents to a focused recovery reference and the privacy trace includes only new capture-state metadata.
+**Commit:** 5aff67de334376ecaef2295d4f79127a11bc9764
+**Guard:** The canonical Mini runner named and passed 17 focused tests, then all 294 tests in 9 suites on the exact build-322 source. The separately built release contains no XCTest payload/dependency; deep/strict signature and outer Automation/audio-input entitlements pass. Installed build 322 has CDHash f2078a6d29e5fd45070da637cc2394742cd573df and executable SHA-256 37048461b44693670fce2f757a40589d86ce2ebe74b114ac80c296d6ec021397. The signed archive SHA-256 is 8d0a11081cfa96fba64d317d14033cd2ebda190e64de2cb220558597f56fe75d. A delivered native five-second notification preceded one cooperative replacement, build 321 remains recoverable, the official VoiceInk executable is unchanged, and the new process launched inactive/unhidden with its prior window bounds. Seven trace-filter positive/privacy-negative fixtures, shell syntax and skill validation passed. Installed first-PCM and a physical Bose/Scarlett round trip remain acceptance checks; the protected OBS recording was not interrupted for testing.
+---
+
+---
+**Date:** 2026-09-04T22:08:29Z
+**Trigger:** Ethan: Emergency, HTTP 400 on every transcription.
+**Symptom:** On installed build 321, successive GPT Live sessions connected successfully but stopped with receivedChunks=0, sentChunks=0 and receivedBytes=0. The provider rejected the empty commit; completed-audio fallback also returned HTTP 400. Two correlated retained WAV files were 4096-byte headers with zero audio bytes and zero duration.
+**Root cause:** The observed failures originate before transcription: no microphone samples reach either the WAV or streaming callback. A selected Scarlett input stream-format notification at 22:58 preceded a fresh 48 kHz AUHAL setup, so this occurrence cannot be explained solely by the old missing-format-listener defect. Why the rebuilt capture produced no samples remains unverified; the setup log is not proof of working capture.
+**Fix:** Diagnostic evidence only; no runtime restart, provider/settings change, hardware-rate write, or source fix performed. Preserve OBS and the shared audio device. A VoiceInk++-only restart is a proposed recovery step, not a proven permanent repair.
+**Commit:** None; incident observed on bd7ded77e69debf00a43876d72b96c233b758e9d/build 321.
+**Guard:** Require non-zero captured WAV audio and streaming chunk/partial evidence after any recovery. All seven live Modes resolve English GPT Live; request-context counts remain within the existing prompt/keyword bounds. Do not call an HTTP 400 a provider outage or assume a format-triggered rebuild succeeded from initialization alone.
+---
+
+---
 **Date:** 2026-09-04T21:37:00Z
 **Trigger:** Ethan explicitly removed the idle accidental-double-click requirement: one click should start immediately, with multi-click detection needed only while VoiceInk is already recording, paused, or transcribing.
 **Symptom:** Build 320 correctly overlapped reservation with the original 450 ms deadline, but that intentional start-decision window still delayed the recorder HUD. The earlier build-305 idle double-click prevention contract no longer matched Ethan's preference.
