@@ -25,6 +25,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-04T21:37:00Z
+**Trigger:** Ethan explicitly removed the idle accidental-double-click requirement: one click should start immediately, with multi-click detection needed only while VoiceInk is already recording, paused, or transcribing.
+**Symptom:** Build 320 correctly overlapped reservation with the original 450 ms deadline, but that intentional start-decision window still delayed the recorder HUD. The earlier build-305 idle double-click prevention contract no longer matched Ethan's preference.
+**Root cause:** `handlePrimaryIdleStartPress` scheduled a decision timer for every prospective start, even when there was no pending result whose Won't paste gesture needed disambiguation.
+**Fix:** Commit bd7ded7 consumes and commits a fully idle start reservation in the same handler turn, without scheduling the decision sleep. Only a real pending transcription retains its original bounded new-recording versus Won't paste decision and the build-320 reservation/deadline overlap. The sub-90 ms duplicate-chord filter, stale/canceled reservation guards, FIFO continuation, passive Next-only input capture, and recording/paused/pending completion gestures remain unchanged. Start is not counted as a recording-time stop click. Updated the canonical instructions and learnings skill to prevent restoring the superseded startup delay.
+**Commit:** bd7ded77e69debf00a43876d72b96c233b758e9d
+**Guard:** The new `idlePrimaryStartsWithoutSchedulingDecisionSleep` proves immediate same-turn commit with no sleep call, both with no HUD and with an ineligible stale HUD. The revised parameterized start test proves only a real pending transcription waits; the pending-result deadline, cancellation-during-reservation, duplicate, paused/quadruple, Primary/Next, queue, and realtime-HUD guards also pass. The Mac Mini canonical focused action named and passed 17 tests, then the exact build-321 commit named and passed all 287 tests in 9 suites. The separate signed Release app has no XCTest payload/references and is installed with CDHash 9b1aecd12d81da2884647920922cbcd019e9023b, executable SHA-256 6fd20ff1bd4338d2cafdb3c45a282e048d18858157849d02b415709ccf06b4f3, deep/strict validity and Automation/audio-input entitlements. The five-second native warning preceded cooperative quit and one swap; build 320 is preserved for rollback, official VoiceInk remains byte-identical, and the app is running non-hidden. Physical startup/HUD latency and recording-time double-click acceptance on build 321 remain pending; removing the timer does not prove zero microphone, Accessibility-capture, event-dispatch, or OS latency. The updated skill validates and its search helper finds the explicit superseded-startup entry.
+---
+
+---
 **Date:** 2026-09-04T21:19:00Z
 **Trigger:** Ethan reported intermittent slow recording starts and asked for a safe speed improvement without breaking recording.
 **Symptom:** Three bounded build-319 examples took 670-960 ms from the handled Primary press to captured microphone input. The deliberate idle double-click decision accounted for 450 ms; microphone startup after commit accounted for 154-261 ms. GPT Live connected later, after local audio capture had already started.
