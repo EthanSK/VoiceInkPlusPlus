@@ -25,6 +25,17 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-09-09T17:48:58Z
+**Trigger:** Ethan asked for a self-contained VoiceInk++ repository including the YouTube/Chrome extension and agent setup.
+**Symptom:** Public VoiceInk++ setup referenced a YouTube workflow whose companion source was absent.
+**Root cause:** The Chrome extension, native host and menu app lived in a separate local project; its build also defaulted to a personal signing identity and generated an icon with undeclared Pillow.
+**Fix:** Bundle the companion, tests, icon and agent guide under companions/youtube-bridge; default to ad-hoc signing, include the artwork generator separately, and serialize installer paths as JSON/plist.
+**Commit:** 7b070b2246cf789d2376ca6629b217634ca66cd2
+**Guard:** Run scripts/test.sh and build the copied standalone folder on the Mac Mini; verify host/app signatures and installer paths containing spaces, quotes and ampersands. Public main does not yet emit the optional preserving-playback event.
+---
+
+
+---
 **Date:** 2026-07-25T18:57:39Z
 **Trigger:** Ethan asked for the live website URL and for Claude Opus 5 to review and improve the already signed-off public launch.
 **Symptom:** The public Pages route lab still claimed Primary locked the exact input focused at stop, duplicated route copy in JavaScript, and hid the two Next routes when JavaScript was unavailable.
