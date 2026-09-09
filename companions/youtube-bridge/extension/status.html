@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VoiceInk YouTube Bridge</title>
+    <link rel="stylesheet" href="status.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>VoiceInk YouTube Bridge</h1>
+        <span id="summary" class="summary-pill is-neutral">Loading</span>
+      </header>
+
+      <section class="check-list" aria-label="Bridge checks">
+        <div id="row-extension" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Extension</span>
+          <span id="extension-status" class="check-value">Loading status</span>
+        </div>
+
+        <div id="row-native-connection" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Chrome bridge</span>
+          <span id="native-connection" class="check-value">Not connected yet</span>
+        </div>
+
+        <div id="row-media-key-tap" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Hardware keys</span>
+          <span id="media-key-tap" class="check-value">No host status yet</span>
+        </div>
+
+        <div id="row-accessibility" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Accessibility</span>
+          <span id="accessibility" class="check-value">No host status yet</span>
+        </div>
+
+        <div id="row-spotify-state" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Spotify</span>
+          <span id="spotify-state" class="check-value">No host status yet</span>
+        </div>
+
+        <div id="row-youtube-tab" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">YouTube</span>
+          <span id="youtube-tab" class="check-value">No tab reported</span>
+        </div>
+
+        <div id="row-last-owner" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Last owner</span>
+          <span id="last-owner" class="check-value">None yet</span>
+        </div>
+
+        <div id="row-native-status" class="check-row is-neutral">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="check-label">Host message</span>
+          <span id="native-status" class="check-value">No host message yet</span>
+        </div>
+      </section>
+
+      <footer>
+        <button id="refresh" type="button">Reload</button>
+        <span id="last-refresh">Not refreshed yet</span>
+      </footer>
+    </main>
+
+    <script src="status.js"></script>
+  </body>
+</html>

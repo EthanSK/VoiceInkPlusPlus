@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "VoiceInk YouTube Bridge",
+  "version": "0.1.0",
+  "description": "Connects VoiceInk++ and Agentic Mouse to YouTube playback and Chrome tab history.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzXHcnDDD7sEaA2zg/11p4wRl+88aispcDsz9jtkpXtXoKA+Ef9CeScCEDn/NjjWPO/sQLCt1a72XXkq4CH0dwW2nxbt/ivU39bWLq1Z9UbFR4xpcSE6v2vfne33OlzvG84SZNn5In4U3YqqicbKccwd4gWWtcfTmpkt9mie0P6Eqzi9+0jAIUhviC5goumu+983W6wKTmLrD4aiX1qjRwe4BDHpzYoJhjv8lIBPoTzKQNu2ibLvVh/BhlwYcPLRZSx1KPoCQLfaHU5MOef2uZTY4PBshN7eXfohfYR2kJCS1aAZ9i8JTGCXqXkJ2EJqPOS9lVoCkbEdoaw5rFXNQpQIDAQAB",
+  "permissions": ["alarms", "nativeMessaging", "scripting", "storage", "tabs"],
+  "host_permissions": ["*://youtube.com/*", "*://*.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://youtube.com/*", "*://*.youtube.com/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "VoiceInk YouTube Bridge",
+    "default_popup": "status.html"
+  }
+}

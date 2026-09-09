@@ -161,3 +161,19 @@ Do not include API keys, tokens, private proxy URLs, or other credentials in iss
 ## Upstream project
 
 VoiceInk++ is an independent fork of [VoiceInk by Beingpax](https://github.com/Beingpax/VoiceInk). Upstream build and download instructions install VoiceInk, not this VoiceInk++ fork.
+
+## Optional YouTube / Chrome companion
+
+The complete source lives in [companions/youtube-bridge](companions/youtube-bridge/README.md).
+It builds independently with Apple Command Line Tools and needs no private checkout.
+From the repository root:
+
+```sh
+cd companions/youtube-bridge
+./scripts/test.sh
+./scripts/build.sh
+```
+
+See its [agent setup guide](companions/youtube-bridge/AGENT_SETUP.md) for prerequisites,
+installation, loading the Chrome extension and actual playback checks. The main app's build
+never installs this companion implicitly.

@@ -14,9 +14,20 @@
   ![Swift](https://img.shields.io/badge/Swift-native-ffbc6b.svg)
 </div>
 
-VoiceInk++ is Ethan Sarif-Kattan's opinionated macOS voice-to-text workflow. Speak instead of reaching for the keyboard, decide whether current focus or an exact saved input receives each transcript, and carry on in another app while transcription, paste, and auto-send finish behind you.
+VoiceInk++ is Ethan SK's opinionated macOS voice-to-text workflow. Speak instead of reaching for the keyboard, choose current focus or an exact saved input for each transcript, and carry on in another app while transcription, paste, and auto-send finish behind you.
 
 It is built for people who use AI agents, terminals, chats, and editors all day—and do not want to spend even an awkward second staring at a transcription spinner.
+
+## YouTube and Chrome companion
+
+The [VoiceInk YouTube Bridge](companions/youtube-bridge/README.md) is included in this repository.
+It pauses a playing YouTube video when dictation starts and resumes only the video it paused;
+manual playback changes keep priority. The same extension supports Agentic Mouse's YouTube seek,
+volume and speed controls on watch pages and Shorts, Chrome tab history, and its fixed website shortcuts.
+
+The folder contains the extension, macOS helper, native host, tests and install scripts.
+Follow the [agent setup guide](companions/youtube-bridge/AGENT_SETUP.md) to reproduce the setup.
+It is an optional companion with its own installation; building VoiceInk++ alone does not install it.
 
 ## The reason VoiceInk++ exists
 
