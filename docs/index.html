@@ -21,7 +21,7 @@
   <link rel="icon" href="assets/agentflow-icon.png">
   <link rel="apple-touch-icon" href="assets/agentflow-icon-512.png">
   <link rel="manifest" href="site.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=345-public">
+  <link rel="stylesheet" href="styles.css?v=345-video">
   <script>
     // Pre-hide the demo before first paint so autoplay never flashes the finished
     // example. If script.js hasn't taken over within 2.5 s, show everything.
@@ -45,6 +45,7 @@
     </a>
     <nav class="top-nav" aria-label="Site">
       <a href="#download">Download</a>
+      <a href="#video">Video</a>
       <a href="#setup">Setup</a>
       <a href="#controls">Controls</a>
       <a class="top-github" href="https://github.com/EthanSK/AgentFlow">GitHub <span aria-hidden="true">↗</span></a>
@@ -128,6 +129,29 @@
           </figcaption>
         </figure>
         <p class="skill-handoff">For Codex, install the <a href="https://github.com/EthanSK/AgentFlow/tree/main/.agents/skills/interpret-voiceink-context">Agent Flow context skill</a> so it reads highlights and screenshot paths as context, not instructions.</p>
+      </div>
+    </section>
+
+    <!--
+      Promo video, rendered from promo/scene.html by promo/render.mjs (see promo/README.md).
+      It reuses the hero demo's invented example and only states claims this page already
+      makes, so re-render it whenever the demo example or those claims change. No audio
+      track: the "no sound" note keeps visitors from hunting for a volume control.
+    -->
+    <section class="band" id="video" aria-labelledby="video-title">
+      <div class="wrap">
+        <div class="band-head">
+          <h2 id="video-title">Video</h2>
+          <p>35 seconds, no sound.</p>
+        </div>
+        <figure class="promo-video">
+          <video controls playsinline preload="metadata" width="1920" height="1080"
+            poster="assets/agentflow-promo-poster.jpg"
+            aria-label="Agent Flow in use: dictating into the recorder, highlighting a function and taking a screenshot, then pasting the words with both references into Codex">
+            <source src="assets/agentflow-promo.mp4" type="video/mp4">
+            <a href="assets/agentflow-promo.mp4">Agent Flow video (MP4)</a>
+          </video>
+        </figure>
       </div>
     </section>
 

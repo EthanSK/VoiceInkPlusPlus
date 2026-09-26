@@ -721,6 +721,23 @@ main:focus {
   min-width: 0;
 }
 
+/* Promo video: full content width below its heading, 16:9 reserved up front so the
+   poster never shifts the page while the video's metadata loads. */
+.promo-video {
+  margin: clamp(1.5rem, 3vw, 2.25rem) 0 0;
+}
+
+.promo-video video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  background: var(--desk);
+  box-shadow: 0 26px 60px -34px rgba(8, 22, 18, 0.45);
+}
+
 .setup-steps {
   display: grid;
   gap: 0.85rem;

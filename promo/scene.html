@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Flow promo scene</title>
+<!--
+  Agent Flow promo video, authored as one deterministic 1920×1080 web scene.
+
+  How it becomes a video: promo/render.mjs opens this file in headless Chrome, calls
+  window.renderAt(seconds) for every frame, screenshots the stage, and pipes the frames
+  into ffmpeg. Nothing here uses CSS transitions, CSS animations, timers or
+  requestAnimationFrame: every visible property is a pure function of the requested
+  time, so any frame (including the website poster) can be re-rendered exactly.
+
+  Truthfulness rules for this file (it is public marketing for a real product):
+  - Every claim in the captions mirrors copy already published in docs/index.html.
+  - The example dictation, selection and screenshot path are the same invented example
+    the website demo uses. Never put Ethan's real selections, paths or messages here.
+  - The recorder is the website's accepted stylized HUD (black panel, live words above a
+    stop control and mint waveform), not a pixel copy of the native SwiftUI view.
+  - No third-party logos: "TextEdit" and "Codex" appear only as plain text labels, exactly
+    as they do in the website demo and the serialized <app_selection> tag.
+-->
+<style>
+  :root {
+    --desk: #e5eae8;
+    --sheet: #ffffff;
+    --ink: #111615;
+    --graphite: #4a5452;
+    --rule: #c7d0cc;
+    --hud: #0a0b0b;
+    --mint: #3fe0b5;
+    --mint-ink: #066b55;
+    --cyan: #6ccff6;
+    --cyan-ink: #006f8e;
+    --cyan-wash: #ade6f8;
+    --cyan-tint: #e8f6fb;
+    --violet: #bf5af2;
+    --violet-ink: #7e2bae;
+    --violet-tint: #f4ebf9;
+    --display: "Avenir Next Condensed", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+    --body: Seravek, "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+    --system: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background: var(--desk);
+  }
+
+  /* The stage is the exact video frame. Everything is absolutely positioned inside it. */
+  #stage {
+    position: relative;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background:
+      radial-gradient(1400px 900px at 50% 38%, #f1f5f3 0%, rgba(241, 245, 243, 0) 70%),
+      var(--desk);
+    font-family: var(--body);
+    color: var(--ink);
+  }
+
+  .scene {
+    position: absolute;
+    inset: 0;
+    will-change: opacity, transform;
+  }
+
+  /* ---------- Title card ---------- */
+
+  #title {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 34px;
+  }
+
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 34px;
+  }
+
+  .brand-row img {
+    width: 150px;
+    height: 150px;
+    border-radius: 34px;
+    box-shadow: 0 30px 60px -30px rgba(8, 22, 18, 0.55);
+  }
+
+  .wordmark {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 168px;
+    line-height: 1;
+    letter-spacing: -0.01em;
+  }
+
+  .wordmark .flow { color: var(--mint-ink); }
+
+  .tagline {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 64px;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+  }
+
+  /* Same two highlight treatments as the website hero: a cyan selection wash and a
+     dashed violet screenshot marquee. Their growth is driven from JS. */
+  .hl-select {
+    padding-inline: 0.06em;
+    margin-inline: -0.06em;
+    background: linear-gradient(var(--cyan-wash), var(--cyan-wash)) left 58% / 0% 84% no-repeat;
+  }
+
+  .hl-shot {
+    position: relative;
+    display: inline-block;
+    isolation: isolate;
+  }
+
+  .hl-shot .marquee {
+    position: absolute;
+    inset: 0.16em -0.14em 0.02em;
+    border: 3px dashed var(--violet-ink);
+    background: rgba(191, 90, 242, 0.08);
+    z-index: -1;
+  }
+
+  .hl-shot .marquee i {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: var(--violet-ink);
+  }
+
+  .hl-shot .marquee i:nth-child(1) { left: -7px; top: -7px; }
+  .hl-shot .marquee i:nth-child(2) { right: -7px; top: -7px; }
+  .hl-shot .marquee i:nth-child(3) { left: -7px; bottom: -7px; }
+  .hl-shot .marquee i:nth-child(4) { right: -7px; bottom: -7px; }
+
+  /* ---------- Desk scene ---------- */
+
+  #world {
+    position: absolute;
+    inset: 0;
+    transform-origin: 50% 46%;
+  }
+
+  .caption {
+    position: absolute;
+    left: 120px;
+    top: 66px;
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 66px;
+    line-height: 1.05;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+  }
+
+  .window {
+    position: absolute;
+    border-radius: 18px;
+    background: var(--sheet);
+    border: 1px solid rgba(17, 22, 21, 0.08);
+    box-shadow: 0 34px 70px -38px rgba(8, 22, 18, 0.45), 0 2px 6px rgba(8, 22, 18, 0.05);
+    overflow: hidden;
+  }
+
+  .titlebar {
+    position: relative;
+    height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid #e3e8e6;
+    background: #f6f8f7;
+    color: #6b7472;
+    font-family: var(--system);
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .lights {
+    position: absolute;
+    left: 20px;
+    top: 20px;
+    display: flex;
+    gap: 9px;
+  }
+
+  .lights i {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+  }
+
+  .lights i:nth-child(1) { background: #ff5f57; }
+  .lights i:nth-child(2) { background: #febc2e; }
+  .lights i:nth-child(3) { background: #28c840; }
+
+  #editor { left: 120px; top: 196px; width: 860px; height: 520px; }
+
+  .code {
+    position: relative;
+    z-index: 1;
+    margin: 0;
+    padding: 34px 40px;
+    font-family: var(--mono);
+    font-size: 25px;
+    line-height: 1.72;
+    color: #1d2322;
+    white-space: pre;
+  }
+
+  /* The selection wash is a separate absolutely positioned box so its width can grow
+     under the dragged I-beam without reflowing the monospaced text. */
+  #selWash {
+    position: absolute;
+    z-index: 0;
+    background: var(--cyan-wash);
+    border-radius: 3px;
+  }
+
+  #preview { left: 1030px; top: 196px; width: 770px; height: 520px; }
+
+  .empty {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 54px;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: #fbfcfc;
+    font-family: var(--system);
+  }
+
+  .empty-art {
+    width: 118px;
+    height: 118px;
+    border-radius: 30px;
+    background: #e7f7f1;
+    display: grid;
+    place-items: center;
+  }
+
+  .empty-art span {
+    display: block;
+    width: 58px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--mint-ink);
+    opacity: 0.8;
+    margin: 6px 0;
+  }
+
+  .empty-art span:nth-child(2) { width: 42px; opacity: 0.55; }
+  .empty-art span:nth-child(3) { width: 50px; opacity: 0.35; }
+
+  .empty h3 {
+    margin: 10px 0 0;
+    font-size: 38px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .empty p {
+    margin: 0;
+    font-size: 23px;
+    color: #69716f;
+  }
+
+  .empty .pill {
+    margin-top: 12px;
+    padding: 13px 28px;
+    border-radius: 999px;
+    background: var(--mint-ink);
+    color: #fff;
+    font-size: 21px;
+    font-weight: 600;
+  }
+
+  /* macOS screenshot region: translucent grey fill with a thin outline. */
+  #shotRegion {
+    position: absolute;
+    background: rgba(120, 128, 126, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    outline: 1px solid rgba(17, 22, 21, 0.35);
+  }
+
+  #flash {
+    position: absolute;
+    inset: 0;
+    background: #fff;
+    pointer-events: none;
+  }
+
+  /* Floating screenshot thumbnail, bottom-right like macOS. It contains a scaled clone
+     of the captured region, built once in init(). */
+  #thumb {
+    position: absolute;
+    right: 52px;
+    bottom: 64px;
+    width: 250px;
+    height: 170px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 4px solid #fff;
+    box-shadow: 0 22px 44px -18px rgba(8, 22, 18, 0.55);
+    background: #fbfcfc;
+  }
+
+  #thumb .clone {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+  }
+
+  /* ---------- Recorder HUD (matches the website's stylized recorder) ---------- */
+
+  #hud {
+    position: absolute;
+    left: 370px;
+    bottom: 58px;
+    width: 1180px;
+    border-radius: 30px;
+    background: var(--hud);
+    color: rgba(255, 255, 255, 0.86);
+    font-family: var(--system);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 40px 80px -36px rgba(8, 22, 18, 0.75);
+    overflow: hidden;
+  }
+
+  #hudTextBox {
+    overflow: hidden;
+  }
+
+  #hudText {
+    margin: 0;
+    padding: 30px 38px 6px;
+    font-size: 31px;
+    line-height: 1.52;
+  }
+
+  .w { display: none; }
+
+  .cue {
+    display: none;
+    margin-inline: 0.28em;
+    border-radius: 8px;
+    padding: 0 0.14em;
+  }
+
+  .cue-select { color: var(--cyan); }
+  .cue-shot { color: var(--violet); }
+
+  .hud-bar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin: 18px 38px 0;
+    padding: 20px 0 24px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  #stopBtn {
+    position: relative;
+    flex: none;
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.13);
+  }
+
+  #stopBtn::after {
+    content: "";
+    position: absolute;
+    inset: 13px;
+    border-radius: 3px;
+    background: #fff;
+  }
+
+  /* Neon confirmation ring around Stop at the moment of a normal stop. */
+  #stopRing {
+    position: absolute;
+    inset: -8px;
+    border-radius: 16px;
+    border: 3px solid var(--mint);
+    box-shadow: 0 0 18px var(--mint);
+  }
+
+  #wave {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 5px;
+    height: 42px;
+  }
+
+  #wave i {
+    flex: 1 1 0;
+    max-width: 7px;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--mint);
+  }
+
+  /* ---------- Pointer ---------- */
+
+  #pointer {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
+    z-index: 20;
+  }
+
+  #pointer svg {
+    position: absolute;
+    display: none;
+    filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
+  }
+
+  /* ---------- Composer scene ---------- */
+
+  #paste .pane-label {
+    position: absolute;
+    left: 200px;
+    top: 250px;
+    font-family: var(--system);
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--graphite);
+  }
+
+  #composer {
+    position: absolute;
+    left: 200px;
+    top: 302px;
+    width: 1520px;
+    padding: 40px 44px 44px;
+    border-radius: 26px;
+    border: 1px solid var(--rule);
+    background: var(--sheet);
+    box-shadow: 0 40px 80px -44px rgba(8, 22, 18, 0.45);
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    font-family: var(--system);
+    font-size: 38px;
+    line-height: 1.4;
+  }
+
+  #composer p { margin: 0; }
+
+  .xml {
+    margin: 0;
+    padding: 16px 22px;
+    border-left: 5px solid;
+    border-radius: 6px 12px 12px 6px;
+    font-family: var(--mono);
+    font-size: 23px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    color: var(--ink);
+  }
+
+  .xml .a { color: var(--graphite); }
+  .xml-select { border-color: var(--cyan-ink); background: var(--cyan-tint); }
+  .xml-select .t { color: var(--cyan-ink); }
+  .xml-shot { border-color: var(--violet-ink); background: var(--violet-tint); }
+  .xml-shot .t { color: var(--violet-ink); }
+
+  .caret {
+    display: inline-block;
+    width: 3px;
+    height: 1.05em;
+    margin-left: 3px;
+    vertical-align: -0.16em;
+    background: var(--ink);
+  }
+
+  /* ---------- Facts scene ---------- */
+
+  #facts {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding-left: 220px;
+    gap: 40px;
+  }
+
+  .fact {
+    display: flex;
+    align-items: center;
+    gap: 34px;
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 72px;
+    line-height: 1.05;
+    letter-spacing: -0.005em;
+  }
+
+  .fact b {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+  }
+
+  /* ---------- End card ---------- */
+
+  #end {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+  }
+
+  #end .brand-row img { width: 130px; height: 130px; border-radius: 30px; }
+  #end .wordmark { font-size: 140px; }
+
+  .download {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    padding: 22px 44px 24px;
+    border-radius: 999px;
+    background: var(--ink);
+    color: #fff;
+    font-family: var(--body);
+    font-size: 40px;
+    font-weight: 600;
+  }
+
+  .url {
+    font-family: var(--body);
+    font-size: 40px;
+    color: var(--mint-ink);
+    font-weight: 600;
+  }
+
+  .fine {
+    font-family: var(--body);
+    font-size: 28px;
+    color: var(--graphite);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- 1. Title card: the website's hero heading, word for word. -->
+  <section class="scene" id="title">
+    <div class="brand-row">
+      <img src="../docs/assets/agentflow-icon-512.png" alt="">
+      <div class="wordmark">Agent <span class="flow">Flow</span></div>
+    </div>
+    <div class="tagline">Speech to text, with your <span class="hl-select" id="tagSelect">highlights</span> and <span class="hl-shot">screenshots<span class="marquee" id="tagShot"><i></i><i></i><i></i><i></i></span></span></div>
+  </section>
+
+  <!-- 2. Desk: dictate, highlight, screenshot, stop. -->
+  <section class="scene" id="desk">
+    <div id="world">
+      <div class="window" id="editor">
+        <div class="titlebar"><span class="lights"><i></i><i></i><i></i></span>Rows.swift — TextEdit</div>
+        <div id="selWash"></div>
+        <pre class="code" id="code">import Foundation
+
+struct RowStore {
+    let cache: Cache
+
+    <span id="selTarget">func loadRows(from cache: Cache)</span> -&gt; [Row] {
+        cache.rows.filter { !$0.isHidden }
+    }
+}</pre>
+      </div>
+
+      <div class="window" id="preview">
+        <div class="titlebar"><span class="lights"><i></i><i></i><i></i></span>Rows — Design</div>
+        <div class="empty" id="emptyState">
+          <div class="empty-art"><div><span></span><span></span><span></span></div></div>
+          <h3>No rows yet</h3>
+          <p>Rows you save will appear here.</p>
+          <div class="pill">Add row</div>
+        </div>
+      </div>
+
+      <div id="shotRegion"></div>
+
+      <div id="hud">
+        <div id="hudTextBox">
+          <p id="hudText"><span class="w" data-at="5.9">Rename </span><span class="w" data-at="6.15">this </span><span class="w" data-at="6.4">function</span><span class="cue cue-select" data-at="8.6">Selected Text: TextEdit — “func loadRows(from cache: Cache)”</span><span class="w" data-at="9.05">and </span><span class="w" data-at="9.25">make </span><span class="w" data-at="9.43">the </span><span class="w" data-at="9.61">empty </span><span class="w" data-at="9.81">state </span><span class="w" data-at="10.01">look </span><span class="w" data-at="10.19">like </span><span class="w" data-at="10.39">this.</span><span class="cue cue-shot" data-at="12.75">Screenshot: Screenshot 2026-09-24 at 10.41.12.png</span></p>
+        </div>
+        <div class="hud-bar">
+          <span id="stopBtn"><span id="stopRing"></span></span>
+          <span id="wave"></span>
+        </div>
+      </div>
+
+      <div id="thumb"></div>
+
+      <div id="pointer">
+        <!-- macOS-style arrow, I-beam and screenshot crosshair, drawn locally. -->
+        <svg id="pArrow" width="34" height="48" viewBox="0 0 17 24" style="left:-2px;top:-2px">
+          <path d="M1 1v19.5l5-4.6 3.2 7.1 3.1-1.4-3.1-6.9H16z" fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <svg id="pBeam" width="22" height="46" viewBox="0 0 11 23" style="left:-11px;top:-23px">
+          <path d="M2 1.5h2.2c.7 0 1.1.4 1.3.9.2-.5.6-.9 1.3-.9H9M5.5 2.4v18.2M2 21.5h2.2c.7 0 1.1-.4 1.3-.9.2.5.6.9 1.3.9H9" fill="none" stroke="#fff" stroke-width="3"/>
+          <path d="M2 1.5h2.2c.7 0 1.1.4 1.3.9.2-.5.6-.9 1.3-.9H9M5.5 2.4v18.2M2 21.5h2.2c.7 0 1.1-.4 1.3-.9.2.5.6.9 1.3.9H9" fill="none" stroke="#111" stroke-width="1.3"/>
+        </svg>
+        <svg id="pCross" width="44" height="44" viewBox="0 0 22 22" style="left:-22px;top:-22px">
+          <path d="M11 1v20M1 11h20" stroke="#fff" stroke-width="3"/>
+          <path d="M11 1v20M1 11h20" stroke="#111" stroke-width="1.2"/>
+        </svg>
+      </div>
+
+      <div class="caption" id="cap1">Press your shortcut and talk.</div>
+      <div class="caption" id="cap2">Highlight text while you talk.</div>
+      <div class="caption" id="cap3">Take a screenshot.</div>
+      <div class="caption" id="cap4">Press again to stop and paste.</div>
+    </div>
+    <div id="flash"></div>
+  </section>
+
+  <!-- 3. Paste: one paste, references near the words they belong to. Same XML as the site. -->
+  <section class="scene" id="paste">
+    <div class="caption" id="cap5">Each reference lands near what you were saying.</div>
+    <div class="caption" id="cap6">So your agent can see what you were looking at.</div>
+    <div class="pane-label">Pasted into Codex</div>
+    <div id="composer">
+      <p>Rename this function</p>
+      <pre class="xml xml-select" id="xmlSelect"><span class="t">&lt;app_selection</span> <span class="a">index="1" source="TextEdit" characters="32" middle_omitted="false" truncated="false" bundle_id="com.apple.TextEdit"</span><span class="t">&gt;</span>
+  <span class="t">&lt;text&gt;</span>func loadRows(from cache: Cache)<span class="t">&lt;/text&gt;</span>
+<span class="t">&lt;/app_selection&gt;</span></pre>
+      <p>and make the empty state look like this.</p>
+      <pre class="xml xml-shot" id="xmlShot"><span class="t">&lt;local_screenshot</span> <span class="a">path="/Users/you/Desktop/Screenshot 2026-09-24 at 10.41.12.png"</span><span class="t">/&gt;</span><span class="caret" id="caret"></span></pre>
+    </div>
+  </section>
+
+  <!-- 4. Facts, each lifted from the website's demo notes and setup copy. -->
+  <section class="scene" id="facts">
+    <div class="fact" data-at="23.5"><b style="background: var(--mint)"></b>Live words stay in the recorder until you stop.</div>
+    <div class="fact" data-at="24.7"><b style="background: var(--cyan)"></b>Highlights are read without pressing Copy.</div>
+    <div class="fact" data-at="25.9"><b style="background: var(--violet)"></b>Screenshots add a file path, not an upload.</div>
+    <div class="fact" data-at="27.1"><b style="background: var(--ink)"></b>No Agent Flow account or subscription.</div>
+  </section>
+
+  <!-- 5. End card. -->
+  <section class="scene" id="end">
+    <div class="brand-row">
+      <img src="../docs/assets/agentflow-icon-512.png" alt="">
+      <div class="wordmark">Agent <span class="flow">Flow</span></div>
+    </div>
+    <div class="download">Download for Mac <span>↓</span></div>
+    <div class="url">ethansk.github.io/AgentFlow</div>
+    <div class="fine">Open source · macOS 14.4+ · Apple silicon and Intel</div>
+  </section>
+
+</div>
+
+<script>
+  // Total running time in seconds; render.mjs reads this to know how many frames to capture.
+  window.DURATION = 35.5;
+
+  // ---------- Timing helpers (all pure functions of time) ----------
+
+  const easeOut = (k) => 1 - Math.pow(1 - k, 3);
+  const easeInOut = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+
+  // Eased 0→1 progress between times a and b (clamped).
+  function prog(t, a, b, ease = easeInOut) {
+    if (t <= a) return 0;
+    if (t >= b) return 1;
+    return ease((t - a) / (b - a));
+  }
+
+  const lerp = (a, b, k) => a + (b - a) * k;
+
+  // Visibility window with fades: 0 before `a`, fades in over `fin`, holds, fades out
+  // over `fout` ending at `b`.
+  function win(t, a, b, fin = 0.35, fout = 0.35) {
+    return Math.min(prog(t, a, a + fin, easeOut), 1 - prog(t, b - fout, b));
+  }
+
+  // Piecewise keyframes [[time, value], ...] with easing between neighbours.
+  function keys(t, list) {
+    if (t <= list[0][0]) return list[0][1];
+    for (let i = 1; i < list.length; i++) {
+      if (t <= list[i][0]) {
+        return lerp(list[i - 1][1], list[i][1], prog(t, list[i - 1][0], list[i][0]));
+      }
+    }
+    return list[list.length - 1][1];
+  }
+
+  const $ = (id) => document.getElementById(id);
+
+  function show(el, opacity, dx = 0, dy = 0, scale = 1) {
+    el.style.opacity = opacity.toFixed(4);
+    el.style.visibility = opacity <= 0.001 ? "hidden" : "visible";
+    el.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
+  }
+
+  // ---------- One-time layout measurements ----------
+
+  const layout = {};
+
+  function init() {
+    // Waveform bars: fixed count, each gets its own deterministic phase and speed.
+    const wave = $("wave");
+    for (let i = 0; i < 70; i++) wave.appendChild(document.createElement("i"));
+
+    // Selection target geometry inside the editor window (world coordinates; the world
+    // transform is identity while measuring).
+    const editor = $("editor").getBoundingClientRect();
+    const target = $("selTarget").getBoundingClientRect();
+    layout.sel = {
+      left: target.left - editor.left,
+      top: target.top - editor.top + 2,
+      width: target.width,
+      height: target.height - 2,
+      pageX: target.left,
+      pageY: target.top + target.height / 2,
+    };
+    const wash = $("selWash");
+    wash.style.left = `${layout.sel.left - 3}px`;
+    wash.style.top = `${layout.sel.top}px`;
+    wash.style.height = `${layout.sel.height}px`;
+
+    // Screenshot region: the empty-state artwork inside the design window.
+    const preview = $("preview").getBoundingClientRect();
+    layout.shot = {
+      x0: preview.left + 150,
+      y0: preview.top + 92,
+      x1: preview.right - 150,
+      y1: preview.bottom - 44,
+    };
+
+    // Thumbnail: a scaled clone of exactly the captured region.
+    const thumb = $("thumb");
+    const clone = $("preview").cloneNode(true);
+    clone.removeAttribute("id");
+    clone.classList.add("clone");
+    clone.style.left = "0";
+    clone.style.top = "0";
+    // The size came from the #preview id rule, which the clone no longer matches.
+    clone.style.width = `${preview.width}px`;
+    clone.style.height = `${preview.height}px`;
+    const regionW = layout.shot.x1 - layout.shot.x0;
+    const scale = 242 / regionW;
+    const wrap = document.createElement("div");
+    wrap.className = "clone";
+    wrap.style.transform = `scale(${scale}) translate(${-(layout.shot.x0 - preview.left)}px, ${-(layout.shot.y0 - preview.top)}px)`;
+    clone.style.position = "absolute";
+    wrap.appendChild(clone);
+    thumb.appendChild(wrap);
+
+    // Recorder growth: measure the live-text height after each reveal so the HUD can
+    // ease between heights instead of snapping line by line.
+    const parts = [...document.querySelectorAll("#hudText [data-at]")];
+    layout.parts = parts.map((el) => ({ el, at: parseFloat(el.dataset.at) }));
+    const box = $("hudText");
+    layout.heights = [];
+    parts.forEach((el) => (el.style.display = "none"));
+    const emptyHeight = box.offsetHeight;
+    layout.baseHeight = emptyHeight;
+    let previous = emptyHeight;
+    layout.parts.forEach((part) => {
+      part.el.style.display = "inline";
+      const h = box.offsetHeight;
+      layout.heights.push({ at: part.at, delta: h - previous });
+      previous = h;
+    });
+    parts.forEach((el) => (el.style.display = "none"));
+
+    layout.facts = [...document.querySelectorAll(".fact")].map((el) => ({ el, at: parseFloat(el.dataset.at) }));
+  }
+
+  // ---------- Frame renderer ----------
+
+  window.renderAt = function renderAt(t) {
+    // Scene 1 — title (0 – 3.9 s).
+    const titleIn = prog(t, 0.15, 1.1, easeOut);
+    const titleOut = prog(t, 3.3, 3.95);
+    show($("title"), titleIn * (1 - titleOut), 0, lerp(24, 0, titleIn) - titleOut * 60, lerp(0.985, 1, titleIn));
+    $("tagSelect").style.backgroundSize = `${prog(t, 1.25, 1.85) * 100}% 84%`;
+    const shotK = prog(t, 1.95, 2.35, easeOut);
+    show($("tagShot"), shotK, 0, 0, lerp(1.12, 1, shotK));
+
+    // Scene 2 — desk (3.6 – 15.9 s).
+    const deskIn = prog(t, 3.6, 4.5, easeOut);
+    const deskOut = prog(t, 15.1, 15.85);
+    show($("desk"), deskIn * (1 - deskOut), -deskOut * 140, lerp(40, 0, deskIn));
+    // Slow push-in keeps the long desk shot alive without cropping the windows.
+    const zoom = keys(t, [[4, 1], [15.5, 1.035]]);
+    $("world").style.transform = `scale(${zoom})`;
+
+    // Captions: one short sentence per beat, cross-faded.
+    show($("cap1"), win(t, 4.7, 7.05), 0, 0);
+    show($("cap2"), win(t, 7.05, 10.65), 0, 0);
+    show($("cap3"), win(t, 10.65, 13.45), 0, 0);
+    show($("cap4"), win(t, 13.45, 15.6), 0, 0);
+
+    // Recorder appears on the first press, grows with the live words, then leaves after
+    // the stop press once the words have been handed off for pasting.
+    const hudIn = prog(t, 5.05, 5.45, easeOut);
+    const hudOut = prog(t, 14.75, 15.15);
+    show($("hud"), hudIn * (1 - hudOut), 0, lerp(26, 0, hudIn) + hudOut * 20, lerp(0.97, 1, hudIn));
+    let height = layout.baseHeight;
+    layout.heights.forEach((h) => (height += h.delta * prog(t, h.at, h.at + 0.28, easeOut)));
+    $("hudTextBox").style.height = `${height}px`;
+    layout.parts.forEach(({ el, at }) => {
+      const k = prog(t, at, at + 0.2, easeOut);
+      el.style.display = t >= at ? "inline" : "none";
+      el.style.opacity = k.toFixed(3);
+      if (el.classList.contains("cue")) {
+        // Brief glow when a reference lands in the recorder.
+        const glow = win(t, at, at + 1.1, 0.12, 0.8);
+        const rgb = el.classList.contains("cue-select") ? "108, 207, 246" : "191, 90, 242";
+        el.style.background = `rgba(${rgb}, ${(0.22 * glow).toFixed(3)})`;
+      }
+    });
+
+    // Waveform: louder while words are arriving, a low idle shimmer otherwise, and a
+    // settle to flat dots after the stop press.
+    const talking = Math.max(win(t, 5.7, 6.8, 0.2, 0.3), win(t, 8.9, 10.7, 0.2, 0.3));
+    const settle = 1 - prog(t, 14.2, 14.6);
+    [...$("wave").children].forEach((bar, i) => {
+      // A slow travelling envelope across the bar row plus a faster per-bar flicker reads
+      // as speech; a single sine per bar looked like a uniform comb.
+      const speed = 6.1 + (i % 5) * 1.3;
+      const envelope = 0.5 + 0.5 * Math.sin(i * 0.19 - t * 2.6);
+      const flicker = Math.abs(Math.sin(t * speed + i * 0.83) * Math.cos(t * speed * 0.47 + i * 1.7));
+      const amp = 0.22 + 0.72 * talking;
+      const s = (0.14 + amp * (0.35 + 0.65 * envelope) * flicker) * settle + 0.1 * (1 - settle);
+      bar.style.transform = `scaleY(${Math.max(0.1, s).toFixed(3)})`;
+    });
+
+    // Stop press at 14.2 s: button dips and the neon ring pulses once.
+    const press = win(t, 14.15, 14.45, 0.08, 0.2);
+    $("stopBtn").style.transform = `scale(${1 - 0.1 * press})`;
+    const ring = win(t, 14.2, 15.0, 0.1, 0.6);
+    show($("stopRing"), ring, 0, 0, 1 + 0.25 * prog(t, 14.2, 15.0, easeOut));
+
+    // Pointer path: idle → drag-select the function signature → crosshair screenshot.
+    const sel = layout.sel;
+    const shot = layout.shot;
+    const px = keys(t, [
+      [4.4, 1500], [7.2, sel.pageX], [7.5, sel.pageX], [8.4, sel.pageX + sel.width],
+      [8.8, sel.pageX + sel.width + 10], [10.9, shot.x0], [11.3, shot.x0], [12.15, shot.x1],
+      [12.6, shot.x1], [13.6, 1560],
+    ]);
+    const py = keys(t, [
+      [4.4, 640], [7.2, sel.pageY], [8.4, sel.pageY], [8.8, sel.pageY + 6],
+      [10.9, shot.y0], [11.3, shot.y0], [12.15, shot.y1], [12.6, shot.y1], [13.6, 820],
+    ]);
+    $("pointer").style.transform = `translate(${px}px, ${py}px)`;
+    const inEditor = t >= 6.95 && t < 8.85;
+    const crosshair = t >= 10.75 && t < 12.3;
+    $("pArrow").style.display = !inEditor && !crosshair ? "block" : "none";
+    $("pBeam").style.display = inEditor ? "block" : "none";
+    $("pCross").style.display = crosshair ? "block" : "none";
+    $("pointer").style.opacity = (win(t, 4.3, 14.0, 0.3, 0.5)).toFixed(3);
+
+    // Selection wash grows exactly under the dragged I-beam.
+    $("selWash").style.width = `${sel.width * prog(t, 7.5, 8.4, (k) => k) + (t >= 7.5 ? 6 : 0)}px`;
+    $("selWash").style.opacity = t >= 7.5 ? "1" : "0";
+
+    // Screenshot region drag, flash, and floating thumbnail.
+    const drag = prog(t, 11.3, 12.15, (k) => k);
+    const region = $("shotRegion");
+    const regionOn = t >= 11.3 && t < 12.25;
+    region.style.display = regionOn ? "block" : "none";
+    region.style.left = `${shot.x0}px`;
+    region.style.top = `${shot.y0}px`;
+    region.style.width = `${(shot.x1 - shot.x0) * drag}px`;
+    region.style.height = `${(shot.y1 - shot.y0) * drag}px`;
+    show($("flash"), 0.85 * win(t, 12.2, 12.55, 0.04, 0.3));
+    const thumbK = prog(t, 12.35, 12.8, easeOut);
+    show($("thumb"), thumbK * (1 - prog(t, 14.4, 14.9)), lerp(120, 0, thumbK), 0);
+
+    // Scene 3 — paste (15.4 – 23.2 s).
+    const pasteIn = prog(t, 15.45, 16.25, easeOut);
+    const pasteOut = prog(t, 22.6, 23.25);
+    show($("paste"), pasteIn * (1 - pasteOut), lerp(140, 0, pasteIn), -pasteOut * 30);
+    // The composer content lands at once: Agent Flow pastes one time on stop.
+    const land = prog(t, 16.3, 16.65, easeOut);
+    show($("composer"), 0.35 + 0.65 * land, 0, lerp(16, 0, land));
+    [...$("composer").children].forEach((child) => (child.style.opacity = land.toFixed(3)));
+    // Draw attention to each reference in turn.
+    const selPulse = win(t, 17.1, 18.6, 0.3, 0.6);
+    const shotPulse = win(t, 18.6, 20.1, 0.3, 0.6);
+    $("xmlSelect").style.boxShadow = `0 0 0 ${(6 * selPulse).toFixed(2)}px rgba(0, 111, 142, ${(0.22 * selPulse).toFixed(3)})`;
+    $("xmlShot").style.boxShadow = `0 0 0 ${(6 * shotPulse).toFixed(2)}px rgba(126, 43, 174, ${(0.22 * shotPulse).toFixed(3)})`;
+    $("caret").style.opacity = t >= 16.6 && Math.floor((t - 16.6) / 0.55) % 2 === 0 ? "1" : "0";
+    show($("cap5"), win(t, 16.8, 19.8), 0, 0);
+    show($("cap6"), win(t, 19.8, 23.2), 0, 0);
+
+    // Scene 4 — facts (23.3 – 29.9 s).
+    const factsOut = prog(t, 29.3, 29.9);
+    show($("facts"), 1 - factsOut, 0, -factsOut * 30);
+    layout.facts.forEach(({ el, at }) => {
+      const k = prog(t, at, at + 0.5, easeOut);
+      show(el, k, lerp(-40, 0, k), 0);
+    });
+
+    // Scene 5 — end card (29.8 s → end).
+    const endIn = prog(t, 29.8, 30.7, easeOut);
+    show($("end"), endIn, 0, lerp(28, 0, endIn), lerp(0.985, 1, endIn));
+  };
+
+  init();
+  window.renderAt(0);
+  window.promoReady = true;
+</script>
+</body>
+</html>

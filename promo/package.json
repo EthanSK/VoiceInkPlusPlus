@@ -1,0 +1,13 @@
+{
+  "name": "agent-flow-promo",
+  "private": true,
+  "description": "Renders docs/assets/agentflow-promo.mp4 from scene.html. See README.md.",
+  "type": "module",
+  "scripts": {
+    "render": "node render.mjs",
+    "stills": "node render.mjs --stills"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
