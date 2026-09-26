@@ -352,7 +352,7 @@ main:focus {
   Mac screen mock. Its layout follows the screen's own width (container queries),
   not the viewport, because the same scene fills a ~38rem column beside the Codex
   output on wide screens and the full width of a phone. Narrow screens drop menu
-  items and tighten the window/HUD stagger instead of scaling the picture down:
+  items and tighten the window/HUD spacing instead of scaling the picture down:
   HUD text never drops below 0.9rem, and the highlighted line still fits on one
   line at a 320px viewport. Everything stays in normal flow, so nothing is
   clipped; the HUD's negative top margin is the only overlap.
@@ -362,10 +362,12 @@ main:focus {
   container: mac / inline-size;
   border: 1px solid rgba(17, 22, 21, 0.14);
   border-radius: 14px;
+  /* Quiet, abstract macOS-style wallpaper: broad curved ridges, not a flat app
+     card. It is CSS-only, static, and never competes with the black recorder. */
   background:
-    radial-gradient(120% 85% at 8% 0%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 62%),
-    radial-gradient(85% 75% at 100% 100%, rgba(6, 107, 85, 0.14), rgba(6, 107, 85, 0) 70%),
-    linear-gradient(165deg, var(--wall-light), var(--wall-deep));
+    radial-gradient(ellipse 110% 78% at 110% 108%, #355e89 0 43%, #729fbe 44% 51%, transparent 52%),
+    radial-gradient(ellipse 108% 110% at -18% -20%, #dfeef0 0 49%, #abc9da 50% 60%, transparent 61%),
+    linear-gradient(145deg, #90b5cf 14%, #e1cad4 53%, #efc6aa 77%, #c9b0c3);
   box-shadow: 0 30px 60px -42px rgba(8, 22, 18, 0.55);
 }
 
@@ -417,7 +419,7 @@ main:focus {
 }
 
 .mac-screen {
-  padding: 0.8rem 0.7rem 0.9rem;
+  padding: 0.8rem 0.7rem 0.55rem;
 }
 
 .mac-window {
@@ -486,13 +488,13 @@ main:focus {
   transition: background-size 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
-/* The recorder floats above the window, offset to the lower right like the real
-   bottom-anchored panel, and overlaps only the document's blank page. */
+/* The recorder is bottom-centred like the real panel. Keep equal side margins
+   at every breakpoint, and overlap only the document's blank page. */
 .hud {
   position: relative;
   z-index: 1;
   width: 94%;
-  margin: -3.2rem 0 0 auto;
+  margin: -3.2rem auto 0;
   padding: 0.85rem 0.95rem 0.75rem;
   border-radius: 18px;
   background: var(--hud);
@@ -510,13 +512,66 @@ main:focus {
   overflow-wrap: anywhere;
 }
 
+/* Decorative Dock: subdued, inert icons establish the desktop context without
+   suggesting that the website is a functional macOS simulator. */
+.mac-dock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: fit-content;
+  margin: 0.95rem auto 0;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 11px;
+  background: rgba(231, 240, 248, 0.42);
+  box-shadow: 0 3px 9px rgba(29, 49, 74, 0.13);
+}
+
+.mac-dock i {
+  position: relative;
+  display: block;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+
+.dock-finder { background: linear-gradient(90deg, #64b9ec 50%, #d3eafa 50%); }
+.dock-finder::after {
+  position: absolute;
+  inset: 25% 25% 24%;
+  border-bottom: 1px solid #295476;
+  border-radius: 0 0 45% 45%;
+  content: "";
+}
+.dock-browser { background: radial-gradient(circle, #5ca9dc 52%, #e9f3f8 55% 66%, #a0c7dd 69%); }
+.dock-browser::after {
+  position: absolute;
+  inset: 21% 43%;
+  background: linear-gradient(#e4776e 50%, #f7fbff 50%);
+  transform: rotate(35deg);
+  content: "";
+}
+.dock-notes { background: linear-gradient(#e4bd60 0 28%, #f6f2e5 29% 100%); }
+.dock-notes::after {
+  position: absolute;
+  inset: 44% 22% 22%;
+  background: repeating-linear-gradient(transparent 0 3px, #c5c8c8 3px 4px);
+  content: "";
+}
+.dock-photos { background: conic-gradient(#e6a876, #e3cb77, #83b9a5, #7ea8d1, #b599c9, #da9cac, #e6a876); }
+.dock-settings { background: radial-gradient(circle, #87939d 0 18%, #d7dfe4 20% 34%, #8f9da8 36% 49%, #d2dce3 51%); }
+.dock-divider { width: 1px; height: 1.3rem; margin-inline: 0.05rem; background: rgba(58, 82, 103, 0.2); }
+.mac-dock .dock-trash { width: 1.05rem; margin-inline: 0.1rem; border-radius: 3px 3px 5px 5px; background: repeating-linear-gradient(90deg, #cedae3 0 3px, #e7edf2 3px 5px); }
+
 @container mac (min-width: 26rem) {
   .mac-mid {
     display: block;
   }
 
   .mac-screen {
-    padding: 1.1rem 1rem 1.2rem;
+    padding: 1.1rem 1rem 0.65rem;
   }
 
   .mac-window {
@@ -532,7 +587,6 @@ main:focus {
   .hud {
     width: 86%;
     margin-top: -3.6rem;
-    margin-right: 2%;
     padding: 1rem 1.1rem 0.85rem;
   }
 
@@ -551,7 +605,7 @@ main:focus {
   }
 
   .mac-screen {
-    padding: 1.35rem 1.25rem 1.4rem;
+    padding: 1.35rem 1.25rem 0.75rem;
   }
 
   .mac-window {
@@ -566,7 +620,6 @@ main:focus {
   .hud {
     width: 72%;
     margin-top: -4.2rem;
-    margin-right: 4%;
   }
 }
 

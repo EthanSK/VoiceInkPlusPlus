@@ -21,7 +21,7 @@
   <link rel="icon" href="assets/agentflow-icon.png">
   <link rel="apple-touch-icon" href="assets/agentflow-icon-512.png">
   <link rel="manifest" href="site.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=345-desktop">
+  <link rel="stylesheet" href="styles.css?v=345-desktop-centered">
   <script>
     // Pre-hide the demo before first paint so autoplay never flashes the finished
     // example. If script.js hasn't taken over within 2.5 s, show everything.
@@ -83,8 +83,10 @@
               window reuses promo/scene.html's invented Rows.swift example, and the menu-bar
               clock matches the example screenshot's timestamp. Keep one HUD only; it stays
               the page's only black object. The window is a picture, not a control: no
-              hover, focus or click behaviour. The HUD overlaps only the document's blank
-              lower page, never the highlighted line. The cyan wash is the selection that
+              hover, focus or click behaviour. The HUD is bottom-centred above a decorative
+              Dock and overlaps only the document's blank lower page, never the highlighted
+              line. The wallpaper and Dock establish macOS, not extra app controls.
+              The cyan wash is the selection that
               the HUD's Selected Text cue captures; its data-at reveals it just before
               that cue, and it is fully drawn without JavaScript or with reduced motion.
             -->
@@ -135,6 +137,9 @@
                     <span class="hud-stop"></span>
                     <span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
                   </div>
+                </div>
+                <div class="mac-dock" aria-hidden="true">
+                  <i class="dock-finder"></i><i class="dock-browser"></i><i class="dock-notes"></i><i class="dock-photos"></i><i class="dock-settings"></i><span class="dock-divider"></span><i class="dock-trash"></i>
                 </div>
               </div>
             </div>
