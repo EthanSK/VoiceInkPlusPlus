@@ -5,11 +5,16 @@
   Its two signal colours are copied from the real HUD: cyan marks selected
   text, violet marks a screenshot. Nothing else on the page uses them.
 
+  The hero sets that HUD on an abstract Mac screen (wallpaper, menu bar, one
+  TextEdit window) so visitors can see it is a floating macOS panel, not a web
+  widget. The scene stays quieter than the HUD: its only macOS system colours
+  are the window's traffic lights and the orange microphone-in-use dot.
+
   Type roles
     display  Avenir Next Condensed: headings only
     body     Seravek (humanist) with portable fallbacks
-    system   the macOS UI face, used only inside the recorder mock
-    mono     XML and shell commands only
+    system   the macOS UI face, used only inside the recorder and Mac screen mocks
+    mono     XML, shell commands and the mock TextEdit document only
 */
 
 :root {
@@ -28,6 +33,10 @@
   --violet: #bf5af2;
   --violet-ink: #7e2bae;
   --violet-tint: #f4ebf9;
+  /* Mac screen mock: a cooler, deeper tone of the desk so the screen reads as its
+     own surface while the black HUD stays the strongest object on it. */
+  --wall-light: #d4ded9;
+  --wall-deep: #b3c3bd;
 
   --display: "Avenir Next Condensed", "Avenir Next", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
   --body: Seravek, "Gill Sans Nova", Ubuntu, Calibri, "DejaVu Sans", "Source Sans Pro", system-ui, sans-serif;
@@ -339,21 +348,226 @@ main:focus {
   font-weight: 600;
 }
 
+/*
+  Mac screen mock. Its layout follows the screen's own width (container queries),
+  not the viewport, because the same scene fills a ~38rem column beside the Codex
+  output on wide screens and the full width of a phone. Narrow screens drop menu
+  items and tighten the window/HUD stagger instead of scaling the picture down:
+  HUD text never drops below 0.9rem, and the highlighted line still fits on one
+  line at a 320px viewport. Everything stays in normal flow, so nothing is
+  clipped; the HUD's negative top margin is the only overlap.
+*/
+
+.mac {
+  container: mac / inline-size;
+  border: 1px solid rgba(17, 22, 21, 0.14);
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 85% at 8% 0%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 62%),
+    radial-gradient(85% 75% at 100% 100%, rgba(6, 107, 85, 0.14), rgba(6, 107, 85, 0) 70%),
+    linear-gradient(165deg, var(--wall-light), var(--wall-deep));
+  box-shadow: 0 30px 60px -42px rgba(8, 22, 18, 0.55);
+}
+
+.mac-menubar {
+  display: flex;
+  align-items: center;
+  gap: 0.95em;
+  height: 1.6rem;
+  padding-inline: 0.8rem;
+  border-bottom: 1px solid rgba(17, 22, 21, 0.07);
+  border-radius: 13px 13px 0 0;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink);
+  font-family: var(--system);
+  font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
+  /* Safety net only: the container queries size the items to fit, but an unusually
+     wide fallback font must clip this decorative bar, never widen the page. */
+  overflow: hidden;
+}
+
+.mac-app {
+  font-weight: 700;
+}
+
+.mac-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* macOS's own microphone-in-use dot, shown whenever any app is recording. */
+.mac-mic {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: #ff9f0a;
+}
+
+/* Menu items and status details that only appear once the screen is wide
+   enough to hold them without clipping; see the container queries below. */
+.mac-mid,
+.mac-wide,
+.mac-date {
+  display: none;
+}
+
+.mac-screen {
+  padding: 0.8rem 0.7rem 0.9rem;
+}
+
+.mac-window {
+  border: 1px solid rgba(17, 22, 21, 0.12);
+  border-radius: 10px;
+  background: var(--sheet);
+  box-shadow:
+    0 1px 2px rgba(8, 22, 18, 0.06),
+    0 16px 34px -22px rgba(8, 22, 18, 0.4);
+}
+
+.mac-titlebar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.7rem;
+  border-bottom: 1px solid #e3e8e6;
+  border-radius: 9px 9px 0 0;
+  background: #f6f8f7;
+  color: #6b7472;
+  font-family: var(--system);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.mac-lights {
+  position: absolute;
+  top: 50%;
+  left: 0.6rem;
+  display: flex;
+  gap: 0.35rem;
+  transform: translateY(-50%);
+}
+
+.mac-lights i {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #ff5f57;
+}
+
+.mac-lights i:nth-child(2) { background: #febc2e; }
+.mac-lights i:nth-child(3) { background: #28c840; }
+
+/* TextEdit wraps plain text to its window, so a narrow screen wraps a long line
+   instead of clipping it. The tall bottom padding is the document's blank page,
+   the only area the HUD may cover; keep it taller than the HUD's overlap. */
+.mac-doc {
+  margin: 0;
+  padding: 0.7rem 0.6rem 3.6rem;
+  color: #1d2322;
+  font-size: 0.7rem;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* The captured selection, drawn as the same cyan wash as the headline gesture. */
+.mac-select {
+  padding-block: 0.12em;
+  background: linear-gradient(var(--cyan-wash), var(--cyan-wash)) left center / 100% 100% no-repeat;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-size 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* The recorder floats above the window, offset to the lower right like the real
+   bottom-anchored panel, and overlaps only the document's blank page. */
 .hud {
-  padding: 1.15rem 1.25rem 0.95rem;
-  border-radius: 22px;
+  position: relative;
+  z-index: 1;
+  width: 94%;
+  margin: -3.2rem 0 0 auto;
+  padding: 0.85rem 0.95rem 0.75rem;
+  border-radius: 18px;
   background: var(--hud);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 26px 60px -28px rgba(8, 22, 18, 0.6);
+    0 2px 6px rgba(8, 22, 18, 0.2),
+    0 28px 50px -22px rgba(8, 22, 18, 0.62);
   color: rgba(255, 255, 255, 0.84);
   font-family: var(--system);
 }
 
 .hud-text {
-  font-size: clamp(1.02rem, 1.55vw, 1.2rem);
+  font-size: 0.9rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+@container mac (min-width: 26rem) {
+  .mac-mid {
+    display: block;
+  }
+
+  .mac-screen {
+    padding: 1.1rem 1rem 1.2rem;
+  }
+
+  .mac-window {
+    width: 88%;
+  }
+
+  .mac-doc {
+    padding: 0.8rem 0.85rem 4rem;
+    font-size: 0.75rem;
+    tab-size: 4;
+  }
+
+  .hud {
+    width: 86%;
+    margin-top: -3.6rem;
+    margin-right: 2%;
+    padding: 1rem 1.1rem 0.85rem;
+  }
+
+  .hud-text {
+    font-size: 0.95rem;
+  }
+}
+
+@container mac (min-width: 36rem) {
+  .mac-wide {
+    display: block;
+  }
+
+  .mac-date {
+    display: inline;
+  }
+
+  .mac-screen {
+    padding: 1.35rem 1.25rem 1.4rem;
+  }
+
+  .mac-window {
+    width: 76%;
+  }
+
+  .mac-doc {
+    padding-bottom: 4.6rem;
+    font-size: 0.8rem;
+  }
+
+  .hud {
+    width: 72%;
+    margin-top: -4.2rem;
+    margin-right: 4%;
+  }
 }
 
 .cue {
@@ -372,8 +586,8 @@ main:focus {
   display: flex;
   align-items: center;
   gap: 0.8rem;
-  margin-top: 1rem;
-  padding-top: 0.85rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
   border-top: 1px solid rgba(255, 255, 255, 0.09);
 }
 
@@ -598,8 +812,10 @@ main:focus {
 }
 
 @media (min-width: 60rem) {
+  /* The Mac screen needs more room than the bare HUD did, so the scene reads as a
+     desktop with the recorder floating on it; the Codex output stays beside it. */
   .demo {
-    grid-template-columns: minmax(0, 1.08fr) auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 1fr);
     align-items: center;
     column-gap: 1.25rem;
   }
@@ -646,6 +862,14 @@ main:focus {
 .demo-armed .g-select,
 .is-playing .g-select:not(.is-shown) {
   background-size: 0% 84%;
+  transition: none;
+}
+
+/* The TextEdit selection is a data-at part but not a .step: its code stays
+   visible and only the cyan wash is withheld until it is revealed. */
+.demo-armed .mac-select,
+.is-playing .mac-select:not(.is-shown) {
+  background-size: 0% 100%;
   transition: none;
 }
 
@@ -1050,11 +1274,14 @@ kbd {
 }
 
 @media (forced-colors: active) {
-  .g-select {
+  .g-select,
+  .mac-select {
     background: none;
     text-decoration: underline;
   }
 
+  .mac,
+  .mac-window,
   .hud,
   .composer,
   .routes,

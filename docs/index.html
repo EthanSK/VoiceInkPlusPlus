@@ -21,7 +21,7 @@
   <link rel="icon" href="assets/agentflow-icon.png">
   <link rel="apple-touch-icon" href="assets/agentflow-icon-512.png">
   <link rel="manifest" href="site.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=345-video">
+  <link rel="stylesheet" href="styles.css?v=345-desktop">
   <script>
     // Pre-hide the demo before first paint so autoplay never flashes the finished
     // example. If script.js hasn't taken over within 2.5 s, show everything.
@@ -76,25 +76,66 @@
         <figure class="demo" data-demo>
           <div class="pane">
             <p class="pane-label">Recorder</p>
-            <div class="hud">
-              <p class="hud-text">
-                <span class="step" data-at="250">Rename</span>
-                <span class="step" data-at="400">this</span>
-                <span class="step" data-at="550">function</span>
-                <span class="step cue cue-select" data-at="900">Selected Text: TextEdit — “func loadRows(from cache: Cache)”</span>
-                <span class="step" data-at="1200">and</span>
-                <span class="step" data-at="1330">make</span>
-                <span class="step" data-at="1460">the</span>
-                <span class="step" data-at="1590">empty</span>
-                <span class="step" data-at="1720">state</span>
-                <span class="step" data-at="1850">look</span>
-                <span class="step" data-at="1980">like</span>
-                <span class="step" data-at="2110">this.</span>
-                <span class="step cue cue-shot" data-at="2450">Screenshot: Screenshot 2026-09-24 at 10.41.12.png</span>
-              </p>
-              <div class="hud-bar" aria-hidden="true">
-                <span class="hud-stop"></span>
-                <span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <!--
+              Abstract Mac screen, so the recorder reads as a floating macOS panel rather
+              than a web chat box. Everything except the HUD is decorative and hidden from
+              assistive technology: the HUD's own text already names the selection. The
+              window reuses promo/scene.html's invented Rows.swift example, and the menu-bar
+              clock matches the example screenshot's timestamp. Keep one HUD only; it stays
+              the page's only black object. The window is a picture, not a control: no
+              hover, focus or click behaviour. The HUD overlaps only the document's blank
+              lower page, never the highlighted line. The cyan wash is the selection that
+              the HUD's Selected Text cue captures; its data-at reveals it just before
+              that cue, and it is fully drawn without JavaScript or with reduced motion.
+            -->
+            <div class="mac">
+              <div class="mac-menubar" aria-hidden="true">
+                <span class="mac-app">TextEdit</span>
+                <span>File</span>
+                <span>Edit</span>
+                <span class="mac-mid">Format</span>
+                <span class="mac-mid">View</span>
+                <span class="mac-wide">Window</span>
+                <span class="mac-wide">Help</span>
+                <span class="mac-status">
+                  <i class="mac-mic"></i>
+                  <svg class="mac-mid" viewBox="0 0 16 12" width="15" height="11"><path d="M1.6 4.6a9 9 0 0 1 12.8 0M3.8 6.8a6 6 0 0 1 8.4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="9.6" r="1.6" fill="currentColor"/></svg>
+                  <svg viewBox="0 0 25 12" width="22" height="11"><rect x="0.75" y="0.75" width="21" height="10.5" rx="3" fill="none" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.5"/><rect x="2.6" y="2.6" width="14" height="6.8" rx="1.6" fill="currentColor"/><path d="M23.4 4.3v3.4" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.6" stroke-linecap="round"/></svg>
+                  <span><span class="mac-date">Thu 24 Sep </span>10:41</span>
+                </span>
+              </div>
+              <div class="mac-screen">
+                <div class="mac-window" aria-hidden="true">
+                  <div class="mac-titlebar"><span class="mac-lights"><i></i><i></i><i></i></span>Rows.swift</div>
+                  <pre class="mac-doc">struct RowStore {
+&#9;let cache: Cache
+
+&#9;<span class="mac-select" data-at="600">func loadRows(from cache: Cache)</span> -&gt; [Row] {
+&#9;&#9;cache.rows.filter { !$0.isHidden }
+&#9;}
+}</pre>
+                </div>
+                <div class="hud">
+                  <p class="hud-text">
+                    <span class="step" data-at="250">Rename</span>
+                    <span class="step" data-at="400">this</span>
+                    <span class="step" data-at="550">function</span>
+                    <span class="step cue cue-select" data-at="900">Selected Text: TextEdit — “func loadRows(from cache: Cache)”</span>
+                    <span class="step" data-at="1200">and</span>
+                    <span class="step" data-at="1330">make</span>
+                    <span class="step" data-at="1460">the</span>
+                    <span class="step" data-at="1590">empty</span>
+                    <span class="step" data-at="1720">state</span>
+                    <span class="step" data-at="1850">look</span>
+                    <span class="step" data-at="1980">like</span>
+                    <span class="step" data-at="2110">this.</span>
+                    <span class="step cue cue-shot" data-at="2450">Screenshot: Screenshot 2026-09-24 at 10.41.12.png</span>
+                  </p>
+                  <div class="hud-bar" aria-hidden="true">
+                    <span class="hud-stop"></span>
+                    <span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -263,6 +304,6 @@ cd AgentFlow
     </div>
   </footer>
 
-  <script src="script.js"></script>
+  <script src="script.js?v=345-desktop"></script>
 </body>
 </html>

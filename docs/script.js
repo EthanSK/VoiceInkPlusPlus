@@ -10,6 +10,9 @@
   // and reveals them at their data-at times (ms). It must never hold demo or route
   // copy of its own. One pass lasts about four seconds and then stops, so the
   // moving content stays under WCAG 2.2.2's five-second limit; Replay restarts it.
+  // The Mac screen's TextEdit selection is one of these parts: CSS withholds only
+  // its cyan wash, so the highlight lands just before the recorder's Selected Text
+  // cue. The rest of that scene is static and needs no script.
   var root = document.querySelector("[data-demo-root]");
   if (root) {
     var parts = Array.prototype.slice.call(root.querySelectorAll("[data-at]"));
